@@ -21,6 +21,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -31,19 +33,20 @@ class MainActivity : ComponentActivity(){
 
     // grabs main bluetooth controller
     // by lazy - only run this code and wake up hardware when I ask for it
-    private val bluetoothManager by lazy {
-        getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-    }
+    private val bluetoothManager get() = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
 
+    // get() will now ask android for fresh connection every time
     // Broadcaster
-    private val bleAdvertiser by lazy {
-        bluetoothManager.adapter?.bluetoothLeAdvertiser
-    }
+    private val bleAdvertiser get() = bluetoothManager.adapter?.bluetoothLeAdvertiser
 
     // Scanner
-    private val bleScanner by lazy {
-        bluetoothManager.adapter?.bluetoothLeScanner
-    }
+    private val bleScanner get() = bluetoothManager.adapter?.bluetoothLeScanner
+
+    // moved outside of onCreate so advertiseCallback can handle these
+    // remember - dont' forget the variable if screen rotates - removed from this block of code
+    // mutableStateOf - magic variable (when var changed, reframe UI)
+    private var isBroadcasting by mutableStateOf(false)
+    private var isScanning by mutableStateOf(false)
 
     // parameter defintion is reverse order (name: type)
     // the ? tells compiler that this parameter is allowed to be null
@@ -54,10 +57,6 @@ class MainActivity : ComponentActivity(){
             // screen context - physical address of the current screen
             val context = androidx.compose.ui.platform.LocalContext.current
 
-            // remember - dont' forget the variable if screen rotates
-            // mutableStateOf - magic variable (when var changed, reframe UI)
-            var isBroadcasting by remember {mutableStateOf(false)}
-            var isScanning by remember {mutableStateOf(false)}
 
             // permission block
             val permissionLauncher = rememberLauncherForActivityResult(
@@ -69,7 +68,7 @@ class MainActivity : ComponentActivity(){
                 }
             }
 
-            // launcher that will as OS to turn on bluetooth
+            // launcher that will ask OS to turn on bluetooth
             val enableBluetoothLauncher = rememberLauncherForActivityResult(
                 contract = ActivityResultContracts.StartActivityForResult()
             ){ }
@@ -98,6 +97,20 @@ class MainActivity : ComponentActivity(){
 
                 // lambda - {...}
                 Button(onClick = {
+                    // check permission without touching blutetooth hardware
+                    val hasPermissions = neededPermissions.all {perm ->
+                        ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+                    }
+
+                    if(!hasPermissions){
+                        android.widget.Toast.makeText(
+                            context,
+                            "Click Permission Request",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                        return@Button
+                    }
+
                     try {
                         // bluetooth check
                         if(bluetoothManager.adapter?.isEnabled == false){
@@ -109,8 +122,7 @@ class MainActivity : ComponentActivity(){
                             return@Button
                         }
 
-                        isBroadcasting = !isBroadcasting
-                        if(isBroadcasting){
+                        if(!isBroadcasting){
                             startBroadcasting()
                         } else{
                             stopBroadcasting()
@@ -121,8 +133,6 @@ class MainActivity : ComponentActivity(){
                             "Click Request Permissions first",
                             android.widget.Toast.LENGTH_LONG
                         ).show()
-
-                        isBroadcasting = false
                     }
                 }){
                     if(isBroadcasting){
@@ -156,9 +166,11 @@ class MainActivity : ComponentActivity(){
     private val advertiseCallback = object : AdvertiseCallback(){
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings?){
             println("Success: Radio broadcasting")
+            isBroadcasting = true
         }
         override fun onStartFailure(errorCode: Int){
             println("Fail: Error Code: $errorCode")
+            isBroadcasting = false
         }
     }
 
@@ -177,6 +189,12 @@ class MainActivity : ComponentActivity(){
             .addServiceData(ParcelUuid(TEST_UUID), "SECRET".toByteArray(Charsets.UTF_8))
             .build()
 
+        val advertiser = bleAdvertiser
+        if(advertiser == null){
+            // missions permission
+            throw SecurityException()
+        }
+
         // removed try/catch so the button can catch it and reset the UI
         // now it won't say startBroadcasting = true, while it's failing in bg
         // fails when bluetooth is ON, but pemissions are revoked
@@ -185,5 +203,6 @@ class MainActivity : ComponentActivity(){
 
     private fun stopBroadcasting(){
         bleAdvertiser?.stopAdvertising(advertiseCallback)
+        isBroadcasting = false
     }
 }
