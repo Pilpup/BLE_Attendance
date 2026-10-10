@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.os.Build
 import android.os.ParcelUuid
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertiseSettings
@@ -19,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import android.content.Context
+import android.content.Intent
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -49,6 +51,9 @@ class MainActivity : ComponentActivity(){
         super.onCreate(savedInstanceState)
 
         setContent {
+            // screen context - physical address of the current screen
+            val context = androidx.compose.ui.platform.LocalContext.current
+
             // remember - dont' forget the variable if screen rotates
             // mutableStateOf - magic variable (when var changed, reframe UI)
             var isBroadcasting by remember {mutableStateOf(false)}
@@ -63,6 +68,11 @@ class MainActivity : ComponentActivity(){
                     println("User granted all permissions")
                 }
             }
+
+            // launcher that will as OS to turn on bluetooth
+            val enableBluetoothLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.StartActivityForResult()
+            ){ }
 
             // check phone's andoid version to select rules to follow
             val neededPermissions = if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.S){
@@ -88,14 +98,38 @@ class MainActivity : ComponentActivity(){
 
                 // lambda - {...}
                 Button(onClick = {
-                    isBroadcasting = !isBroadcasting
-                    if(isBroadcasting){
-                        startBroadcasting()
-                    } else{
-                        stopBroadcasting()
+                    try {
+                        // bluetooth check
+                        if(bluetoothManager.adapter?.isEnabled == false){
+                            val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                            enableBluetoothLauncher.launch(enableBtIntent)
+
+                            // labeled return - specify what you're trying to return from
+                            // this works as a staller, this will stall the app until the user turn on Bluetooth
+                            return@Button
+                        }
+
+                        isBroadcasting = !isBroadcasting
+                        if(isBroadcasting){
+                            startBroadcasting()
+                        } else{
+                            stopBroadcasting()
+                        }
+                    } catch (e : SecurityException){
+                        android.widget.Toast.makeText(
+                            context,
+                            "Click Request Permissions first",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+
+                        isBroadcasting = false
                     }
                 }){
-                    Text(text = "Start Broadcast")
+                    if(isBroadcasting){
+                        Text(text = "Stop Broadcast")
+                    } else {
+                        Text(text = "Start Broadcast")
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(32.dp)) //empty space
@@ -143,16 +177,13 @@ class MainActivity : ComponentActivity(){
             .addServiceData(ParcelUuid(TEST_UUID), "SECRET".toByteArray(Charsets.UTF_8))
             .build()
 
-        try{
-            bleAdvertiser?.startAdvertising(settings, data, advertiseCallback)
-        } catch(e: SecurityException){
-            println("CannotBroadcast: Missing Permissions")
-        }
+        // removed try/catch so the button can catch it and reset the UI
+        // now it won't say startBroadcasting = true, while it's failing in bg
+        // fails when bluetooth is ON, but pemissions are revoked
+        bleAdvertiser?.startAdvertising(settings, data, advertiseCallback)
     }
 
     private fun stopBroadcasting(){
-        try{
-            bleAdvertiser?.stopAdvertising(advertiseCallback)
-        } catch (e : SecurityException){ }
+        bleAdvertiser?.stopAdvertising(advertiseCallback)
     }
 }
