@@ -86,6 +86,11 @@ class MainActivity : ComponentActivity(){
         latencyBuffer.clear()
     }
 
+    private var selectedTxPower by mutableStateOf(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
+    private var selectedAdvMode by mutableStateOf(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
+    private var broadcastTokken by mutableStateOf("SECRET")
+    private var isBroadcasterMode by mutableStateOf(true)
+
     // parameter defintion is reverse order (name: type)
     // the ? tells compiler that this parameter is allowed to be null
     override fun onCreate(savedInstanceState: Bundle?){
@@ -132,166 +137,261 @@ class MainActivity : ComponentActivity(){
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ){
-                Text(text = "isBroadcasting: $isBroadcasting")
-                Text(text = "isScanning: $isScanning")
-
-                Spacer(modifier = Modifier.height(32.dp)) //empty space
-
-                // lambda - {...}
-                Button(onClick = {
-                    // check permission without touching blutetooth hardware [FIREWALL]
-                    val hasPermissions = neededPermissions.all {perm ->
-                        ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
-                    }
-
-                    if(!hasPermissions){
-                        android.widget.Toast.makeText(
-                            context,
-                            "Click Permission Request",
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
-                        return@Button
-                    }
-
-                    try {
-                        // bluetooth check
-                        if(bluetoothManager.adapter?.isEnabled == false){
-                            val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                            enableBluetoothLauncher.launch(enableBtIntent)
-
-                            // labeled return - specify what you're trying to return from
-                            // this works as a staller, this will stall the app until the user turn on Bluetooth
-                            return@Button
-                        }
-                        if(!isBroadcasting){
-                            startBroadcasting()
-                        } else{
-                            stopBroadcasting()
-                        }
-                    } catch (e : SecurityException){
-                        android.widget.Toast.makeText(
-                            context,
-                            "Click Request Permissions first",
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
-                    }
-                }){
-                    if(isBroadcasting){
-                        Text(text = "Stop Broadcast")
-                    } else {
-                        Text(text = "Start Broadcast")
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(32.dp)) //empty space
-
-                // lambda - {...}
-                Button(onClick = {
-                    val hasPermissions = neededPermissions.all { perm ->
-                        ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
-                    }
-
-                    if (!hasPermissions) {
-                        android.widget.Toast.makeText(
-                            context,
-                            "Click Request Permissions first",
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
-                        return@Button
-                    }
-
-                    try {
-                        if (bluetoothManager.adapter?.isEnabled == false) {
-                            val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                            enableBluetoothLauncher.launch(enableBtIntent)
-                            return@Button
-                        }
-
-                        if (!isScanning) {
-                            startScanning()
-                        } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly
+                ){
+                    Button(onClick = {
+                        if(!isBroadcasterMode){
                             stopScanning()
+                            isBroadcasterMode = true
                         }
-                    } catch (e: SecurityException) {
-                        android.widget.Toast.makeText(
-                            context,
-                            "Bluetooth Permission error",
-                            android.widget.Toast.LENGTH_LONG
-                        ).show()
-                        isScanning = false
+                    }){
+                        Text(text = "Broadcaster")
                     }
-                }) {
-                    if (isScanning) {
-                        Text(text = "Stop Scanning")
-                    } else {
-                        Text(text = "Start Scanning")
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(32.dp)) //empty space
-
-                // lambda - {...}
-                Button(onClick = {permissionLauncher.launch(neededPermissions)}){
-                    Text(text = "Request Permissions")
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp)
-                ){
-                    Column(modifier = Modifier.padding(16.dp)){
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ){
-                            Text(text = "current: ${currentRssi?.let { "$it dBm" } ?: "--"}")
-                            Text(text = "avg: ${if(packetCount > 0) "%.1f dBm".format(avgRssi) else "--"}")
+                    Button(onClick = {
+                        if(isBroadcasterMode){
+                            stopBroadcasting()
+                            isBroadcasterMode = false
                         }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ){
-                            Text(text = "min/max: ${minRssi ?: "--"} / ${maxRssi ?: "--"}")
-                            Text(text = "packets: $packetCount")
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ){
-                            Text(text = "avgLat: ${if(packetCount > 0) "%.2f ms".format(avgLatencyMs) else "--"}")
-                            Text(text = "Msg: $latestMessage")
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Button(
-                            onClick = {resetLogs()},
-                            modifier = Modifier.align(Alignment.End)
-                        ){
-                            Text(text = "Reset")
-                        }
+                    }){
+                        Text(text = "Scanner")
                     }
                 }
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // basic logger
-                // lazy column will recycles memory automatically
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                ){
-                    items(scanLogs.reversed()){ log ->
-                        Text(
-                            text = log,
-                            modifier = Modifier.padding(8.dp)
-                        )
+                if(isBroadcasterMode){
+                    Text(text = "isBroadcasting: $isBroadcasting")
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Button(onClick = {
+                        val hasPermissions = neededPermissions.all {perm ->
+                            ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+                        }
+
+                        if(!hasPermissions){
+                            android.widget.Toast.makeText(
+                                context,
+                                "Click Permission Request",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                            return@Button
+                        }
+
+                        try {
+                            if(bluetoothManager.adapter?.isEnabled == false){
+                                val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                                enableBluetoothLauncher.launch(enableBtIntent)
+                                return@Button
+                            }
+                            if(!isBroadcasting){
+                                startBroadcasting()
+                            } else{
+                                stopBroadcasting()
+                            }
+                        } catch (e : SecurityException){
+                            android.widget.Toast.makeText(
+                                context,
+                                "Click Request Permissions first",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }){
+                        if(isBroadcasting){
+                            Text(text = "Stop Broadcast")
+                        } else {
+                            Text(text = "Start Broadcast")
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                    ){
+                        Column(modifier = Modifier.padding(16.dp)){
+                            Text(text = "Transmitter Settings")
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Text(
+                                text = "Power: " + when(selectedTxPower){
+                                    AdvertiseSettings.ADVERTISE_TX_POWER_ULTRA_LOW -> "Ultra Low (~1-3m)"
+                                    AdvertiseSettings.ADVERTISE_TX_POWER_LOW -> "Low (~3-8m)"
+                                    AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM -> "Medium (~8-15m)"
+                                    else -> "High (~20m+)"
+                                }
+                            )
+
+                            Spacer(modifier = Modifier.height(4.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ){
+                                Button(onClick = {updateTxPower(AdvertiseSettings.ADVERTISE_TX_POWER_ULTRA_LOW)}){
+                                    Text(text = "Ultra")
+                                }
+                                Button(onClick = {updateTxPower(AdvertiseSettings.ADVERTISE_TX_POWER_LOW)}){
+                                    Text(text = "Low")
+                                }
+                                Button(onClick = {updateTxPower(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)}){
+                                    Text(text = "Med")
+                                }
+                                Button(onClick = {updateTxPower(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)}){
+                                    Text(text = "High")
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Text(
+                                text = "Rate: " + when(selectedAdvMode){
+                                    AdvertiseSettings.ADVERTISE_MODE_LOW_POWER -> "1 Hz (Slow)"
+                                    AdvertiseSettings.ADVERTISE_MODE_BALANCED -> "4 Hz (Balanced)"
+                                    else -> "10 Hz (Fast)"
+                                }
+                            )
+
+                            Spacer(modifier = Modifier.height(4.dp))
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ){
+                                Button(onClick = {updateAdvMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)}){
+                                    Text(text = "1 Hz")
+                                }
+                                Button(onClick = {updateAdvMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)}){
+                                    Text(text = "4 Hz")
+                                }
+                                Button(onClick = {updateAdvMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)}){
+                                    Text(text = "10 Hz")
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Button(onClick = {permissionLauncher.launch(neededPermissions)}){
+                        Text(text = "Request Permissions")
+                    }
+                } else {
+                    Text(text = "isScanning: $isScanning")
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Button(onClick = {
+                        val hasPermissions = neededPermissions.all { perm ->
+                            ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+                        }
+
+                        if (!hasPermissions) {
+                            android.widget.Toast.makeText(
+                                context,
+                                "Click Request Permissions first",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                            return@Button
+                        }
+
+                        try {
+                            if (bluetoothManager.adapter?.isEnabled == false) {
+                                val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                                enableBluetoothLauncher.launch(enableBtIntent)
+                                return@Button
+                            }
+
+                            if (!isScanning) {
+                                startScanning()
+                            } else {
+                                stopScanning()
+                            }
+                        } catch (e: SecurityException) {
+                            android.widget.Toast.makeText(
+                                context,
+                                "Bluetooth Permission error",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                            isScanning = false
+                        }
+                    }) {
+                        if (isScanning) {
+                            Text(text = "Stop Scanning")
+                        } else {
+                            Text(text = "Start Scanning")
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Button(onClick = {permissionLauncher.launch(neededPermissions)}){
+                        Text(text = "Request Permissions")
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp)
+                    ){
+                        Column(modifier = Modifier.padding(16.dp)){
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ){
+                                Text(text = "current: ${currentRssi?.let { "$it dBm" } ?: "--"}")
+                                Text(text = "avg: ${if(packetCount > 0) "%.1f dBm".format(avgRssi) else "--"}")
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ){
+                                Text(text = "min/max: ${minRssi ?: "--"} / ${maxRssi ?: "--"}")
+                                Text(text = "packets: $packetCount")
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ){
+                                Text(text = "avgLat: ${if(packetCount > 0) "%.2f ms".format(avgLatencyMs) else "--"}")
+                                Text(text = "Msg: $latestMessage")
+                            }
+
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            Button(
+                                onClick = {resetLogs()},
+                                modifier = Modifier.align(Alignment.End)
+                            ){
+                                Text(text = "Reset")
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                    ){
+                        items(scanLogs.reversed()){ log ->
+                            Text(
+                                text = log,
+                                modifier = Modifier.padding(8.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -316,8 +416,8 @@ class MainActivity : ComponentActivity(){
     private fun startBroadcasting(){
         // config radio power
         val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY) // 10 times/sec
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)     // max power
+            .setAdvertiseMode(selectedAdvMode)
+            .setTxPowerLevel(selectedTxPower)
             .setConnectable(false)
             .build()
 
@@ -325,7 +425,7 @@ class MainActivity : ComponentActivity(){
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
             .addServiceUuid(ParcelUuid(TEST_UUID))
-            .addServiceData(ParcelUuid(TEST_UUID), "SECRET".toByteArray(Charsets.UTF_8))
+            .addServiceData(ParcelUuid(TEST_UUID), broadcastTokken.toByteArray(Charsets.UTF_8))
             .build()
 
         val advertiser = bleAdvertiser
@@ -343,6 +443,22 @@ class MainActivity : ComponentActivity(){
     private fun stopBroadcasting(){
         bleAdvertiser?.stopAdvertising(advertiseCallback)
         isBroadcasting = false
+    }
+
+    private fun updateTxPower(newPower: Int){
+        selectedTxPower = newPower
+        if(isBroadcasting){
+            stopBroadcasting()
+            startBroadcasting()
+        }
+    }
+
+    private fun updateAdvMode(newMode: Int){
+        selectedAdvMode = newMode
+        if(isBroadcasting){
+            stopBroadcasting()
+            startBroadcasting()
+        }
     }
 
     private fun startScanning(){
