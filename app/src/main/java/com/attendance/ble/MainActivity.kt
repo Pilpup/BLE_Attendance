@@ -17,6 +17,7 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import androidx.compose.material3.Text
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -57,6 +58,33 @@ class MainActivity : ComponentActivity(){
 
     // mutableStateListOf - list of mutableStateOf
     private val scanLogs = androidx.compose.runtime.mutableStateListOf<String>()
+
+    // Logger vars
+    private var currentRssi by mutableStateOf<Int?>(null)
+    private var avgRssi by mutableStateOf(0.0)
+    private var minRssi by mutableStateOf<Int?>(null)
+    private var maxRssi by mutableStateOf<Int?>(null)
+    private var packetCount by mutableStateOf(0)
+    private var avgLatencyMs by mutableStateOf(0.0)
+    private var latestMessage by mutableStateOf("No Data")
+
+    // buffer last 10 readings to calculate averages
+    private val rssiBuffer = mutableListOf<Int>()
+    private val latencyBuffer = mutableListOf<Double>()
+
+    // reset function:
+    private fun resetLogs(){
+        scanLogs.clear()
+        currentRssi = null
+        avgRssi = 0.0
+        minRssi = null
+        maxRssi = null
+        packetCount = 0
+        avgLatencyMs = 0.0
+        latestMessage = "No Data"
+        rssiBuffer.clear()
+        latencyBuffer.clear()
+    }
 
     // parameter defintion is reverse order (name: type)
     // the ? tells compiler that this parameter is allowed to be null
@@ -207,7 +235,50 @@ class MainActivity : ComponentActivity(){
                     Text(text = "Request Permissions")
                 }
 
-                Spacer(modifier = Modifier.height(32.dp)) //empty space
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp)
+                ){
+                    Column(modifier = Modifier.padding(16.dp)){
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ){
+                            Text(text = "current: ${currentRssi?.let { "$it dBm" } ?: "--"}")
+                            Text(text = "avg: ${if(packetCount > 0) "%.1f dBm".format(avgRssi) else "--"}")
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ){
+                            Text(text = "min/max: ${minRssi ?: "--"} / ${maxRssi ?: "--"}")
+                            Text(text = "packets: $packetCount")
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ){
+                            Text(text = "avgLat: ${if(packetCount > 0) "%.2f ms".format(avgLatencyMs) else "--"}")
+                            Text(text = "Msg: $latestMessage")
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Button(
+                            onClick = {resetLogs()},
+                            modifier = Modifier.align(Alignment.End)
+                        ){
+                            Text(text = "Reset")
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
 
                 // basic logger
                 // lazy column will recycles memory automatically
@@ -275,7 +346,7 @@ class MainActivity : ComponentActivity(){
     }
 
     private fun startScanning(){
-        scanLogs.clear()
+        resetLogs()
 
         // ignore all the other peripherals, wake up only why it finds out TEST_UUID
         val filter = ScanFilter.Builder()
@@ -333,6 +404,27 @@ class MainActivity : ComponentActivity(){
             // ?.let - take the variable as "it" and let me do something with it in {...}
             // ?: - just an else block, if something goes null of left side
             val messageText = serviceDataBytes?.let {String(it, Charsets.UTF_8)} ?: "No data"
+
+            // log math:
+            currentRssi = rssi
+            packetCount++
+            latestMessage = messageText
+
+            // average calc
+            rssiBuffer.add(rssi)
+            if(rssiBuffer.size > 10) rssiBuffer.removeAt(0)
+            avgRssi = rssiBuffer.average()
+
+            // highest and lowest signal
+            // !! - shut the fuck up this variable will never be null at the moment
+            // - because {minRssi == null} is already true, before the next condition, it will never do {50 < null}
+            if(minRssi == null || rssi < minRssi!!) minRssi = rssi
+            if(maxRssi == null || rssi > maxRssi!!) maxRssi = rssi
+
+            // average latency calc
+            latencyBuffer.add(latencyMs)
+            if(latencyBuffer.size > 10) latencyBuffer.removeAt(0)
+            avgLatencyMs = latencyBuffer.average()
 
             val logEntry = "Signal: ${rssi} dBm | Latency: ${"%.2f".format(latencyMs)} ms\nData: $messageText"
 
