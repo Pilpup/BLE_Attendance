@@ -1,95 +1,56 @@
 package com.attendance.ble
 
-import java.util.UUID
-import android.Manifest
 import android.os.Bundle
-import android.os.Build
-import android.os.SystemClock
-import android.os.ParcelUuid
-import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothAdapter
-import android.bluetooth.le.AdvertiseCallback
-import android.bluetooth.le.AdvertiseData
-import android.bluetooth.le.AdvertiseSettings
-import android.bluetooth.le.ScanCallback
-import android.bluetooth.le.ScanFilter
-import android.bluetooth.le.ScanResult
-import android.bluetooth.le.ScanSettings
-import androidx.compose.material3.Text
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.runtime.*
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import androidx.core.content.ContextCompat
+import android.bluetooth.BluetoothManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import com.attendance.ble.ble.BleAdvertiser
+import com.attendance.ble.ble.BleConstants
+import com.attendance.ble.ble.BleScanner
+import com.attendance.ble.ui.screens.BroadcasterScreen
+import com.attendance.ble.ui.screens.ScannerScreen
+import com.attendance.ble.ui.theme.*
+import com.attendance.ble.viewmodel.AttendanceViewModel
 
 // Power Child class of ComponentActivity
 class MainActivity : ComponentActivity(){
 
-    // grabs main bluetooth controller
-    // by lazy - only run this code and wake up hardware when I ask for it
-    private val bluetoothManager get() = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+    private val viewModel: AttendanceViewModel by viewModels()
 
-    // get() will now ask android for fresh connection every time
-    // Broadcaster
-    private val bleAdvertiser get() = bluetoothManager.adapter?.bluetoothLeAdvertiser
-
-    // Scanner
-    private val bleScanner get() = bluetoothManager.adapter?.bluetoothLeScanner
-
-    // moved outside of onCreate so advertiseCallback can handle these
-    // remember - dont' forget the variable if screen rotates - <removed from this block of code>
-    // mutableStateOf - magic variable (when var changed, reframe UI)
-    private var isBroadcasting by mutableStateOf(false)
-    private var isScanning by mutableStateOf(false)
-
-    // mutableStateListOf - list of mutableStateOf
-    private val scanLogs = androidx.compose.runtime.mutableStateListOf<String>()
-
-    // Logger vars
-    private var currentRssi by mutableStateOf<Int?>(null)
-    private var avgRssi by mutableStateOf(0.0)
-    private var minRssi by mutableStateOf<Int?>(null)
-    private var maxRssi by mutableStateOf<Int?>(null)
-    private var packetCount by mutableStateOf(0)
-    private var avgLatencyMs by mutableStateOf(0.0)
-    private var latestMessage by mutableStateOf("No Data")
-
-    // buffer last 10 readings to calculate averages
-    private val rssiBuffer = mutableListOf<Int>()
-    private val latencyBuffer = mutableListOf<Double>()
-
-    // reset function:
-    private fun resetLogs(){
-        scanLogs.clear()
-        currentRssi = null
-        avgRssi = 0.0
-        minRssi = null
-        maxRssi = null
-        packetCount = 0
-        avgLatencyMs = 0.0
-        latestMessage = "No Data"
-        rssiBuffer.clear()
-        latencyBuffer.clear()
+    private val bleAdvertiser by lazy {
+        BleAdvertiser(this) { isBroadcasting ->
+            viewModel.isBroadcasting = isBroadcasting
+        }
     }
 
-    private var selectedTxPower by mutableStateOf(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
-    private var selectedAdvMode by mutableStateOf(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
-    private var broadcastTokken by mutableStateOf("SECRET")
-    private var isBroadcasterMode by mutableStateOf(true)
+    private val bleScanner by lazy {
+        BleScanner(
+            context = this,
+            onScanningChanged = { isScanning ->
+                viewModel.isScanning = isScanning
+            },
+            onPacketReceived = { rssi, latencyMs, messageText ->
+                viewModel.onPacketReceived(rssi, latencyMs, messageText)
+            }
+        )
+    }
 
     // parameter defintion is reverse order (name: type)
     // the ? tells compiler that this parameter is allowed to be null
@@ -99,7 +60,6 @@ class MainActivity : ComponentActivity(){
         setContent {
             // screen context - physical address of the current screen
             val context = androidx.compose.ui.platform.LocalContext.current
-
 
             // permission block
             val permissionLauncher = rememberLauncherForActivityResult(
@@ -116,444 +76,210 @@ class MainActivity : ComponentActivity(){
                 contract = ActivityResultContracts.StartActivityForResult()
             ){ }
 
-            // check phone's andoid version to select rules to follow
-            val neededPermissions = if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.S){
-                arrayOf(
-                    Manifest.permission.BLUETOOTH_SCAN,
-                    Manifest.permission.BLUETOOTH_ADVERTISE,
-                    Manifest.permission.BLUETOOTH_CONNECT
-                )
-            } else {
-                arrayOf(
-                    Manifest.permission.BLUETOOTH,
-                    Manifest.permission.BLUETOOTH_ADMIN,
-                    Manifest.permission.ACCESS_FINE_LOCATION
-                )
-            }
+            val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
 
-            // self explainatory UI
-            Column(
+            Surface(
                 modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                color = cyberBg
             ){
-                Row(
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly
+                        .fillMaxSize()
+                        .padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ){
-                    Button(onClick = {
-                        if(!isBroadcasterMode){
-                            stopScanning()
-                            isBroadcasterMode = true
-                        }
-                    }){
-                        Text(text = "Broadcaster")
-                    }
-                    Button(onClick = {
-                        if(isBroadcasterMode){
-                            stopBroadcasting()
-                            isBroadcasterMode = false
-                        }
-                    }){
-                        Text(text = "Scanner")
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                if(isBroadcasterMode){
-                    Text(text = "isBroadcasting: $isBroadcasting")
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Button(onClick = {
-                        val hasPermissions = neededPermissions.all {perm ->
-                            ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
-                        }
-
-                        if(!hasPermissions){
-                            android.widget.Toast.makeText(
-                                context,
-                                "Click Permission Request",
-                                android.widget.Toast.LENGTH_LONG
-                            ).show()
-                            return@Button
-                        }
-
-                        try {
-                            if(bluetoothManager.adapter?.isEnabled == false){
-                                val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                                enableBluetoothLauncher.launch(enableBtIntent)
-                                return@Button
-                            }
-                            if(!isBroadcasting){
-                                startBroadcasting()
-                            } else{
-                                stopBroadcasting()
-                            }
-                        } catch (e : SecurityException){
-                            android.widget.Toast.makeText(
-                                context,
-                                "Click Request Permissions first",
-                                android.widget.Toast.LENGTH_LONG
-                            ).show()
-                        }
-                    }){
-                        if(isBroadcasting){
-                            Text(text = "Stop Broadcast")
-                        } else {
-                            Text(text = "Start Broadcast")
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Card(
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp)
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ){
-                        Column(modifier = Modifier.padding(16.dp)){
-                            Text(text = "Transmitter Settings")
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            Text(
-                                text = "Power: " + when(selectedTxPower){
-                                    AdvertiseSettings.ADVERTISE_TX_POWER_ULTRA_LOW -> "Ultra Low (~1-3m)"
-                                    AdvertiseSettings.ADVERTISE_TX_POWER_LOW -> "Low (~3-8m)"
-                                    AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM -> "Medium (~8-15m)"
-                                    else -> "High (~20m+)"
-                                }
-                            )
-
-                            Spacer(modifier = Modifier.height(4.dp))
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ){
-                                Button(onClick = {updateTxPower(AdvertiseSettings.ADVERTISE_TX_POWER_ULTRA_LOW)}){
-                                    Text(text = "Ultra")
-                                }
-                                Button(onClick = {updateTxPower(AdvertiseSettings.ADVERTISE_TX_POWER_LOW)}){
-                                    Text(text = "Low")
-                                }
-                                Button(onClick = {updateTxPower(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)}){
-                                    Text(text = "Med")
-                                }
-                                Button(onClick = {updateTxPower(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)}){
-                                    Text(text = "High")
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            Text(
-                                text = "Rate: " + when(selectedAdvMode){
-                                    AdvertiseSettings.ADVERTISE_MODE_LOW_POWER -> "1 Hz (Slow)"
-                                    AdvertiseSettings.ADVERTISE_MODE_BALANCED -> "4 Hz (Balanced)"
-                                    else -> "10 Hz (Fast)"
-                                }
-                            )
-
-                            Spacer(modifier = Modifier.height(4.dp))
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ){
-                                Button(onClick = {updateAdvMode(AdvertiseSettings.ADVERTISE_MODE_LOW_POWER)}){
-                                    Text(text = "1 Hz")
-                                }
-                                Button(onClick = {updateAdvMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)}){
-                                    Text(text = "4 Hz")
-                                }
-                                Button(onClick = {updateAdvMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)}){
-                                    Text(text = "10 Hz")
-                                }
-                            }
-                        }
+                        Text(
+                            text = ">> BLE_NET_RADAR [v1.0]",
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = cyberGreen
+                        )
+                        Text(
+                            text = if(viewModel.isBroadcasterMode) "[MODE: TX]" else "[MODE: RX]",
+                            fontFamily = FontFamily.Monospace,
+                            color = cyberTextDim
+                        )
                     }
 
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
-                    Button(onClick = {permissionLauncher.launch(neededPermissions)}){
-                        Text(text = "Request Permissions")
-                    }
-                } else {
-                    Text(text = "isScanning: $isScanning")
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Button(onClick = {
-                        val hasPermissions = neededPermissions.all { perm ->
-                            ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
-                        }
-
-                        if (!hasPermissions) {
-                            android.widget.Toast.makeText(
-                                context,
-                                "Click Request Permissions first",
-                                android.widget.Toast.LENGTH_LONG
-                            ).show()
-                            return@Button
-                        }
-
-                        try {
-                            if (bluetoothManager.adapter?.isEnabled == false) {
-                                val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                                enableBluetoothLauncher.launch(enableBtIntent)
-                                return@Button
-                            }
-
-                            if (!isScanning) {
-                                startScanning()
-                            } else {
-                                stopScanning()
-                            }
-                        } catch (e: SecurityException) {
-                            android.widget.Toast.makeText(
-                                context,
-                                "Bluetooth Permission error",
-                                android.widget.Toast.LENGTH_LONG
-                            ).show()
-                            isScanning = false
-                        }
-                    }) {
-                        if (isScanning) {
-                            Text(text = "Stop Scanning")
-                        } else {
-                            Text(text = "Start Scanning")
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Button(onClick = {permissionLauncher.launch(neededPermissions)}){
-                        Text(text = "Request Permissions")
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ){
-                        Column(modifier = Modifier.padding(16.dp)){
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ){
-                                Text(text = "current: ${currentRssi?.let { "$it dBm" } ?: "--"}")
-                                Text(text = "avg: ${if(packetCount > 0) "%.1f dBm".format(avgRssi) else "--"}")
-                            }
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ){
-                                Text(text = "min/max: ${minRssi ?: "--"} / ${maxRssi ?: "--"}")
-                                Text(text = "packets: $packetCount")
-                            }
-
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ){
-                                Text(text = "avgLat: ${if(packetCount > 0) "%.2f ms".format(avgLatencyMs) else "--"}")
-                                Text(text = "Msg: $latestMessage")
-                            }
-
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            Button(
-                                onClick = {resetLogs()},
-                                modifier = Modifier.align(Alignment.End)
-                            ){
-                                Text(text = "Reset")
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                    ){
-                        items(scanLogs.reversed()){ log ->
+                        Button(
+                            onClick = {
+                                if(!viewModel.isBroadcasterMode){
+                                    bleScanner.stopScanning()
+                                    viewModel.isBroadcasterMode = true
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if(viewModel.isBroadcasterMode) cyberGreen else cyberSurface,
+                                contentColor = if(viewModel.isBroadcasterMode) cyberBg else cyberGreen
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, if(viewModel.isBroadcasterMode) cyberGreen else cyberBorder)
+                        ){
                             Text(
-                                text = log,
-                                modifier = Modifier.padding(8.dp)
+                                text = "BROADCASTER",
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
                             )
                         }
+
+                        Button(
+                            onClick = {
+                                if(viewModel.isBroadcasterMode){
+                                    bleAdvertiser.stopBroadcasting()
+                                    viewModel.isBroadcasterMode = false
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if(!viewModel.isBroadcasterMode) cyberGreen else cyberSurface,
+                                contentColor = if(!viewModel.isBroadcasterMode) cyberBg else cyberGreen
+                            ),
+                            shape = RoundedCornerShape(8.dp),
+                            border = BorderStroke(1.dp, if(!viewModel.isBroadcasterMode) cyberGreen else cyberBorder)
+                        ){
+                            Text(
+                                text = "SCANNER",
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    if(viewModel.isBroadcasterMode){
+                        BroadcasterScreen(
+                            isBroadcasting = viewModel.isBroadcasting,
+                            selectedTxPower = viewModel.selectedTxPower,
+                            selectedAdvMode = viewModel.selectedAdvMode,
+                            onToggleBroadcast = {
+                                val hasPermissions = BleConstants.neededPermissions.all {perm ->
+                                    ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+                                }
+
+                                if(!hasPermissions){
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "Click Permission Request",
+                                        android.widget.Toast.LENGTH_LONG
+                                    ).show()
+                                    return@BroadcasterScreen
+                                }
+
+                                try {
+                                    if(bluetoothManager.adapter?.isEnabled == false){
+                                        val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                                        enableBluetoothLauncher.launch(enableBtIntent)
+                                        return@BroadcasterScreen
+                                    }
+                                    if(!viewModel.isBroadcasting){
+                                        bleAdvertiser.startBroadcasting(
+                                            viewModel.selectedAdvMode,
+                                            viewModel.selectedTxPower,
+                                            viewModel.broadcastTokken
+                                        )
+                                    } else{
+                                        bleAdvertiser.stopBroadcasting()
+                                    }
+                                } catch (e : SecurityException){
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "Click Request Permissions first",
+                                        android.widget.Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            },
+                            onUpdateTxPower = { newPower ->
+                                viewModel.selectedTxPower = newPower
+                                if(viewModel.isBroadcasting){
+                                    bleAdvertiser.stopBroadcasting()
+                                    bleAdvertiser.startBroadcasting(
+                                        viewModel.selectedAdvMode,
+                                        viewModel.selectedTxPower,
+                                        viewModel.broadcastTokken
+                                    )
+                                }
+                            },
+                            onUpdateAdvMode = { newMode ->
+                                viewModel.selectedAdvMode = newMode
+                                if(viewModel.isBroadcasting){
+                                    bleAdvertiser.stopBroadcasting()
+                                    bleAdvertiser.startBroadcasting(
+                                        viewModel.selectedAdvMode,
+                                        viewModel.selectedTxPower,
+                                        viewModel.broadcastTokken
+                                    )
+                                }
+                            },
+                            onCheckPermissions = { permissionLauncher.launch(BleConstants.neededPermissions) }
+                        )
+                    } else {
+                        ScannerScreen(
+                            isScanning = viewModel.isScanning,
+                            currentRssi = viewModel.currentRssi,
+                            avgRssi = viewModel.avgRssi,
+                            minRssi = viewModel.minRssi,
+                            maxRssi = viewModel.maxRssi,
+                            packetCount = viewModel.packetCount,
+                            avgLatencyMs = viewModel.avgLatencyMs,
+                            latestMessage = viewModel.latestMessage,
+                            scanLogs = viewModel.scanLogs,
+                            onToggleScan = {
+                                val hasPermissions = BleConstants.neededPermissions.all { perm ->
+                                    ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+                                }
+
+                                if (!hasPermissions) {
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "Click Request Permissions first",
+                                        android.widget.Toast.LENGTH_LONG
+                                    ).show()
+                                    return@ScannerScreen
+                                }
+
+                                try {
+                                    if (bluetoothManager.adapter?.isEnabled == false) {
+                                        val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                                        enableBluetoothLauncher.launch(enableBtIntent)
+                                        return@ScannerScreen
+                                    }
+
+                                    if (!viewModel.isScanning) {
+                                        viewModel.resetLogs()
+                                        bleScanner.startScanning()
+                                    } else {
+                                        bleScanner.stopScanning()
+                                    }
+                                } catch (e: SecurityException) {
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "Bluetooth Permission error",
+                                        android.widget.Toast.LENGTH_LONG
+                                    ).show()
+                                    viewModel.isScanning = false
+                                }
+                            },
+                            onResetLogs = { viewModel.resetLogs() },
+                            onCheckPermissions = { permissionLauncher.launch(BleConstants.neededPermissions) }
+                        )
                     }
                 }
             }
-        }
-    }
-
-    private val TEST_UUID = UUID.fromString("00001234-0000-1000-8000-00805F9B34FB")
-
-    // the listener, used to tell us if the radio wave fired successfully
-    // object : one time use, nameless object on spot that inherits from AdvertiseCallback()
-    private val advertiseCallback = object : AdvertiseCallback(){
-        override fun onStartSuccess(settingsInEffect: AdvertiseSettings?){
-            println("Success: Radio broadcasting")
-            isBroadcasting = true
-        }
-        override fun onStartFailure(errorCode: Int){
-            println("Fail: Error Code: $errorCode")
-            isBroadcasting = false
-        }
-    }
-
-    private fun startBroadcasting(){
-        // config radio power
-        val settings = AdvertiseSettings.Builder()
-            .setAdvertiseMode(selectedAdvMode)
-            .setTxPowerLevel(selectedTxPower)
-            .setConnectable(false)
-            .build()
-
-        // config payload (31 bytes MAX)
-        val data = AdvertiseData.Builder()
-            .setIncludeDeviceName(false)
-            .addServiceUuid(ParcelUuid(TEST_UUID))
-            .addServiceData(ParcelUuid(TEST_UUID), broadcastTokken.toByteArray(Charsets.UTF_8))
-            .build()
-
-        val advertiser = bleAdvertiser
-        if(advertiser == null){
-            // missions permission
-            throw SecurityException()
-        }
-
-        // removed try/catch so the button can catch it and reset the UI
-        // now it won't say startBroadcasting = true, while it's failing in bg
-        // fails when bluetooth is ON, but pemissions are revoked
-        bleAdvertiser?.startAdvertising(settings, data, advertiseCallback)
-    }
-
-    private fun stopBroadcasting(){
-        bleAdvertiser?.stopAdvertising(advertiseCallback)
-        isBroadcasting = false
-    }
-
-    private fun updateTxPower(newPower: Int){
-        selectedTxPower = newPower
-        if(isBroadcasting){
-            stopBroadcasting()
-            startBroadcasting()
-        }
-    }
-
-    private fun updateAdvMode(newMode: Int){
-        selectedAdvMode = newMode
-        if(isBroadcasting){
-            stopBroadcasting()
-            startBroadcasting()
-        }
-    }
-
-    private fun startScanning(){
-        resetLogs()
-
-        // ignore all the other peripherals, wake up only why it finds out TEST_UUID
-        val filter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(TEST_UUID))
-            .build()
-
-        // continous scanning
-        val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-            .build()
-
-        val scanner = bleScanner
-        if (scanner == null) {
-            throw SecurityException()
-        }
-
-        scanner.startScan(listOf(filter), settings, scanCallback)
-        isScanning = true
-    }
-
-    private fun stopScanning(){
-        bleScanner?.stopScan(scanCallback)
-        isScanning = false
-    }
-
-    private val scanCallback = object : ScanCallback(){
-        override fun onScanResult(callbackType: Int, result: ScanResult){
-            super.onScanResult(callbackType, result)
-
-            // signal strength (dbm)
-            val rssi = result.rssi
-
-            // calculate latency: 
-            // time when antenna recieved the packets
-            val antennaTime = result.timestampNanos
-
-            // current OS clock time
-            val osTime = SystemClock.elapsedRealtimeNanos()
-
-            // 1ms = 1,000,000ns
-            // .0 at the end - do floating division
-            val latencyMs = (osTime - antennaTime) / 1_000_000.0
-
-            // basic message extraction:
-            // search packet for labeled TEST_UUID
-            val serviceDataBytes = result.scanRecord?.serviceData?.get(ParcelUuid(TEST_UUID))
-
-            // val messageText: String
-            // if(serviceDataBytes != null){
-            //     messageText = String(serviceDataBytes, Charsets.UTF_8)
-            // } else {
-            //     messageText = "No Data"
-            // }
-            // kotlin shortcut way of doing the above if-else block:
-            // ?.let - take the variable as "it" and let me do something with it in {...}
-            // ?: - just an else block, if something goes null of left side
-            val messageText = serviceDataBytes?.let {String(it, Charsets.UTF_8)} ?: "No data"
-
-            // log math:
-            currentRssi = rssi
-            packetCount++
-            latestMessage = messageText
-
-            // average calc
-            rssiBuffer.add(rssi)
-            if(rssiBuffer.size > 10) rssiBuffer.removeAt(0)
-            avgRssi = rssiBuffer.average()
-
-            // highest and lowest signal
-            // !! - shut the fuck up this variable will never be null at the moment
-            // - because {minRssi == null} is already true, before the next condition, it will never do {50 < null}
-            if(minRssi == null || rssi < minRssi!!) minRssi = rssi
-            if(maxRssi == null || rssi > maxRssi!!) maxRssi = rssi
-
-            // average latency calc
-            latencyBuffer.add(latencyMs)
-            if(latencyBuffer.size > 10) latencyBuffer.removeAt(0)
-            avgLatencyMs = latencyBuffer.average()
-
-            val logEntry = "Signal: ${rssi} dBm | Latency: ${"%.2f".format(latencyMs)} ms\nData: $messageText"
-
-            // keep only 5 readings
-            if(scanLogs.size >= 5){
-                scanLogs.removeAt(0)
-            }
-            scanLogs.add(logEntry)
-        }
-
-        override fun onScanFailed(errorCode: Int){
-            println("Scan failed with error code: $errorCode")
-            isScanning = false
         }
     }
 }
