@@ -19,6 +19,10 @@ fun ColumnScope.BroadcasterScreen(
     isBroadcasting: Boolean,
     selectedTxPower: Int,
     selectedAdvMode: Int,
+    broadcastTokken: String = "TEACHER",
+    sessionStatus: String = "STANDBY",
+    isChildBeacon: Boolean = false,
+    electedChildId: String? = null,
     onToggleBroadcast: () -> Unit,
     onUpdateTxPower: (Int) -> Unit,
     onUpdateAdvMode: (Int) -> Unit,
@@ -30,24 +34,49 @@ fun ColumnScope.BroadcasterScreen(
         border = BorderStroke(1.dp, if(isBroadcasting) cyberGreen else cyberBorder),
         shape = RoundedCornerShape(8.dp)
     ){
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ){
-            Text(
-                text = if(isBroadcasting) "STATUS: TRANSMITTING" else "STATUS: STANDBY",
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold,
-                color = if(isBroadcasting) cyberGreen else cyberTextDim
-            )
-            Text(
-                text = if(isBroadcasting) "[ON AIR]" else "[OFFLINE]",
-                fontFamily = FontFamily.Monospace,
-                color = if(isBroadcasting) cyberGreen else cyberTextDim
-            )
+        Column(modifier = Modifier.padding(12.dp)){
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ){
+                Text(
+                    text = if(isBroadcasting) "STATUS: TRANSMITTING" else "STATUS: STANDBY",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = if(isBroadcasting) cyberGreen else cyberTextDim
+                )
+                Text(
+                    text = if(isBroadcasting) "[ON AIR: $broadcastTokken]" else "[OFFLINE]",
+                    fontFamily = FontFamily.Monospace,
+                    color = if(isBroadcasting) cyberGreen else cyberTextDim
+                )
+            }
+            if(sessionStatus.isNotEmpty() && sessionStatus != "STANDBY"){
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = ">> $sessionStatus",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = cyberCyan
+                )
+            }
+            if(isChildBeacon){
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "★ YOU ARE THE CHILD BEACON ★",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = cyberYellow
+                )
+            } else if(electedChildId != null){
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "CHILD BEACON: [$electedChildId]",
+                    fontFamily = FontFamily.Monospace,
+                    color = cyberGreenDim
+                )
+            }
         }
     }
 
@@ -108,7 +137,7 @@ fun ColumnScope.BroadcasterScreen(
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ){
                 val powers = listOf(
-                    "ULTRA" to AdvertiseSettings.ADVERTISE_TX_POWER_ULTRA_LOW,
+                    "ULOW" to AdvertiseSettings.ADVERTISE_TX_POWER_ULTRA_LOW,
                     "LOW" to AdvertiseSettings.ADVERTISE_TX_POWER_LOW,
                     "MED" to AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM,
                     "HIGH" to AdvertiseSettings.ADVERTISE_TX_POWER_HIGH

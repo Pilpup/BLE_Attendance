@@ -18,14 +18,19 @@ import com.attendance.ble.ui.theme.*
 @Composable
 fun ColumnScope.ScannerScreen(
     isScanning: Boolean,
-    currentRssi: Int?,
-    avgRssi: Double,
-    minRssi: Int?,
-    maxRssi: Int?,
-    packetCount: Int,
+    myDeviceID: String,
+    teacherRssi: Int?,
+    teacherAvgRssi: Double,
+    teacherPacketCount: Int,
+    childRssi: Int?,
+    childAvgRssi: Double,
+    childPacketCount: Int,
+    deltaRssi: Double?,
     avgLatencyMs: Double,
-    latestMessage: String,
     scanLogs: List<String>,
+    sessionStatus: String = "STANDBY",
+    isChildBeacon: Boolean = false,
+    electedChildId: String? = null,
     onToggleScan: () -> Unit,
     onResetLogs: () -> Unit,
     onCheckPermissions: () -> Unit
@@ -36,24 +41,51 @@ fun ColumnScope.ScannerScreen(
         border = BorderStroke(1.dp, if(isScanning) cyberGreen else cyberBorder),
         shape = RoundedCornerShape(8.dp)
     ){
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ){
-            Text(
-                text = if(isScanning) "STATUS: SCANNING_AIRWAVES" else "STATUS: RECEIVER_OFFLINE",
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.Bold,
-                color = if(isScanning) cyberGreen else cyberTextDim
-            )
-            Text(
-                text = if(isScanning) "[RX ACTIVE]" else "[IDLE]",
-                fontFamily = FontFamily.Monospace,
-                color = if(isScanning) cyberGreen else cyberTextDim
-            )
+        Column(modifier = Modifier.padding(12.dp)){
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ){
+                Text(
+                    text = if(isScanning) "STATUS: SCANNING_AIRWAVES" else "STATUS: RECEIVER_OFFLINE",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = if(isScanning) cyberGreen else cyberTextDim
+                )
+                Text(
+                    text = if(isScanning) "[RX ACTIVE]" else "[IDLE]",
+                    fontFamily = FontFamily.Monospace,
+                    color = if(isScanning) cyberGreen else cyberTextDim
+                )
+            }
+            if(sessionStatus.isNotEmpty() && sessionStatus != "STANDBY"){
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = ">> $sessionStatus",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = cyberCyan
+                )
+            }
+            if(isChildBeacon){
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "★ YOU ARE THE CHILD BEACON ★",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = cyberYellow
+                )
+            } else if(electedChildId != null){
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "CHILD BEACON: [$electedChildId] ACTIVE",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = cyberGreenDim
+                )
+            }
         }
     }
 
@@ -83,17 +115,18 @@ fun ColumnScope.ScannerScreen(
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = cyberSurface),
-        border = BorderStroke(1.dp, if(currentRssi != null) cyberGreen else cyberBorder),
+        border = BorderStroke(1.dp, if(teacherRssi != null || childRssi != null) cyberGreen else cyberBorder),
         shape = RoundedCornerShape(8.dp)
     ){
-        Column(modifier = Modifier.padding(16.dp)){
+        Column(modifier = Modifier.padding(14.dp)){
+            // Header with Device ID and Clear Buffer button
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ){
                 Text(
-                    text = "// TELEMETRY_HUD",
+                    text = "// RADAR: [$myDeviceID]",
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Bold,
                     color = cyberGreen
@@ -118,57 +151,101 @@ fun ColumnScope.ScannerScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
+            // 1. TEACHER BEACON STATS
+            Text(
+                text = "BEACON 1: TEACHER (PODIUM)",
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                color = if(teacherRssi != null) cyberGreen else cyberTextDim
+            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ){
                 Text(
-                    text = "RSSI: " + (currentRssi?.let { "$it dBm" } ?: "--"),
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold,
-                    color = if(currentRssi != null) cyberGreen else cyberTextDim
-                )
-                Text(
-                    text = "AVG: " + if(packetCount > 0) "%.1f dBm".format(avgRssi) else "--",
+                    text = "RSSI: " + (teacherRssi?.let { "$it dBm" } ?: "--"),
                     fontFamily = FontFamily.Monospace,
                     color = cyberText
                 )
+                Text(
+                    text = "AVG: " + if(teacherPacketCount > 0) "%.1f dBm".format(teacherAvgRssi) else "--",
+                    fontFamily = FontFamily.Monospace,
+                    color = cyberText
+                )
+                Text(
+                    text = "PKTS: $teacherPacketCount",
+                    fontFamily = FontFamily.Monospace,
+                    color = cyberTextDim
+                )
             }
 
-            Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // 2. CHILD BEACON STATS
+            Text(
+                text = "BEACON 2: CHILD (BACK)",
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                color = if(childRssi != null) cyberGreen else cyberTextDim
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ){
+                Text(
+                    text = "RSSI: " + (childRssi?.let { "$it dBm" } ?: "--"),
+                    fontFamily = FontFamily.Monospace,
+                    color = cyberText
+                )
+                Text(
+                    text = "AVG: " + if(childPacketCount > 0) "%.1f dBm".format(childAvgRssi) else "--",
+                    fontFamily = FontFamily.Monospace,
+                    color = cyberText
+                )
+                Text(
+                    text = "PKTS: $childPacketCount",
+                    fontFamily = FontFamily.Monospace,
+                    color = cyberTextDim
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // 3. DIFFERENTIAL ANALYSIS (DELTA)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ){
+                Text(
+                    text = "DELTA [T - C]:",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = cyberTextDim
+                )
+                Text(
+                    text = deltaRssi?.let { "%+.1f dB".format(it) } ?: "CALCULATING...",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = if(deltaRssi != null) cyberGreen else cyberTextDim
+                )
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ){
                 Text(
-                    text = "SPREAD: ${minRssi ?: "--"} / ${maxRssi ?: "--"} dBm",
+                    text = "SYS_LATENCY:",
                     fontFamily = FontFamily.Monospace,
                     color = cyberTextDim
                 )
                 Text(
-                    text = "PKTS: $packetCount",
-                    fontFamily = FontFamily.Monospace,
-                    color = cyberText
-                )
-            }
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ){
-                Text(
-                    text = "LATENCY: " + if(packetCount > 0) "%.2f ms".format(avgLatencyMs) else "--",
+                    text = "%.1f ms".format(avgLatencyMs),
                     fontFamily = FontFamily.Monospace,
                     color = cyberTextDim
-                )
-                Text(
-                    text = "MSG: \"$latestMessage\"",
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Bold,
-                    color = cyberGreen
                 )
             }
         }

@@ -1,6 +1,8 @@
 package com.attendance.ble
 
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.bluetooth.BluetoothAdapter
 import android.content.Context
 import android.content.Intent
@@ -56,6 +58,39 @@ class MainActivity : ComponentActivity(){
     // the ? tells compiler that this parameter is allowed to be null
     override fun onCreate(savedInstanceState: Bundle?){
         super.onCreate(savedInstanceState)
+
+        // AUTO-FLIP: When Teacher elects this phone, automatically become CHILD beacon
+        viewModel.onBecomeChild = {
+            bleScanner.stopScanning()
+            viewModel.broadcastTokken = "CHILD"
+            viewModel.isBroadcasterMode = true
+            bleAdvertiser.startBroadcasting(
+                viewModel.selectedAdvMode,
+                viewModel.selectedTxPower,
+                viewModel.broadcastTokken
+            )
+        }
+
+        // AUTO-RESPONSE: When student hears Teacher's ping, wait for teacher to enter scan mode, then report
+        viewModel.onPingReceived = { measuredRssi ->
+            viewModel.sessionStatus = "PING RCVD: PREPARING REPORT..."
+            // Wait 1.4s so Teacher is in scan mode (Phase 2), then broadcast REPORT for 2.5s
+            Handler(Looper.getMainLooper()).postDelayed({
+                bleScanner.stopScanning()
+                val reportToken = "REPORT:${viewModel.myDeviceID}:$measuredRssi"
+                viewModel.sessionStatus = "SENDING REPORT TO TEACHER..."
+                bleAdvertiser.startBroadcasting(
+                    viewModel.selectedAdvMode,
+                    viewModel.selectedTxPower,
+                    reportToken
+                )
+                Handler(Looper.getMainLooper()).postDelayed({
+                    bleAdvertiser.stopBroadcasting()
+                    viewModel.sessionStatus = "REPORT SENT: AWAITING ELECTION"
+                    bleScanner.startScanning()
+                }, 2500)
+            }, 1400)
+        }
 
         setContent {
             // screen context - physical address of the current screen
@@ -139,7 +174,7 @@ class MainActivity : ComponentActivity(){
                         Button(
                             onClick = {
                                 if(viewModel.isBroadcasterMode){
-                                    bleAdvertiser.stopBroadcasting()
+                                    stopAutoAttendanceSession()
                                     viewModel.isBroadcasterMode = false
                                 }
                             },
@@ -166,6 +201,10 @@ class MainActivity : ComponentActivity(){
                             isBroadcasting = viewModel.isBroadcasting,
                             selectedTxPower = viewModel.selectedTxPower,
                             selectedAdvMode = viewModel.selectedAdvMode,
+                            broadcastTokken = viewModel.broadcastTokken,
+                            sessionStatus = viewModel.sessionStatus,
+                            isChildBeacon = viewModel.isChildBeacon,
+                            electedChildId = viewModel.electedChildId,
                             onToggleBroadcast = {
                                 val hasPermissions = BleConstants.neededPermissions.all {perm ->
                                     ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
@@ -186,14 +225,10 @@ class MainActivity : ComponentActivity(){
                                         enableBluetoothLauncher.launch(enableBtIntent)
                                         return@BroadcasterScreen
                                     }
-                                    if(!viewModel.isBroadcasting){
-                                        bleAdvertiser.startBroadcasting(
-                                            viewModel.selectedAdvMode,
-                                            viewModel.selectedTxPower,
-                                            viewModel.broadcastTokken
-                                        )
+                                    if(!viewModel.isBroadcasting && !viewModel.isScanning){
+                                        startAutoAttendanceSession()
                                     } else{
-                                        bleAdvertiser.stopBroadcasting()
+                                        stopAutoAttendanceSession()
                                     }
                                 } catch (e : SecurityException){
                                     android.widget.Toast.makeText(
@@ -230,14 +265,19 @@ class MainActivity : ComponentActivity(){
                     } else {
                         ScannerScreen(
                             isScanning = viewModel.isScanning,
-                            currentRssi = viewModel.currentRssi,
-                            avgRssi = viewModel.avgRssi,
-                            minRssi = viewModel.minRssi,
-                            maxRssi = viewModel.maxRssi,
-                            packetCount = viewModel.packetCount,
+                            myDeviceID = viewModel.myDeviceID,
+                            teacherRssi = viewModel.teacherRssi,
+                            teacherAvgRssi = viewModel.teacherAvgRssi,
+                            teacherPacketCount = viewModel.teacherPacketCount,
+                            childRssi = viewModel.childRssi,
+                            childAvgRssi = viewModel.childAvgRssi,
+                            childPacketCount = viewModel.childPacketCount,
+                            deltaRssi = viewModel.deltaRssi,
                             avgLatencyMs = viewModel.avgLatencyMs,
-                            latestMessage = viewModel.latestMessage,
                             scanLogs = viewModel.scanLogs,
+                            sessionStatus = viewModel.sessionStatus,
+                            isChildBeacon = viewModel.isChildBeacon,
+                            electedChildId = viewModel.electedChildId,
                             onToggleScan = {
                                 val hasPermissions = BleConstants.neededPermissions.all { perm ->
                                     ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
@@ -281,5 +321,73 @@ class MainActivity : ComponentActivity(){
                 }
             }
         }
+    }
+
+    private val sessionHandler = Handler(Looper.getMainLooper())
+
+    private fun startAutoAttendanceSession(){
+        sessionHandler.removeCallbacksAndMessages(null)
+        viewModel.collectedReports.clear()
+        viewModel.electedChildId = null
+        viewModel.sessionStatus = "PHASE 1: PINGING CLASS..."
+
+        // Phase 1: Broadcast TEACHER_PING for 1.5 seconds
+        bleAdvertiser.startBroadcasting(
+            viewModel.selectedAdvMode,
+            viewModel.selectedTxPower,
+            "TEACHER_PING"
+        )
+
+        // Phase 2: After 1.5s, switch to scanning for 3.5s to collect student reports
+        sessionHandler.postDelayed({
+            bleAdvertiser.stopBroadcasting()
+            viewModel.sessionStatus = "PHASE 2: GATHERING REPORTS..."
+            bleScanner.startScanning()
+
+            // Phase 3: After 3.5s of scanning (at T=5.0s), pick the farthest student
+            sessionHandler.postDelayed({
+                bleScanner.stopScanning()
+
+                val farthest = viewModel.collectedReports.minByOrNull { it.rssi }
+                if(farthest != null){
+                    viewModel.electedChildId = farthest.id
+                    viewModel.sessionStatus = "PHASE 3: ELECTED [${farthest.id}]"
+                    // Broadcast election packet for 2.0 seconds
+                    bleAdvertiser.startBroadcasting(
+                        viewModel.selectedAdvMode,
+                        viewModel.selectedTxPower,
+                        "Child:${farthest.id}"
+                    )
+
+                    // Phase 4: After 2s of electing (at T=7.0s), switch to continuous TEACHER broadcast
+                    sessionHandler.postDelayed({
+                        bleAdvertiser.stopBroadcasting()
+                        viewModel.broadcastTokken = "TEACHER"
+                        viewModel.sessionStatus = "LIVE: TEACHER ACTIVE"
+                        bleAdvertiser.startBroadcasting(
+                            viewModel.selectedAdvMode,
+                            viewModel.selectedTxPower,
+                            viewModel.broadcastTokken
+                        )
+                    }, 2000)
+                } else {
+                    // Fallback if no student was detected: broadcast TEACHER continuously
+                    viewModel.broadcastTokken = "TEACHER"
+                    viewModel.sessionStatus = "FALLBACK: TEACHER ALONE"
+                    bleAdvertiser.startBroadcasting(
+                        viewModel.selectedAdvMode,
+                        viewModel.selectedTxPower,
+                        viewModel.broadcastTokken
+                    )
+                }
+            }, 3500)
+        }, 1500)
+    }
+
+    private fun stopAutoAttendanceSession(){
+        sessionHandler.removeCallbacksAndMessages(null)
+        bleAdvertiser.stopBroadcasting()
+        bleScanner.stopScanning()
+        viewModel.sessionStatus = "STANDBY"
     }
 }
