@@ -6,6 +6,8 @@ import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelUuid
 import android.os.SystemClock
 
@@ -23,27 +25,35 @@ class BleScanner(
     private val bleScanner get() = bluetoothManager.adapter?.bluetoothLeScanner
 
     fun startScanning(){
-        // ignore all the other peripherals, wake up only why it finds out TEST_UUID
+        // ignore all the other peripherals, wake up only when it finds our TEST_UUID in service data
         val filter = ScanFilter.Builder()
-            .setServiceUuid(ParcelUuid(BleConstants.TEST_UUID))
+            .setServiceData(ParcelUuid(BleConstants.TEST_UUID), null)
             .build()
 
-        // continous scanning
+        // continuous scanning
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
 
         val scanner = bleScanner
         if (scanner == null) {
-            throw SecurityException()
+            println("BleScanner: Bluetooth adapter or scanner is null (Bluetooth disabled or permissions missing)")
+            onScanningChanged(false)
+            return
         }
 
         scanner.startScan(listOf(filter), settings, scanCallback)
         onScanningChanged(true)
     }
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+
     fun stopScanning(){
-        bleScanner?.stopScan(scanCallback)
+        try {
+            bleScanner?.stopScan(scanCallback)
+        } catch (e: Exception) {
+            println("Error stopping BLE scan: ${e.message}")
+        }
         onScanningChanged(false)
     }
 
@@ -68,24 +78,18 @@ class BleScanner(
             // basic message extraction:
             // search packet for labeled TEST_UUID
             val serviceDataBytes = result.scanRecord?.serviceData?.get(ParcelUuid(BleConstants.TEST_UUID))
+            val messageText = serviceDataBytes?.let { String(it, Charsets.UTF_8) } ?: "No data"
 
-            // val messageText: String
-            // if(serviceDataBytes != null){
-            //     messageText = String(serviceDataBytes, Charsets.UTF_8)
-            // } else {
-            //     messageText = "No Data"
-            // }
-            // kotlin shortcut way of doing the above if-else block:
-            // ?.let - take the variable as "it" and let me do something with it in {...}
-            // ?: - just an else block, if something goes null of left side
-            val messageText = serviceDataBytes?.let {String(it, Charsets.UTF_8)} ?: "No data"
-
-            onPacketReceived(rssi, latencyMs, messageText)
+            mainHandler.post {
+                onPacketReceived(rssi, latencyMs, messageText)
+            }
         }
 
         override fun onScanFailed(errorCode: Int){
             println("Scan failed with error code: $errorCode")
-            onScanningChanged(false)
+            mainHandler.post {
+                onScanningChanged(false)
+            }
         }
     }
 }

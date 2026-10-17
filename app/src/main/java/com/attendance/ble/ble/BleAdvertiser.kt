@@ -41,26 +41,35 @@ class BleAdvertiser(
             .build()
 
         // config payload (31 bytes MAX)
+        // Note: Using addServiceData with 16-bit UUID only needs 4 bytes header, leaving 24 bytes for token.
+        // Omitting redundant addServiceUuid saves 4-18 bytes, preventing ADVERTISE_FAILED_DATA_TOO_LARGE.
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
-            .addServiceUuid(ParcelUuid(BleConstants.TEST_UUID))
             .addServiceData(ParcelUuid(BleConstants.TEST_UUID), broadcastTokken.toByteArray(Charsets.UTF_8))
             .build()
 
         val advertiser = bleAdvertiser
-        if(advertiser == null){
-            // missions permission
-            throw SecurityException()
+        if (advertiser == null) {
+            println("BleAdvertiser: BluetoothLeAdvertiser not available or permissions missing")
+            onBroadcastingChanged(false)
+            return
         }
 
-        // removed try/catch so the button can catch it and reset the UI
-        // now it won't say startBroadcasting = true, while it's failing in bg
-        // fails when bluetooth is ON, but pemissions are revoked
-        bleAdvertiser?.startAdvertising(settings, data, advertiseCallback)
+        // BLE legacy advertisement payload has a strict 31-byte limit.
+        val tokenBytes = broadcastTokken.toByteArray(Charsets.UTF_8)
+        if (tokenBytes.size > 24) {
+            println("Warning: broadcastTokken size (${tokenBytes.size} bytes) may exceed BLE payload limit")
+        }
+
+        advertiser.startAdvertising(settings, data, advertiseCallback)
     }
 
     fun stopBroadcasting(){
-        bleAdvertiser?.stopAdvertising(advertiseCallback)
+        try {
+            bleAdvertiser?.stopAdvertising(advertiseCallback)
+        } catch (e: Exception) {
+            println("Error stopping BLE advertisement: ${e.message}")
+        }
         onBroadcastingChanged(false)
     }
 }
