@@ -75,10 +75,20 @@ class BleScanner(
             // .0 at the end - do floating division
             val latencyMs = (osTime - antennaTime) / 1_000_000.0
 
-            // basic message extraction:
-            // search packet for labeled TEST_UUID
-            val serviceDataBytes = result.scanRecord?.serviceData?.get(ParcelUuid(BleConstants.TEST_UUID))
-            val messageText = serviceDataBytes?.let { String(it, Charsets.UTF_8) } ?: "No data"
+            // Search packet for labeled TEST_UUID
+            val scanRecord = result.scanRecord ?: return
+            val serviceDataBytes = scanRecord.getServiceData(ParcelUuid(BleConstants.TEST_UUID))
+                ?: scanRecord.serviceData?.entries?.firstOrNull { 
+                    it.key.uuid == BleConstants.TEST_UUID 
+                }?.value
+
+            // If the packet has no matching service data, it is ambient BLE noise / hardware filter leakage.
+            // Drop it immediately instead of passing "No data" to the app.
+            if (serviceDataBytes == null || serviceDataBytes.isEmpty()) {
+                return
+            }
+
+            val messageText = String(serviceDataBytes, Charsets.UTF_8)
 
             mainHandler.post {
                 onPacketReceived(rssi, latencyMs, messageText)

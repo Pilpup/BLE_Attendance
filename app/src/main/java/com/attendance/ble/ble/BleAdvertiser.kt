@@ -32,7 +32,7 @@ class BleAdvertiser(
         }
     }
 
-    fun startBroadcasting(selectedAdvMode: Int, selectedTxPower: Int, broadcastTokken: String){
+    fun startBroadcasting(selectedAdvMode: Int, selectedTxPower: Int, broadcastToken: String){
         // config radio power
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(selectedAdvMode)
@@ -42,10 +42,9 @@ class BleAdvertiser(
 
         // config payload (31 bytes MAX)
         // Note: Using addServiceData with 16-bit UUID only needs 4 bytes header, leaving 24 bytes for token.
-        // Omitting redundant addServiceUuid saves 4-18 bytes, preventing ADVERTISE_FAILED_DATA_TOO_LARGE.
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
-            .addServiceData(ParcelUuid(BleConstants.TEST_UUID), broadcastTokken.toByteArray(Charsets.UTF_8))
+            .addServiceData(ParcelUuid(BleConstants.TEST_UUID), broadcastToken.toByteArray(Charsets.UTF_8))
             .build()
 
         val advertiser = bleAdvertiser
@@ -56,9 +55,9 @@ class BleAdvertiser(
         }
 
         // BLE legacy advertisement payload has a strict 31-byte limit.
-        val tokenBytes = broadcastTokken.toByteArray(Charsets.UTF_8)
+        val tokenBytes = broadcastToken.toByteArray(Charsets.UTF_8)
         if (tokenBytes.size > 24) {
-            println("Warning: broadcastTokken size (${tokenBytes.size} bytes) may exceed BLE payload limit")
+            println("Warning: broadcastToken size (${tokenBytes.size} bytes) may exceed BLE payload limit")
         }
 
         advertiser.startAdvertising(settings, data, advertiseCallback)
