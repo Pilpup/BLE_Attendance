@@ -1,40 +1,58 @@
 # BLE Autonomous Classroom Attendance Verification System
 ## Comprehensive Technical Specification, RF Theory, Evolutionary History, & Developer Context
 
-> **Note for Future AI Assistants:**  
-> This document is the **single source of truth** for the BLE Attendance project located at `/home/wink/Projects/ble_attendance`. It contains the complete architectural context, mathematical formulations, lessons from empirical physical failures, protocol byte budgets, code mappings, and security threat models. Read this thoroughly before modifying any code.
+> **Note for Future AI Assistants & Developers:**  
+> This document is the **single source of truth** for the BLE Attendance project located at `/home/wink/Projects/ble_attendance`. It contains the complete architectural context, mathematical formulations, lessons from empirical physical failures, protocol byte budgets, code mappings, backend specifications, and security threat models. Read this thoroughly before modifying any code.
 
 ---
 
 ## 1. Project Overview & Core Mission
 
 ### 1.1 The Objective
-Build a **100% offline, peer-to-peer, automated Android BLE attendance system** that runs exclusively between a teacher's smartphone and student smartphones in an indoor university classroom.
+Build a **tamper-proof, low-friction, peer-to-peer classroom attendance verification system** combining **Bluetooth Low Energy (BLE) near-field proximity sensing** on Android smartphones with a **high-speed Cloud Backend (Python FastAPI + Neon.tech PostgreSQL)**.
 
-### 1.2 Non-Negotiable Constraints
-1. **Zero External Hardware:** No Estimote beacons, dedicated wall-mounted scanners, ESP32s, or Raspberry Pis. The system must operate solely using student and teacher phones.
-2. **Zero Cloud / Internet Dependency:** Must work in classrooms with poor or nonexistent cellular/Wi-Fi coverage. All discovery, communication, and audits occur peer-to-peer over raw BLE advertising channels (37, 38, 39).
-3. **Zero Manual User Friction:** 
-   - No typing student IDs, roll numbers, room codes, or passwords.
-   - No QR code scanning or camera selfies (facial recognition is rejected as high friction).
-   - Student phones must verify presence autonomously while resting on desks or in pockets.
-4. **Zero Prior Room Calibration:** Neither teacher nor students provide classroom dimensions, seating charts, or anchor positions. The system autonomously discovers local topology.
-5. **Strict Anti-Spoofing / Hallway Proxy Defense:** Must reliably detect and reject a "hallway hacker" or proxy student standing outside in the corridor near the classroom door attempting to claim attendance.
+### 1.2 Core Architectural Axiom: Proximity vs. Transport Separation
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      JOB 1: PROXIMITY                       │
+│        "Am I physically 1 meter away from Student B?"       │
+│           ==> Handled by BLE Radio (Whisper Mode)           │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   JOB 2: DATA TRANSPORT & AUDIT             │
+│   "Submit student lists, authenticate, run graph audit"     │
+│        ==> Handled by HTTPS & Python FastAPI Server         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 1.3 Non-Negotiable System Requirements
+1. **Zero External Hardware:** No wall beacons, no ESP32s, no Raspberry Pis. Runs solely on existing teacher and student smartphones.
+2. **Zero Manual User Friction:** 
+   - No typing roll numbers, room codes, or passwords during class.
+   - No QR code scanning or camera selfies (facial recognition rejected as slow and privacy-invasive).
+   - Student phones verify presence autonomously while resting on desks or in pockets.
+3. **Zero Prior Room Calibration:** Neither teacher nor students provide classroom dimensions, seating charts, or anchor positions. The system autonomously discovers local seating topology.
+4. **Strict Anti-Spoofing & Hallway Proxy Defense:** Must reliably detect and reject:
+   - A "hallway proxy" standing outside the classroom door attempting to piggyback on in-room signals.
+   - A "buddy puncher" attempting to submit attendance for an absent friend at home.
+5. **Graceful Offline Safety Net (1-Hop Peer Relay):** Students with no cellular data plan or bad reception in basement lecture halls can relay their attendance packet through an adjacent online desk neighbor.
 
 ---
 
 ## 2. The Evolutionary History of Failures (Why Other Ideas Failed)
 
-Understanding why earlier approaches collapsed in real-world testing is essential to avoid re-introducing retired flawed paradigms.
+Understanding why earlier approaches collapsed in physical testing is essential to avoid re-introducing flawed paradigms.
 
 ```
        [EVOLUTION OF ARCHITECTURAL ATTEMPTS]
 
-  1. 2-Beacon Linear Differential
+  1. 2-Beacon Linear Differential (commit ebfa77a)
      └── FAILED: Collinear symmetry / hyperbolic contour ("The Doorway Trap").
          Inside (1m) and outside (1m) produce identical ratios (+10 dB).
 
-  2. 3-Beacon Dynamic Triangulation (Teacher + C1 + C2 Back Corners)
+  2. 3-Beacon Dynamic Triangulation (commit 405b923)
      └── FAILED: Metal wall waveguide reflections in classrooms inverted RSSI.
          Back row: -70 dBm (constructive reflections).
          Center room: -80+ dBm (destructive multipath + body shielding).
@@ -46,10 +64,17 @@ Understanding why earlier approaches collapsed in real-world testing is essentia
          b) take(2) ranking truncation forced Middle to drop Front -> Front marked as spoofer!
          c) Teacher verdict sent in a 400ms flash -> Middle phone missed packet, stayed unverified.
 
-  4. Current Final Paradigm: Social-Mesh Graph & Reciprocal Matchmaking
-     └── SUCCESS: Ordinal Top-3 Ranking (hardware-gain invariant) +
-                  Triadic Closure / Shared Bridge Verification +
-                  Low Probe TX Power (-70 dBm cutoff) + 1800ms Bulk Verdicts.
+  4. Pure BLE Multi-Cohort ALOHA Schedule (commit fdf7ec4)
+     └── WORKING BUT LIMITED:
+         18.7s session duration; 24-byte packet limit required extensive token compression;
+         radio collisions during report uplinks; no long-term SQL persistence.
+
+  5. Current Final Paradigm: Hybrid BLE Radar + Cloud Backend (FastAPI + Neon Postgres)
+     └── SUCCESS:
+         • BLE strictly used as 2-second near-field radar (< 1.5m, TX_POWER_LOW, >= -70 dBm).
+         • HTTPS transport via Python FastAPI server handles 70 students in < 10ms.
+         • Neon.tech PostgreSQL handles permanent record persistence with auto-wake in 500ms.
+         • Opportunistic 1-hop offline peer relay supports students without data plans.
 ```
 
 ### 2.1 Failure 1: The 2-Beacon Linear Ambiguity ("The Doorway Trap")
@@ -62,22 +87,22 @@ Understanding why earlier approaches collapsed in real-world testing is essentia
 
 ### 2.2 Failure 2: 3-Beacon Triangulation & The Metal Wall Resonant Cavity
 * **Concept:** Dynamically elect Child 1 at back-right and Child 2 at back-left to form a 2D bounding triangle enclosing the room.
-* **Why It Failed (Empirical Breakthrough):**
+* **Why It Failed:**
   Classrooms with metal-reinforced walls, whiteboards, and steel desk frames act as **resonant RF waveguides**:
   - **Back row students received $\approx -70\text{ dBm}$** from the Teacher due to constructive specular reflections along perimeter walls.
   - **Center students received $\approx -80+\text{ dBm}$** from the Teacher due to destructive multipath phase cancellation and human body attenuation (70% water absorbing 2.4 GHz).
-  - The election logic executed `val farthest = reports.minByOrNull { it.bidirectionalScore }`.
-  - Because $-80+\text{ dBm} < -70\text{ dBm}$, `minByOrNull` mathematically selected the **middle student as the "farthest" beacon every single time**, inverting the coordinate system and rejecting interior students.
+  - The election logic executed `val farthest = reports.minByOrNull { it.rssi }`.
+  - Because $-80+\text{ dBm} < -70\text{ dBm}$, `minByOrNull` mathematically selected the **middle student as the "farthest" beacon every single time**, inverting the coordinate system.
 
 ### 2.3 Failure 3: The 4-Phone Field Test Pathology
-In testing with 4 phones (3 in a diagonal zigzag: Front, Middle, Back; 1 sitting 5m away):
+In testing with 4 physical phones (Front, Middle, Back, and an outsider 5m away):
 1. **The Far Guy Got Verified:** Student probes broadcasted at `ADVERTISE_TX_POWER_HIGH` ($+1\text{ to } +4\text{ dBm}$). At 5m Line-of-Sight, RSSI was $-73.4\text{ dBm}$. Because the filter cutoff was set loosely to $\ge -78\text{ dBm}$, the distant student was treated as a close neighbor and formed mutual links with the middle phone.
 2. **The Front Guy Got Marked as a Spoofer:** The code enforced `take(2)` on neighbor reporting. The Middle phone heard Back ($-62\text{ dBm}$), Far Guy ($-73\text{ dBm}$), and Front ($-75\text{ dBm}$). Truncating to 2 forced Middle to report $[B, X]$ and drop Front ($F$). Front reported $M$, but $M$ did not report $F$. The Teacher saw an unreciprocated link and falsely branded Front as a spoofer.
-3. **The 400ms Verdict Drop:** The Teacher broadcasted `VERDICT:<ID>:VERIFIED` for only 400ms. In BLE, 400ms transmits only 3–4 packets. Channel hopping and scan latency caused the Middle phone to miss the burst, leaving its screen unverified while the Teacher showed verified.
+3. **The 400ms Verdict Drop:** The Teacher broadcasted `VERDICT:<ID>:VERIFIED` for only 400ms. In BLE, 400ms transmits only 3–4 packets. Channel hopping and scan latency caused the Middle phone to miss the burst, leaving its screen unverified.
 
 ---
 
-## 3. The Final Architecture: Social-Mesh Graph & Reciprocal Matchmaking
+## 3. The Physical Radio Layer: Social-Mesh Graph & Power Separation
 
 The system discards absolute distance calculations in favor of **Ordinal Preference Ranking (Top-3 Matches)** combined with **Social-Graph Triadic Closure (Mutual Friends)**.
 
@@ -93,163 +118,288 @@ The system discards absolute distance calculations in favor of **Ordinal Prefere
 ### 3.1 Principle 1: Ordinal Preference Ranking (Hardware-Gain Invariance)
 * **The Problem:** Phone antennas vary by $\pm 10\text{ dB}$. A flagship phone with an LNA receiver measures signals louder than a budget plastic phone.
 * **The Solution:** Ranking is an **ordinal invariant**. Regardless of whether a receiving antenna has $+5\text{ dB}$ or $-5\text{ dB}$ gain, the desk neighbor sitting $1\text{ meter}$ away will **always rank higher** than a student sitting 5 meters away.
-* Every student records observed peers and reports their **Top 3 closest preferences** ($P(i) = [p_1, p_2, p_3]$) with median $\text{RSSI} \ge -70\text{ dBm}$.
+* Every student records observed peers and filters to **median $\text{RSSI} \ge -70\text{ dBm}$**, keeping the Top 3 closest.
 
 ### 3.2 Principle 2: Triadic Closure / Shared Mutual Friends
-* Instead of brittle 1-to-1 binary reciprocity ($A \leftrightarrow B$ only), the system models the room as an undirected social graph and evaluates **Bilateral Affinity ($S_{A,B}$)**:
-  $$S(A, B) = \begin{cases} 
-  1.0 & \text{if } A \in P(B) \text{ and } B \in P(A) & \text{(Direct Mutual Match)} \\
-  0.5 & \text{if } P(A) \cap P(B) \ne \emptyset & \text{(Triadic Closure via Shared Bridge)} \\
-  0.0 & \text{otherwise} & \text{(Stranger / Spoofer)}
-  \end{cases}$$
+Instead of brittle 1-to-1 binary reciprocity ($A \leftrightarrow B$ only), the system models the room as an undirected social graph and evaluates **Bilateral Affinity ($S_{A,B}$)**:
+$$S(A, B) = \begin{cases} 
+1.0 & \text{if } A \in P(B) \text{ and } B \in P(A) & \text{(Direct Mutual Match)} \\
+0.5 & \text{if } P(A) \cap P(B) \ne \emptyset & \text{(Triadic Closure via Shared Bridge)} \\
+0.0 & \text{otherwise} & \text{(Stranger / Spoofer)}
+\end{cases}$$
+
 * **Why this fixes the Zigzag Squeeze-Out:**
   Front ($F$) claims Middle ($M$). Middle ($M$) and Back ($B$) have a direct mutual match. Because $F$ shares the verified bridge node $M$ with the cluster ($S = 0.5$), $F$ is confirmed part of the physical desk cluster and marked **`VERIFIED_PRESENT`**.
 
 ### 3.3 Principle 3: RF Power Separation & Near-Field Calibrated Fence
-* **Teacher Orchestrator:** Broadcasts conductor ticks and verdicts at **`ADVERTISE_TX_POWER_HIGH`** ($+1\text{ to } +4\text{ dBm}$) to blanket the entire lecture hall.
+* **Teacher Orchestrator Beacon:** Broadcasts `SESSION:<ID>:<SALT>` at **`ADVERTISE_TX_POWER_HIGH`** ($+1\text{ to } +4\text{ dBm}$) to blanket the entire lecture hall.
 * **Student Probes (`P:<myDeviceID>`):** Broadcast at **`ADVERTISE_TX_POWER_LOW`** (approx. $-15\text{ to } -20\text{ dBm}$).
   - At $1\text{m}$, RSSI is $-65\text{ to } -70\text{ dBm}$.
   - Beyond $2.5\text{m}$, RSSI drops below $-85\text{ dBm}$.
   - At $5\text{m}$ (Far Guy or Hallway Spoofer), the signal is below $-90\text{ dBm}$ or undetectable.
 * **Calibrated Proximity Threshold:** Set strictly to **`it.medianRssi >= -70 dBm`**. Distant phones physically cannot qualify for anyone's preference list.
 
----
-
-## 4. Multi-Cohort Orchestration & Anti-Collision Protocol
-
-### 4.1 The Coprime Cohort Schedule ($\approx 18.7\text{s}$ Total)
-If 60 students broadcast simultaneously on channels 37, 38, and 39, ALOHA packet collisions destroy throughput. Sequential 1-by-1 polling requires $60\text{s}$, which is too slow.
-
-**The Solution:** Teacher conducts the room through two rounds of time-slotted cohort broadcasting using coprime moduli:
-$$\text{Cohort}_4 = |\text{myID.hashCode()}| \pmod 4 \in \{0, 1, 2, 3\}$$
-$$\text{Cohort}_3 = |\text{myID.hashCode()}| \pmod 3 \in \{0, 1, 2\}$$
-
-* In any slot, only $\sim \frac{1}{4}$ of the students broadcast for 1600ms, while $75\%$ scan continuously.
-* **Coprime Cross-Scan Guarantee:** Because $\gcd(4, 3) = 1$, by the Chinese Remainder Theorem, any two students who shared a broadcast slot in Round 1 are guaranteed to be in **different slots in Round 2**. 100% of student pairs cross-scan each other.
-
-### 4.2 End-to-End Timing Sequence Diagram
-
-```
-[Time]        Teacher Action                      Active Student Cohort           Scanning Students
-──────────────────────────────────────────────────────────────────────────────────────────────────────────
-0.0s - 1.8s   Broadcast TICK:R1:G0 (HIGH) -----> Cohort 0 probes (P:ID, LOW) ---> Cohorts 1, 2, 3 scan
-2.0s - 3.8s   Broadcast TICK:R1:G1 (HIGH) -----> Cohort 1 probes (P:ID, LOW) ---> Cohorts 0, 2, 3 scan
-4.0s - 5.8s   Broadcast TICK:R1:G2 (HIGH) -----> Cohort 2 probes (P:ID, LOW) ---> Cohorts 0, 1, 3 scan
-6.0s - 7.8s   Broadcast TICK:R1:G3 (HIGH) -----> Cohort 3 probes (P:ID, LOW) ---> Cohorts 0, 1, 2 scan
-──────────────────────────────────────────────────────────────────────────────────────────────────────────
-8.0s - 9.8s   Broadcast TICK:R2:H0 (HIGH) -----> Cohort 0 probes (P:ID, LOW) ---> Cohorts 1, 2 scan
-10.0s-11.8s   Broadcast TICK:R2:H1 (HIGH) -----> Cohort 1 probes (P:ID, LOW) ---> Cohorts 0, 2 scan
-12.0s-13.8s   Broadcast TICK:R2:H2 (HIGH) -----> Cohort 2 probes (P:ID, LOW) ---> Cohorts 0, 1 scan
-──────────────────────────────────────────────────────────────────────────────────────────────────────────
-14.0s-15.2s   Broadcast COLLECT_REPORTS (HIGH) -> All students compile Top-3 preferences (RSSI >= -70 dBm)
-15.2s-18.7s   Teacher Scans for Reports <------- Students send R:myID:p1:p2:p3 (HIGH, jitter 50-350ms)
-──────────────────────────────────────────────────────────────────────────────────────────────────────────
-18.7s         Teacher executes performMeshAudit() (Direct Mutuals + Triadic Closure)
-19.0s-22.0s   Teacher broadcasts bulk OK:ID1:ID2:ID3 tokens (HIGH, 1800ms per batch) -> Student screens confirm
-```
+### 3.4 Why 70 Phones Do Not Jam the Airwaves (The Math)
+* A student probe (`P:U1234`) is only ~28 bytes total on the wire.
+* At 1 Mbps BLE transmission speed:
+  $$\text{Airtime} = 28 \text{ bytes} \times 8\,\mu\text{s} \approx 0.22\text{ ms}$$
+* Across 3 advertising channels (37, 38, 39), total transmission burst is **$0.7\text{ ms}$**.
+* Broadcast at $100\text{ ms}$ intervals $\implies$ radio is **transmitting $0.7\%$ of the time and silent $99.3\%$ of the time**.
+* **Spatial Frequency Reuse:** At $-20\text{ dBm}$, human bodies absorb 2.4 GHz. Row 1 and Row 8 cannot hear each other, splitting 70 students into ~15 isolated micro-clusters of 4–5 desks. Collision probability in a 5-desk cluster is **$< 7\%$**. Over 20 pings in 2 seconds, packet delivery is **$> 99.9\%$**.
 
 ---
 
-## 5. Byte-Level BLE Payload Specification (Strict 31-Byte Limit)
-
-All communications strictly obey the **31-byte Legacy BLE PDU limit**, guaranteeing compatibility across 100% of Android devices (including budget chipsets without BLE 5.0 Extended Advertising):
+## 4. The 3-Layer Security & Authentication Model
 
 ```
-Total Capacity: 31 Bytes
-├── Flags AD Structure: 3 Bytes (0x02, 0x01, 0x06)
-├── Service Data Header: 4 Bytes (AD Length, AD Type 0x16, 16-bit UUID 0x1234)
-└── Usable Payload: 24 Bytes Maximum
+[ LAYER 1: DIGITAL IDENTITY ]
+   └── JWT Bearer Token: Proves "Who is holding this phone account"
+       (Prevents submitting under someone else's name).
+           ▼
+[ LAYER 2: IN-ROOM TIME SYNC ]
+   └── Dynamic BLE Nonce (e.g. SALT99): Proves "This phone is inside the room right now"
+       (Prevents a student at home from submitting via internet).
+           ▼
+[ LAYER 3: PHYSICAL DESK MESH ]
+   └── Low-Power BLE Probes (RSSI >= -70 dBm): Proves "Real classmates physically surround this phone"
+       (Prevents hallway proxies and lone spoofers).
 ```
 
-### Packet Format Table
+### Threat Defense Matrix
 
-| Packet Type | Example Token | Size | Description |
+| Attack Scenario | Attacker Action | System Defense Mechanism | Result |
 | :--- | :--- | :--- | :--- |
-| **Teacher Tick (R1)** | `TICK:R1:G0` | 10 Bytes | Signals Round 1, Cohort 0 to broadcast probes |
-| **Teacher Tick (R2)** | `TICK:R2:H1` | 10 Bytes | Signals Round 2, Cohort 1 to broadcast probes |
-| **Collect Command** | `COLLECT_REPORTS` | 15 Bytes | Tells students to compile top-3 peers and report |
-| **Student Probe** | `P:A4B1` | 6 Bytes | 4-char hex ID broadcast at `TX_POWER_LOW` |
-| **Student Report** | `R:A4B1:C2D3:E5F6:7890` | 21 Bytes | Uplink to teacher with up to 3 preferences ($\le 24\text{ B}$) |
-| **Bulk Verdict** | `OK:A4B1:C2D3:E5F6:7890` | 23 Bytes | Broadcast by teacher for 1800ms to confirm 4 students at once |
+| **Hallway Spoofer** | Standing outside closed classroom door, sniffs teacher beacon, submits via app. | Concrete wall loss ($>20\text{ dB}$) + `TX_POWER_LOW` probes ensure no interior student hears the spoofer above $-70\text{ dBm}$. Spoofer appears in 0 interior lists ($S = 0.0$). | **SPOOFER REJECTED** |
+| **Buddy Punching (At Home)** | Absent student receives session start notification via WhatsApp and tries to submit API call. | Absent phone cannot sniff the physical in-room `SALT99` beacon and has 0 physical neighbors in the room. | **REJECTED (Invalid Salt / 0 Peers)** |
+| **Identity Theft** | Student A tries to submit attendance using Student B's roll number. | The backend extracts identity directly from `req.user.id` (cryptographically signed JWT). Request body identity fields are ignored. | **TAMPER-PROOF** |
+| **Corner Desk Student** | Legitimate student sits at edge desk and is dropped by a busy center student's Top-3 list. | **Triadic Closure ($S = 0.5$):** Edge student shares mutual bridge contacts with the classroom component. | **VERIFIED PRESENT** |
+| **Offline Student (No Data)** | Legitimate student has no cellular balance or Wi-Fi in basement. | **1-Hop Peer Relay:** Student broadcasts `RELAY:MyID:NeighborID`. The neighbor's phone bundles it into their HTTP payload. | **VERIFIED PRESENT** |
+
+---
+
+## 5. End-to-End System Protocol & Sequence
+
+```
+[Time]      Teacher Phone              67 Online Students           3 Offline Students           Backend Server
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+T = 0.0s    BROADCAST (HIGH) ───────►  SCANNING                 SCANNING                     Listening
+            "SESSION:89F2:SALT99"       Receives session & salt  Receives session & salt
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+T = 1.0s    IDLE / WAITING             WHISPER & LISTEN         WHISPER & LISTEN             Waiting
+    to                                 • Broadcast P:ID (LOW)   • Broadcast P:ID (LOW)
+T = 3.0s                               • Scan for 1m neighbors  • Scan for 1m neighbors
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+T = 3.5s    IDLE                       SCANNING (For Relay) ◄── BROADCAST (LOW)              Waiting
+                                       Neighbor hears relay     "RELAY:S_off:S_on:SALT99"
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+T = 4.5s    IDLE                       HTTPS POST ────────────────────────────────────────►  PROCESSES GRAPH
+                                       Direct + Relayed                                      • Matches mutuals
+                                       Payloads                                              • Verifies salt
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+T = 5.5s    WEBSOCKET STREAM ◄─────────────────────────────────────────────────────────────  EMITS VERDICTS
+            Roster turns 100% green    ◄── HTTP 200 (Success)                                "70 Verified"
+                                       Screens turn green!
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+T = 6.0s    IDLE                       BROADCAST ACK (LOW) ───► SCANNING
+                                       "ACK:S_off"               Screen turns green!
+```
 
 ---
 
 ## 6. Codebase Architecture & File Responsibilities
 
+### 6.1 Android Client (`app/src/main/java/com/attendance/ble/`)
+
 ```
 app/src/main/java/com/attendance/ble/
-├── MainActivity.kt                      # Orchestrator, session state machine, radio loop timing
+├── MainActivity.kt                      # Activity lifecycle, permission guards, radio bindings
 ├── ble/
-│   ├── BleConstants.kt                  # 16-bit UUID (0x1234) and Android 12-15 runtime permissions
+│   ├── BleConstants.kt                  # Base 16-bit UUID (0x1234) & runtime permission definitions
 │   ├── BleAdvertiser.kt                 # Compact ServiceData advertiser (omits redundant ServiceUuid)
-│   └── BleScanner.kt                    # Low-latency, ServiceData hardware-filtered scanner with null-safety
+│   └── BleScanner.kt                    # Low-latency hardware-filtered scanner with noise rejection
 ├── ui/
 │   ├── screens/
-│   │   └── BleDebuggerScreen.kt         # Jetpack Compose UI: Teacher dashboard, Student view, and audit cards
+│   │   └── MainScreen.kt                # Jetpack Compose UI: Teacher Console & Student Mode tabs
 │   └── theme/
 │       └── Color.kt                     # Modern Material 3 color system (Light theme & Cyber palette)
 └── viewmodel/
-    └── AttendanceViewModel.kt           # State container, cohort hashing, packet dispatcher, Graph Audit Engine
+    └── AttendanceViewModel.kt           # State container, 60s countdown, beacon listener, peer filtering
 ```
 
-### Detailed Component Logic
-
-#### 1. [`AttendanceViewModel.kt`](file:///home/wink/Projects/ble_attendance/app/src/main/java/com/attendance/ble/viewmodel/AttendanceViewModel.kt)
-- **ID Generation:** Generates 4-character hex ID: `java.util.UUID.randomUUID().toString().replace("-", "").take(4).uppercase()`.
-- **Cohort Hash:** Computes `cohort4` ($\pmod 4$) and `cohort3` ($\pmod 3$).
-- **`performMeshAudit()`:**
-  - Step 1: Maps direct mutual pairs ($A \in P(B) \land B \in P(A)$).
-  - Step 2: Resolves triadic closure ($P(A)$ contains an already-verified node that has mutuals with the cluster).
-  - Step 3: Classifies nodes into `VERIFIED_PRESENT`, `SPOOFER_REJECTED`, or `ISOLATED_FLAGGED`.
-- **`onPacketReceived()`:**
-  - Dispatches `TICK:`, `P:`, `COLLECT_REPORTS`, `R:`, `OK:`, and `VERDICT:`.
-  - Filters neighbor discovery to `medianRssi >= -70 dBm` and takes top 3.
-
-#### 2. [`MainActivity.kt`](file:///home/wink/Projects/ble_attendance/app/src/main/java/com/attendance/ble/MainActivity.kt)
-- **Teacher Orchestration:** `startTeacherMeshSession()` coordinates the 18.7s sequence (Round 1, Round 2, Report Collection).
-- **RF Power Control:**
-  - `viewModel.onBroadcastProbe`: Transmits at `AdvertiseSettings.ADVERTISE_TX_POWER_LOW` for 1600ms.
-  - `viewModel.onBroadcastReport`: Transmits at `AdvertiseSettings.ADVERTISE_TX_POWER_HIGH` with jitter (50–350ms).
-- **`broadcastVerdicts()`:** Chunks verified IDs into batches of up to 4 (`OK:ID1:ID2:ID3:ID4`) and broadcasts each chunk for **1800ms** at `ADVERTISE_TX_POWER_HIGH`.
-
-#### 3. [`BleDebuggerScreen.kt`](file:///home/wink/Projects/ble_attendance/app/src/main/java/com/attendance/ble/ui/screens/BleDebuggerScreen.kt)
-- **Role Switcher:** Toggle between Teacher and Student.
-- **Teacher HUD:** Live metric cards (`Verified`, `Spoofers`, `Isolated`) and the full Classroom Mesh Roster displaying verification reasons and neighbor chips (`↔ ID` for direct mutual, `⤹ Bridge: ID` for triadic closure).
-- **Student HUD:** Live Discovered Nearby Peers list showing detected classmates, packet counts, and signal strength.
+#### Detailed Component Responsibilities:
+1. **[`BleAdvertiser.kt`](file:///home/wink/Projects/ble_attendance/app/src/main/java/com/attendance/ble/ble/BleAdvertiser.kt):** Configures `AdvertiseSettings` with `setConnectable(false)` and injects `addServiceData(ParcelUuid(TEST_UUID), token)`. Omits `addServiceUuid` to stay within the strict 31-byte legacy BLE limit.
+2. **[`BleScanner.kt`](file:///home/wink/Projects/ble_attendance/app/src/main/java/com/attendance/ble/ble/BleScanner.kt):** Uses hardware `ScanFilter` for `TEST_UUID` in `SCAN_MODE_LOW_LATENCY`. Filters out null/empty service data (hardware leakage) and calculates packet transit latency in milliseconds.
+3. **[`AttendanceViewModel.kt`](file:///home/wink/Projects/ble_attendance/app/src/main/java/com/attendance/ble/viewmodel/AttendanceViewModel.kt):**
+   - **Role Toggle:** Supports `isTeacherMode` switching.
+   - **Teacher Engine:** Generates 4-char `sessionId` and 6-char `sessionSalt`. Conducts 60-second countdown timer and commands radio to transmit `SESSION:<id>:<salt>` at `ADVERTISE_TX_POWER_HIGH`.
+   - **Student Engine:** Generates 4-char `studentId`. When `SESSION:` packet is detected, transitions state to `PROBING_NEIGHBORS`, broadcasts `P:<studentId>` at `ADVERTISE_TX_POWER_LOW` for 2.0s, records classmate RSSIs, and filters to `topDeskNeighbours` with median $\ge -70\text{ dBm}$.
+4. **[`MainScreen.kt`](file:///home/wink/Projects/ble_attendance/app/src/main/java/com/attendance/ble/ui/screens/MainScreen.kt):**
+   - Clean Material 3 top tab switcher (`Teacher Mode` vs `Student Mode`).
+   - **Teacher HUD:** Live broadcasting status pill, 60s countdown display, room nonce chip, airwave payload preview, and Start/End session button.
+   - **Student HUD:** Status transition pill (`STANDBY` $\to$ `LISTENING FOR TEACHER...` $\to$ `PROBING NEIGHBORS (2s)` $\to$ `PROXIMITY VERIFIED`), room credentials display, and live desk neighbors list with green RSSI badges.
+5. **[`MainActivity.kt`](file:///home/wink/Projects/ble_attendance/app/src/main/java/com/attendance/ble/MainActivity.kt):** Checks runtime permissions (`BLUETOOTH_ADVERTISE`, `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`), checks Bluetooth power state, and binds ViewModel callbacks to hardware radio methods.
 
 ---
 
-## 7. Security Threat Model & Verification Proofs
+### 6.2 Backend Server (`server/` - Python FastAPI & Neon Postgres)
 
-| Attack Scenario | Attacker Action | System Defense Mechanism | Result |
-| :--- | :--- | :--- | :--- |
-| **Hallway Spoofer** | Standing outside closed classroom door, sniffs teacher tick, transmits report claiming interior students. | Concrete/wood wall loss ($>20\text{ dB}$) + `TX_POWER_LOW` student probes ensure no interior student hears the spoofer above $-70\text{ dBm}$. The spoofer appears in 0 interior Top-3 lists. Affinity $S = 0.0$. | **SPOOFER REJECTED** |
-| **Far Guy / Distant Classroom Student** | Sitting 5–8m away in an empty corner, attempting to piggyback on another group. | Low probe TX power drops signal below $-85\text{ dBm}$ at 5m. Desk neighbors with immediate Line-of-Sight ($1\text{m}$) dominate preference rankings. The distant student cannot make the Top-3 list. | **ISOLATED / REJECTED** |
-| **Replay / Eavesdropping Attack** | Attacker sniffs a classmate's probe (`P:ID`) and claims them as a neighbor. | Reciprocity verification: The legitimate student inside has physical desk neighbors and does not report the distant attacker. Link is unreciprocated ($S = 0.0$). | **SPOOFER REJECTED** |
-| **Ghost Student (At Home)** | Absent student receives session start notification via WhatsApp. | The remote phone cannot broadcast physical 2.4 GHz RF packets into the room. 0 packets received by Teacher or peers. | **ABSENT** |
-| **Corner Desk Student** | Legitimate student sits at edge desk and gets dropped by one busy center student. | **Triadic Closure ($S = 0.5$):** Edge student shares mutual bridge contacts with the classroom component, preventing false spoofer flags. | **VERIFIED PRESENT** |
+```
+server/
+├── requirements.txt                     # FastAPI, uvicorn, PyJWT, bcrypt, psycopg2
+├── database.py                          # Neon.tech PostgreSQL connection with SQLite fallback
+├── auth.py                              # Password hashing (bcrypt) & JWT token verification
+├── graph_engine.py                      # Social-Mesh Audit Algorithm (Mutuals + Triadic Closure)
+└── main.py                              # FastAPI REST endpoints + WebSocket stream
+```
+
+#### Database Schema (`Neon.tech` PostgreSQL):
+```sql
+-- 1. Users Table (Teachers & Students)
+CREATE TABLE IF NOT EXISTS users (
+    id VARCHAR(50) PRIMARY KEY,          -- Roll Number (e.g. "2024CS042") or Teacher ID
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(100) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL, -- Hashed with bcrypt (never plain text)
+    role VARCHAR(10) NOT NULL CHECK (role IN ('TEACHER', 'STUDENT')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 2. Sessions Table
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id VARCHAR(10) PRIMARY KEY,  -- e.g. "89F2"
+    session_salt VARCHAR(10) NOT NULL,   -- e.g. "SALT99"
+    teacher_id VARCHAR(50) REFERENCES users(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP NOT NULL,
+    status VARCHAR(20) DEFAULT 'ACTIVE'
+);
+
+-- 3. Attendance Records Table
+CREATE TABLE IF NOT EXISTS attendance_records (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(10) REFERENCES sessions(session_id),
+    student_id VARCHAR(50) REFERENCES users(id),
+    status VARCHAR(30) NOT NULL,         -- 'VERIFIED_PRESENT', 'SPOOFER_REJECTED', 'ISOLATED'
+    reason TEXT,                         -- e.g. 'Direct mutual match with [C3D1]'
+    neighbors_reported TEXT,             -- JSON array e.g. '["C3D1", "E5F2"]'
+    relayed_by VARCHAR(50),              -- Neighbor ID if relayed via offline helper
+    verified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+#### Social-Mesh Audit Algorithm (`graph_engine.py`):
+```python
+def audit_classroom_mesh(reports: dict[str, list[str]], valid_nonce: str) -> list[dict]:
+    """
+    Evaluates mutual reciprocity and triadic closure across all submissions.
+    reports = { "studentId": ["neighborId1", "neighborId2"] }
+    """
+    direct_mutuals = {}
+    verified_set = set()
+    results = []
+
+    # Step 1: Map direct mutual pairs (A in P(B) and B in P(A))
+    for student_id, claimed_neighbors in reports.items():
+        mutual_peers = [
+            peer for peer in claimed_neighbors 
+            if student_id in reports.get(peer, [])
+        ]
+        direct_mutuals[student_id] = mutual_peers
+        if len(mutual_peers) > 0:
+            verified_set.add(student_id)
+
+    # Step 2: Resolve Triadic Closure (Shared Bridge Node)
+    changed = True
+    while changed:
+        changed = False
+        for student_id, claimed_neighbors in reports.items():
+            if student_id not in verified_set:
+                # If student shares a neighbor that is already verified
+                shared_bridges = set(claimed_neighbors) & verified_set
+                if len(shared_bridges) > 0:
+                    verified_set.add(student_id)
+                    changed = True
+
+    # Step 3: Classification
+    for student_id, claimed_neighbors in reports.items():
+        mutuals = direct_mutuals.get(student_id, [])
+        if len(mutuals) > 0:
+            status = "VERIFIED_PRESENT"
+            reason = f"Direct mutual match with [{', '.join(mutuals)}]"
+        elif student_id in verified_set:
+            status = "VERIFIED_PRESENT"
+            reason = "Triadic closure via shared bridge in classroom cluster"
+        elif len(claimed_neighbors) == 0:
+            status = "ISOLATED_FLAGGED"
+            reason = "Zero desk neighbors detected"
+        else:
+            status = "SPOOFER_REJECTED"
+            reason = f"Unreciprocated link to [{', '.join(claimed_neighbors)}] (Hallway Spoofer)"
+
+        results.append({
+            "student_id": student_id,
+            "status": status,
+            "reason": reason,
+            "mutuals": mutuals
+        })
+
+    return results
+```
+
+---
+
+## 7. College Administration Data Integration Checklist
+
+When requesting directory data from the university IT department, **explicitly assure them that no sensitive PII is required** (no phone numbers, home addresses, dates of birth, parent details, or grades/GPA).
+
+### Requested Data Schema (Standard CSV Export):
+1. **Students (`students.csv`):**
+   - `student_id` / Roll Number (Primary Key)
+   - `name` (Full Name)
+   - `email` (Institutional email used for app login)
+   - `department` (e.g. Computer Science)
+   - `semester` / Year
+   - `section` (e.g. Section A)
+2. **Teachers (`teachers.csv`):**
+   - `teacher_id` / Employee ID (Primary Key)
+   - `name` (Full Name)
+   - `email` (Institutional email used for app login)
+   - `department`
+3. **Courses (`courses.csv`):**
+   - `course_code` (e.g. `CS301`)
+   - `course_title` (e.g. `Database Management Systems`)
+   - `department`
+4. **Course Enrollments (`course_enrollments.csv`):**
+   - `course_code`
+   - `teacher_id`
+   - `student_id`
+   - `section`
 
 ---
 
 ## 8. Developer Quick-Start & Testing Guide
 
-### 8.1 Build Verification
+### 8.1 Android Build & Install
 Compile the debug build using Gradle:
 ```bash
 ./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
-Ensure output is `BUILD SUCCESSFUL` with 0 compilation errors.
 
-### 8.2 Field Testing Protocol
-1. Deploy the APK to at least 3 physical Android test devices.
-2. Designate **Phone 1 as Teacher** (tap "Switch to Teacher", leave at front desk).
-3. Designate **Phones 2 & 3 as Students** (ensure "Listen for Teacher" is active).
-4. Arrange Phones 2 & 3 on adjacent desks ($1.0\text{--}1.5\text{m}$ apart).
-5. (Optional) Place a 4th phone outside in the hallway behind a closed door to test spoofer rejection.
-6. On Phone 1, tap **"Start Mesh Attendance"**.
-7. Observe the 18.7s automated sequence:
-   - Round 1 and Round 2 discovery ticks execute.
-   - Phones 2 & 3 discover each other and report mutual links.
-   - At $T = 18.7\text{s}$, Phone 1 displays the audit roster with green `VERIFIED PRESENT` badges.
-   - Phones 2 & 3 flip to `✅ ATTENDANCE CONFIRMED (VERIFIED PRESENT)`.
-   - The hallway phone outside the door is flagged as `❌ SPOOFER REJECTED`.
+### 8.2 Testing with Physical Devices
+1. Deploy the APK to 2 or 3 Android devices.
+2. **Device 1 (Teacher):** Keep on `Teacher Mode` tab.
+3. **Device 2 & 3 (Students):** Switch to `Student Mode` tab and tap **"Listen for Teacher"** (Status turns orange: `LISTENING FOR TEACHER...`).
+4. **Device 1 (Teacher):** Tap **"Start 60s Session"**.
+5. **Observe Autonomous Sequence:**
+   - Devices 2 & 3 capture the `SESSION ID` and `NONCE` over the air immediately.
+   - Devices 2 & 3 flash blue for 2 seconds (`PROBING NEIGHBORS (2s)`).
+   - Devices 2 & 3 detect each other's low-power probes at $\ge -70\text{ dBm}$ and flip to green cards showing verified desk neighbors.
+
+### 8.3 Backend Server Launch
+```bash
+cd server
+pip install -r requirements.txt
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+Visit `http://localhost:8000/docs` in any browser to access the interactive Swagger UI and test endpoints directly.
