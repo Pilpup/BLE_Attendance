@@ -19,6 +19,7 @@ import androidx.core.content.ContextCompat
 import com.attendance.ble.ble.BleAdvertiser
 import com.attendance.ble.ble.BleConstants
 import com.attendance.ble.ble.BleScanner
+import com.attendance.ble.network.ApiClient
 import com.attendance.ble.ui.screens.MainScreen
 import com.attendance.ble.viewmodel.AttendanceViewModel
 
@@ -116,6 +117,9 @@ class MainActivity : ComponentActivity() {
                     sessionSalt = viewModel.sessionSalt,
                     remainingSeconds = viewModel.remainingSeconds,
                     broadcastPayload = viewModel.currentBroadcastToken,
+                    finalizedRecords = viewModel.finalizedRecords,
+                    isCloudSyncing = viewModel.isCloudSyncing,
+                    cloudStatusMessage = viewModel.cloudStatusMessage,
                     onStartTeacherSession = {
                         checkAndExecute {
                             viewModel.startTeacherSession(durationSeconds = 60)
@@ -138,6 +142,16 @@ class MainActivity : ComponentActivity() {
                     onStopStudentScanning = {
                         viewModel.stopStudentScanning()
                     },
+                    // Auth & Server Props
+                    isLoggedIn = viewModel.authToken != null,
+                    userName = viewModel.currentUserName,
+                    userRole = viewModel.currentUserRole,
+                    isAuthLoading = viewModel.isAuthLoading,
+                    authErrorText = viewModel.authErrorText,
+                    serverUrl = ApiClient.baseUrl,
+                    onLogin = { email, pass -> viewModel.login(email, pass) },
+                    onLogout = { viewModel.logout() },
+                    onUpdateServerUrl = { url -> viewModel.setServerUrl(url) },
                     onRequestPermissions = {
                         permissionLauncher.launch(BleConstants.neededPermissions)
                     }

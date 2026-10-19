@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.security import get_current_user, require_teacher
+from app.core.security import get_current_user, require_student, require_teacher
 from app.database import get_db
 from app.models.attendance import AttendanceRecord, AttendanceSession, Course, User
 from app.schemas.attendance import (
@@ -16,10 +16,15 @@ from app.schemas.attendance import (
     MeshAuditRunRequest,
     SessionCreateRequest,
     SessionFinalizeRequest,
+    SubmitNeighborsRequest,
 )
 from app.services.graph_engine import audit_classroom_mesh
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
+
+# In-memory store for live peer reports submitted by students during active sessions
+live_session_reports: dict[uuid.UUID, dict[str, List[str]]] = {}
+
 
 # Mock context: auto-creates a test teacher + course so Swagger testing works
 # without JWT. Your teammate replaces `get_current_mock_teacher` with:
@@ -172,6 +177,38 @@ async def finalize_attendance_session(
 
 
 @router.post(
+    "/sessions/{session_id}/submit-neighbors",
+    status_code=status.HTTP_200_OK,
+)
+async def submit_student_neighbors(
+    session_id: uuid.UUID,
+    payload: SubmitNeighborsRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_student),
+):
+    """
+    Student uploads their Top-3 discovered desk neighbors via Wi-Fi/5G.
+    """
+    result = await db.execute(
+        select(AttendanceSession).where(AttendanceSession.id == session_id)
+    )
+    session_obj = result.scalars().first()
+    if not session_obj:
+        raise HTTPException(status_code=404, detail="Attendance session not found")
+    if session_obj.status != "ACTIVE":
+        raise HTTPException(status_code=400, detail="Attendance session is not active")
+
+    student_key = current_user.roll_number or str(current_user.id)
+    live_session_reports.setdefault(session_id, {})[student_key] = payload.neighbors
+
+    return {
+        "status": "success",
+        "student": student_key,
+        "recorded_neighbors": payload.neighbors,
+    }
+
+
+@router.post(
     "/sessions/{session_id}/audit-and-finalize",
     response_model=AttendanceSessionResponse,
 )
@@ -198,8 +235,12 @@ async def audit_and_finalize_session(
     if session_obj.status == "COMPLETED":
         raise HTTPException(status_code=400, detail="Session has already been finalized")
 
+    # merge cloud-submitted student reports with BLE teacher-collected reports
+    combined_reports = {**live_session_reports.pop(session_id, {}), **payload.reports}
+
     # execute social-graph audit engine
-    audit_results = audit_classroom_mesh(payload.reports)
+    audit_results = audit_classroom_mesh(combined_reports)
+
 
     verified_count = 0
     spoofer_count = 0

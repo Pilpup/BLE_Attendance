@@ -77,6 +77,14 @@ class MeshAuditRunRequest(BaseModel):
     )
 
 
+class SubmitNeighborsRequest(BaseModel):
+    neighbors: List[str] = Field(
+        ...,
+        description="Top-3 discovered peer IDs or roll numbers (median RSSI >= -70 dBm)"
+    )
+
+
+
 class AttendanceSessionResponse(BaseModel):
     id: UUID
     course_id: UUID

@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Network permission -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- Unified Permissions for both Broadcasting and Scanning -->
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <uses-permission 
@@ -13,8 +16,10 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
 
     <application
-        android:label="BLE Diagnostic"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        android:label="BLE Attendance"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar"
+        android:usesCleartextTraffic="true">
+
         
         <activity
             android:name=".MainActivity"

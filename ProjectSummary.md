@@ -132,20 +132,30 @@ $$S(A, B) = \begin{cases}
   Front ($F$) claims Middle ($M$). Middle ($M$) and Back ($B$) have a direct mutual match. Because $F$ shares the verified bridge node $M$ with the cluster ($S = 0.5$), $F$ is confirmed part of the physical desk cluster and marked **`VERIFIED_PRESENT`**.
 
 ### 3.3 Principle 3: RF Power Separation & Near-Field Calibrated Fence
-* **Teacher Orchestrator Beacon:** Broadcasts `SESSION:<ID>:<SALT>` at **`ADVERTISE_TX_POWER_HIGH`** ($+1\text{ to } +4\text{ dBm}$) to blanket the entire lecture hall.
-* **Student Probes (`P:<myDeviceID>`):** Broadcast at **`ADVERTISE_TX_POWER_LOW`** (approx. $-15\text{ to } -20\text{ dBm}$).
-  - At $1\text{m}$, RSSI is $-65\text{ to } -70\text{ dBm}$.
+* **Teacher Orchestrator Beacon:** Broadcasts `S:<SESSION_ID>:<SALT>` (13 bytes) at **`ADVERTISE_TX_POWER_HIGH`** ($+1\text{ to } +4\text{ dBm}$) to blanket the lecture hall.
+* **Student Probes:** Broadcast at **`ADVERTISE_TX_POWER_LOW`** (approx. $-15\text{ to } -20\text{ dBm}$) using the 8-byte fixed-width format `[SESSION_ID (4)][SELF_ID (4)]`.
+  - At $1\text{m}$, RSSI is $-60\text{ to } -68\text{ dBm}$.
   - Beyond $2.5\text{m}$, RSSI drops below $-85\text{ dBm}$.
-  - At $5\text{m}$ (Far Guy or Hallway Spoofer), the signal is below $-90\text{ dBm}$ or undetectable.
-* **Calibrated Proximity Threshold:** Set strictly to **`it.medianRssi >= -70 dBm`**. Distant phones physically cannot qualify for anyone's preference list.
+  - At $5\text{m}$ (Far Guy or Hallway Spoofer), signal is below $-90\text{ dBm}$ or undetectable.
+* **Calibrated Proximity Threshold:** Set strictly to **`medianRssi >= -70 dBm`**. Distant phones physically cannot qualify for anyone's preference list.
 
-### 3.4 Why 70 Phones Do Not Jam the Airwaves (The Math)
-* A student probe (`P:U1234`) is only ~28 bytes total on the wire.
-* At 1 Mbps BLE transmission speed:
-  $$\text{Airtime} = 28 \text{ bytes} \times 8\,\mu\text{s} \approx 0.22\text{ ms}$$
-* Across 3 advertising channels (37, 38, 39), total transmission burst is **$0.7\text{ ms}$**.
-* Broadcast at $100\text{ ms}$ intervals $\implies$ radio is **transmitting $0.7\%$ of the time and silent $99.3\%$ of the time**.
-* **Spatial Frequency Reuse:** At $-20\text{ dBm}$, human bodies absorb 2.4 GHz. Row 1 and Row 8 cannot hear each other, splitting 70 students into ~15 isolated micro-clusters of 4–5 desks. Collision probability in a 5-desk cluster is **$< 7\%$**. Over 20 pings in 2 seconds, packet delivery is **$> 99.9\%$**.
+### 3.4 The Fixed-Width 24-Byte Packet Protocol
+Legacy BLE advertising reserves 7 bytes for headers, leaving **strictly 24 bytes** of user payload. We eliminate string splitters and delimiters, using positional fixed-width encoding:
+
+| Packet Type | Wire Format | Byte Size | Transmitter | Power Level | Purpose |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Teacher Beacon** | `S:<SESSION_ID>:<SALT>` | **13 bytes** | Teacher | `TX_POWER_HIGH` | Starts room window, syncs time OTP |
+| **Student Probe** | `[SESSION_ID (4)][SELF_ID (4)]` | **8 bytes** | Student | `TX_POWER_LOW` | 2-second near-field desk whisper |
+| **Offline Relay Voucher** | `[SESSION_ID (4)][SELF_ID (4)][N1 (4)][N2 (4)][N3 (4)]` | **12–20 bytes** | Offline Student | `TX_POWER_HIGH` | Passes mutual proof to online neighbors |
+| **Teacher Air Verdict** | `V:<SELF_ID (4)>:OK` | **11 bytes** | Teacher | `TX_POWER_HIGH` | Broadcasts verified list to offline phones |
+
+> [!NOTE]
+> Even with an offline student, self ID, and all 3 desk neighbors packed together, the total size is **20 bytes**, maintaining a **4-byte hardware safety margin** under the 24-byte ceiling.
+
+### 3.5 Cross-Classroom Isolation & Collision Defense
+To guarantee adjacent classrooms (e.g. CS501 in Room 101 and CS502 in Room 102) do not bleed into each other through drywall:
+1. **Radio Gate (0ms Packet Drop):** Every probe and voucher begins with the 4-char `SESSION_ID`. If an incoming radio wave does not match the active session ID, the phone's scanner drops it in 0ms before it ever reaches candidate lists.
+2. **Server Gate (Course Roster Validation):** When reports arrive at the FastAPI backend, the server matches all IDs against the course enrollment roster. Foreign students from another section cannot be credited with attendance.
 
 ---
 
@@ -157,51 +167,53 @@ $$S(A, B) = \begin{cases}
        (Prevents submitting under someone else's name).
            ▼
 [ LAYER 2: IN-ROOM TIME SYNC ]
-   └── Dynamic BLE Nonce (e.g. SALT99): Proves "This phone is inside the room right now"
+   └── Dynamic BLE Nonce (e.g. SALT): Proves "This phone is inside the room right now"
        (Prevents a student at home from submitting via internet).
            ▼
 [ LAYER 3: PHYSICAL DESK MESH ]
    └── Low-Power BLE Probes (RSSI >= -70 dBm): Proves "Real classmates physically surround this phone"
-       (Prevents hallway proxies and lone spoofers).
+       (Prevents hallway proxies, foreign-room bleeds, and lone spoofers).
 ```
 
 ### Threat Defense Matrix
 
 | Attack Scenario | Attacker Action | System Defense Mechanism | Result |
 | :--- | :--- | :--- | :--- |
-| **Hallway Spoofer** | Standing outside closed classroom door, sniffs teacher beacon, submits via app. | Concrete wall loss ($>20\text{ dB}$) + `TX_POWER_LOW` probes ensure no interior student hears the spoofer above $-70\text{ dBm}$. Spoofer appears in 0 interior lists ($S = 0.0$). | **SPOOFER REJECTED** |
-| **Buddy Punching (At Home)** | Absent student receives session start notification via WhatsApp and tries to submit API call. | Absent phone cannot sniff the physical in-room `SALT99` beacon and has 0 physical neighbors in the room. | **REJECTED (Invalid Salt / 0 Peers)** |
-| **Identity Theft** | Student A tries to submit attendance using Student B's roll number. | The backend extracts identity directly from `req.user.id` (cryptographically signed JWT). Request body identity fields are ignored. | **TAMPER-PROOF** |
-| **Corner Desk Student** | Legitimate student sits at edge desk and is dropped by a busy center student's Top-3 list. | **Triadic Closure ($S = 0.5$):** Edge student shares mutual bridge contacts with the classroom component. | **VERIFIED PRESENT** |
-| **Offline Student (No Data)** | Legitimate student has no cellular balance or Wi-Fi in basement. | **1-Hop Peer Relay:** Student broadcasts `RELAY:MyID:NeighborID`. The neighbor's phone bundles it into their HTTP payload. | **VERIFIED PRESENT** |
+| **Hallway Spoofer** | Standing outside door, sniffs beacon, submits via app. | Concrete wall loss ($>20\text{ dB}$) + `TX_POWER_LOW` ensures no interior student hears spoofer $\ge -70\text{ dBm}$. Appears in 0 interior lists ($S = 0.0$). | **SPOOFER REJECTED** |
+| **Buddy Punching (At Home)** | Absent student receives session start notification on WhatsApp and tries to submit API call. | Absent phone cannot sniff in-room `SALT` beacon and has 0 physical neighbors in the room. | **REJECTED (Invalid Salt / 0 Peers)** |
+| **Cross-Classroom Bleed** | Student in Room 102 hears whispers from Room 101 through thin wall. | **Session ID Prefix Filter:** Room 101 ignores all packets not starting with Room 101's 4-char session ID. | **DROPPED IN 0ms** |
+| **Identity Theft** | Student A tries to submit attendance using Student B's roll number. | Backend extracts identity directly from `req.user.id` (cryptographically signed JWT). Body overrides are ignored. | **TAMPER-PROOF** |
+| **Corner Desk Student** | Edge student dropped by a busy neighbor's Top-3 list. | **Triadic Closure ($S = 0.5$):** Edge student shares mutual bridge contacts with the classroom component. | **VERIFIED PRESENT** |
+| **Offline Student (No Data)** | Student has no cellular balance or Wi-Fi in lecture hall. | **1-Hop Peer Relay:** Student broadcasts 20-byte voucher `[SESS][SELF][N1][N2][N3]`. Online neighbor uploads it. Teacher broadcasts `V:[SELF]:OK` to turn student screen green. | **VERIFIED PRESENT** |
 
 ---
 
 ## 5. End-to-End System Protocol & Sequence
 
 ```
-[Time]      Teacher Phone              67 Online Students           3 Offline Students           Backend Server
+[Time]      Teacher Phone              Online Students (Wi-Fi/5G)   Offline Students (No Data)   Backend Server
 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-T = 0.0s    BROADCAST (HIGH) ───────►  SCANNING                 SCANNING                     Listening
-            "SESSION:89F2:SALT99"       Receives session & salt  Receives session & salt
+T = 0.0s    BROADCAST (HIGH) ───────►  SCANNING                     SCANNING                     Listening
+            "S:89F2:9381" (13B)         Receives session & salt      Receives session & salt
 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-T = 1.0s    IDLE / WAITING             WHISPER & LISTEN         WHISPER & LISTEN             Waiting
-    to                                 • Broadcast P:ID (LOW)   • Broadcast P:ID (LOW)
-T = 3.0s                               • Scan for 1m neighbors  • Scan for 1m neighbors
+T = 1.0s    IDLE / SCANNING            WHISPER PROBE (LOW)          WHISPER PROBE (LOW)          Waiting
+    to                                 • Broadcast "89F2A4B1" (8B)  • Broadcast "89F2C2D3" (8B)
+T = 3.0s                               • Scan for 1m desk neighbors • Scan for 1m desk neighbors
 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-T = 3.5s    IDLE                       SCANNING (For Relay) ◄── BROADCAST (LOW)              Waiting
-                                       Neighbor hears relay     "RELAY:S_off:S_on:SALT99"
+T = 3.2s    IDLE                       SCANNING (For Relay)  ◄───── BROADCAST VOUCHER (HIGH)     Waiting
+                                       Neighbor catches voucher     "89F2C2D3A4B1E5F6" (16B)
 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-T = 4.5s    IDLE                       HTTPS POST ────────────────────────────────────────►  PROCESSES GRAPH
-                                       Direct + Relayed                                      • Matches mutuals
-                                       Payloads                                              • Verifies salt
+T = 4.0s    IDLE                       HTTPS POST ─────────────────────────────────────────────► PROCESSES GRAPH
+                                       Direct + Relayed Vouchers                                • Direct Mutuals
+                                       Payloads via API                                         • Triadic Closure
 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-T = 5.5s    WEBSOCKET STREAM ◄─────────────────────────────────────────────────────────────  EMITS VERDICTS
-            Roster turns 100% green    ◄── HTTP 200 (Success)                                "70 Verified"
-                                       Screens turn green!
+T = 5.0s    POLL / WEBSOCKET ◄───────────────────────────────────────────────────────────────── EMITS VERDICTS
+            Roster turns 100% green    ◄── HTTP 200 (Success)                                    "70 Verified"
+                                       Online screens turn green!
 ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-T = 6.0s    IDLE                       BROADCAST ACK (LOW) ───► SCANNING
-                                       "ACK:S_off"               Screen turns green!
+T = 5.5s    BROADCAST VERDICTS (HIGH)─────────────────────────────────────────────────────────►  SCANNING
+            "V:C2D3:OK" (11B burst)                                                              Offline screen
+                                                                                                turns green!
 ```
 
 ---
