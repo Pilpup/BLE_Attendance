@@ -11,21 +11,60 @@ from app.models.attendance import Base
 from app.routers import attendance, auth
 
 
+SCHEMA_SYNC_STATEMENTS = [
+    # Users
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS roll_number VARCHAR(50);",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50) DEFAULT 'STUDENT';",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS department VARCHAR(50);",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS program VARCHAR(20);",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS semester INTEGER;",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS section VARCHAR(10);",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();",
+    "ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(50) USING role::text;",
+
+    # Courses
+    "ALTER TABLE courses ADD COLUMN IF NOT EXISTS course_code VARCHAR(30);",
+    "ALTER TABLE courses ADD COLUMN IF NOT EXISTS course_name VARCHAR(200);",
+    "ALTER TABLE courses ADD COLUMN IF NOT EXISTS teacher_id UUID;",
+
+    # Attendance Sessions
+    "ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS course_id UUID;",
+    "ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS teacher_id UUID;",
+    "ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS session_token VARCHAR(32);",
+    "ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'ACTIVE';",
+    "ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();",
+    "ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS ended_at TIMESTAMP WITH TIME ZONE;",
+    "ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS total_enrolled INTEGER DEFAULT 0;",
+    "ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS total_verified INTEGER DEFAULT 0;",
+    "ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS total_spoofers INTEGER DEFAULT 0;",
+    "ALTER TABLE attendance_sessions ALTER COLUMN status TYPE VARCHAR(50) USING status::text;",
+
+    # Attendance Records
+    "ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS session_id UUID;",
+    "ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS student_id UUID;",
+    "ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS ble_device_id VARCHAR(50);",
+    "ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'ABSENT';",
+    "ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS verification_method VARCHAR(50) DEFAULT 'NONE';",
+    "ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS affinity_score NUMERIC(3, 2) DEFAULT 0.00;",
+    "ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS bridge_device_id VARCHAR(50);",
+    "ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS reported_neighbors JSONB DEFAULT '[]'::jsonb;",
+    "ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS remarks TEXT;",
+    "ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS recorded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();",
+    "ALTER TABLE attendance_records ALTER COLUMN status TYPE VARCHAR(50) USING status::text;",
+    "ALTER TABLE attendance_records ALTER COLUMN verification_method TYPE VARCHAR(50) USING verification_method::text;",
+    "ALTER TABLE attendance_records ALTER COLUMN ble_device_id TYPE VARCHAR(50);",
+    "ALTER TABLE attendance_records ALTER COLUMN bridge_device_id TYPE VARCHAR(50);",
+]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Auto-initialize database tables if not already existing
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-            # Normalize existing PostgreSQL enum and length columns to VARCHAR(50)
-            for stmt in [
-                "ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(50) USING role::text;",
-                "ALTER TABLE attendance_sessions ALTER COLUMN status TYPE VARCHAR(50) USING status::text;",
-                "ALTER TABLE attendance_records ALTER COLUMN status TYPE VARCHAR(50) USING status::text;",
-                "ALTER TABLE attendance_records ALTER COLUMN verification_method TYPE VARCHAR(50) USING verification_method::text;",
-                "ALTER TABLE attendance_records ALTER COLUMN ble_device_id TYPE VARCHAR(50);",
-                "ALTER TABLE attendance_records ALTER COLUMN bridge_device_id TYPE VARCHAR(50);",
-            ]:
+            for stmt in SCHEMA_SYNC_STATEMENTS:
                 try:
                     await conn.execute(text(stmt))
                 except Exception:
@@ -88,14 +127,7 @@ async def debug_db():
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-            for stmt in [
-                "ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(50) USING role::text;",
-                "ALTER TABLE attendance_sessions ALTER COLUMN status TYPE VARCHAR(50) USING status::text;",
-                "ALTER TABLE attendance_records ALTER COLUMN status TYPE VARCHAR(50) USING status::text;",
-                "ALTER TABLE attendance_records ALTER COLUMN verification_method TYPE VARCHAR(50) USING verification_method::text;",
-                "ALTER TABLE attendance_records ALTER COLUMN ble_device_id TYPE VARCHAR(50);",
-                "ALTER TABLE attendance_records ALTER COLUMN bridge_device_id TYPE VARCHAR(50);",
-            ]:
+            for stmt in SCHEMA_SYNC_STATEMENTS:
                 try:
                     await conn.execute(text(stmt))
                 except Exception:
