@@ -1,6 +1,8 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+import traceback
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from sqlalchemy import text
 from app.config import settings
@@ -41,6 +43,17 @@ app = FastAPI(
     redoc_url="/redoc",
     lifespan=lifespan,
 )
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": str(exc),
+            "type": type(exc).__name__,
+            "traceback": traceback.format_exc(),
+        },
+    )
 
 app.add_middleware(
     CORSMiddleware,
@@ -87,7 +100,7 @@ async def debug_db():
                     await conn.execute(text(stmt))
                 except Exception:
                     pass
-            sess_rows = (await conn.execute(text("SELECT id, session_token, status, total_verified, total_spoofers, created_at FROM attendance_sessions ORDER BY created_at DESC LIMIT 5;"))).mappings().all()
+            sess_rows = (await conn.execute(text("SELECT id, session_token, status, total_verified, total_spoofers, started_at FROM attendance_sessions ORDER BY started_at DESC LIMIT 5;"))).mappings().all()
             rec_rows = (await conn.execute(text("SELECT id, session_id, ble_device_id, status, verification_method, recorded_at FROM attendance_records ORDER BY recorded_at DESC LIMIT 5;"))).mappings().all()
 
         return {

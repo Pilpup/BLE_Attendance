@@ -360,6 +360,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         if (res.isSuccessful && res.body() != null) {
                             backendSessionId = res.body()!!.id
                             cloudStatusMessage = "Cloud session active: $sessionId"
+                        } else {
+                            val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
+                            cloudStatusMessage = "Cloud session init error: HTTP ${res.code()}${if (!err.isNullOrBlank()) " - $err" else ""}"
                         }
                     }
                 } catch (e: Exception) {
@@ -408,7 +411,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             finalizedRecords = body.records ?: emptyList()
                             cloudStatusMessage = "Audit complete: ${body.totalVerified} verified, ${body.totalSpoofers} rejected"
                         } else {
-                            cloudStatusMessage = "Audit failed: Server returned HTTP ${res.code()}"
+                            val errBody = try { res.errorBody()?.string() } catch (_: Exception) { null }
+                            cloudStatusMessage = "Audit failed: HTTP ${res.code()}${if (!errBody.isNullOrBlank()) " - $errBody" else ""}"
                         }
                     }
                 } catch (e: Exception) {

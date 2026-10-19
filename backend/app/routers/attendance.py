@@ -62,7 +62,7 @@ async def _resolve_session(session_id: str, db: AsyncSession) -> Optional[Attend
 #   current_user: User = Depends(get_current_user)
 async def _get_or_create_mock_context(db: AsyncSession):
     """Ensures a default teacher and course exist for development testing."""
-    result = await db.execute(select(User).where(User.role == "TEACHER"))
+    result = await db.execute(select(User).limit(1))
     teacher = result.scalars().first()
     if not teacher:
         teacher = User(
@@ -149,8 +149,16 @@ async def create_attendance_session(
         if teacher_course:
             target_course_id = teacher_course.id
         else:
-            _, default_course = await _get_or_create_mock_context(db)
-            target_course_id = default_course.id
+            default_c = Course(
+                id=uuid.uuid4(),
+                course_code="CS101",
+                course_name="General Lecture & BLE Attendance",
+                teacher_id=current_user.id,
+            )
+            db.add(default_c)
+            await db.commit()
+            await db.refresh(default_c)
+            target_course_id = default_c.id
 
     session = AttendanceSession(
         id=uuid.uuid4(),
