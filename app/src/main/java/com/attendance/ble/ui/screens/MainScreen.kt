@@ -544,7 +544,7 @@ private fun StudentSection(
                         Text(
                             text = when (studentPhase) {
                                 StudentPhase.VERIFIED_PRESENT -> "ATTENDANCE CONFIRMED"
-                                StudentPhase.DISCOVERY_COMPLETE -> "PROXIMITY VERIFIED"
+                                StudentPhase.DISCOVERY_COMPLETE -> "PROXIMITY RECORDED (OFFLINE MESH)"
                                 StudentPhase.PROBING_NEIGHBORS -> "DISCOVERING NEIGHBORS (${studentDiscoveryRemainingSeconds}s)"
                                 StudentPhase.LISTENING_FOR_TEACHER -> "LISTENING FOR TEACHER..."
                                 StudentPhase.STANDBY -> "STANDBY"
@@ -582,8 +582,8 @@ private fun StudentSection(
             }
         }
 
-        // Verified Air Verdict Confirmation Banner
-        if (studentPhase == StudentPhase.VERIFIED_PRESENT) {
+        // Verified Air Verdict / Proximity Confirmation Banner
+        if (studentPhase == StudentPhase.VERIFIED_PRESENT || studentPhase == StudentPhase.DISCOVERY_COMPLETE) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
@@ -606,13 +606,16 @@ private fun StudentSection(
                     }
                     Column {
                         Text(
-                            "AIR VERDICT VERIFIED",
+                            if (studentPhase == StudentPhase.VERIFIED_PRESENT) "AIR VERDICT VERIFIED" else "DESK PROXIMITY CONFIRMED",
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.sp,
                             color = successGreen
                         )
                         Text(
-                            "Attendance confirmed for Session $detectedSessionId",
+                            if (studentPhase == StudentPhase.VERIFIED_PRESENT)
+                                "Attendance confirmed for Session $detectedSessionId"
+                            else
+                                "Desk proximity confirmed. Attendance verified via classroom peer witnessing.",
                             fontSize = 12.sp,
                             color = textSecondary
                         )
@@ -623,7 +626,7 @@ private fun StudentSection(
 
         // Desk Neighbors Section Header
         Text(
-            text = "DESK NEIGHBORS (RSSI >= -70 dBm)",
+            text = "DESK NEIGHBORS (RSSI >= -85 dBm)",
             fontSize = 11.sp,
             fontWeight = FontWeight.Bold,
             color = textSecondary

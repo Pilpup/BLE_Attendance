@@ -74,6 +74,30 @@ def test_mesh_audit_topology():
     assert res_map["E"]["affinity_score"] == 0.00
 
 
+def test_mesh_audit_offline_peer_witness():
+    # Online students A and B verify each other
+    # A and B both hear offline student OFF1 at desk range
+    # Hallway spoofer D claims OFF2, but D is unverified
+    reports = {
+        "A": ["B", "OFF1"],
+        "B": ["A", "OFF1"],
+        "D": ["OFF2"],
+    }
+    results = audit_classroom_mesh(reports)
+    res_map = {r["ble_device_id"]: r for r in results}
+
+    # OFF1 was witnessed by 2 verified peers (A and B)
+    assert "OFF1" in res_map
+    assert res_map["OFF1"]["status"] == "VERIFIED_PRESENT"
+    assert res_map["OFF1"]["verification_method"] == "PEER_WITNESS"
+    assert res_map["OFF1"]["affinity_score"] == 0.85
+    assert "OFF1" in res_map
+
+    # OFF2 was only claimed by spoofer D (who is not in verified_set)
+    # Therefore OFF2 is NOT verified
+    assert "OFF2" not in res_map
+
+
 def test_fastapi_routes_registered():
     paths = list(app.openapi()["paths"].keys())
     assert "/health" in paths

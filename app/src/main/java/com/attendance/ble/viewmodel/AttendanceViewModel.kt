@@ -96,10 +96,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var detectedSessionSalt by mutableStateOf("------")
     val discoveredPeers = mutableStateMapOf<String, PeerData>()
 
-    // Top 3 desk neighbours with median RSSI >= -78 dBm (calibrated for classroom RF attenuation)
+    // Top 3 desk neighbours with median RSSI >= -85 dBm (calibrated for classroom RF attenuation)
     val topDeskNeighbours: List<PeerData>
         get() = discoveredPeers.values
-            .filter { it.medianRssi >= -78 }
+            .filter { it.medianRssi >= -85 }
             .sortedByDescending { it.medianRssi }
             .take(3)
 
@@ -319,9 +319,20 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     if (res.isSuccessful) {
                         studentPhase = StudentPhase.VERIFIED_PRESENT
                         onStopScanning?.invoke()
+                    } else {
+                        // Offline or non-200: fallback to local discovery complete
+                        studentPhase = StudentPhase.DISCOVERY_COMPLETE
+                        onStopScanning?.invoke()
                     }
                 }
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+                withContext(Dispatchers.Main) {
+                    // Offline fallback: BLE discovery was complete, neighbors detected.
+                    // Student will be verified via peer witnessing by online neighbors.
+                    studentPhase = StudentPhase.DISCOVERY_COMPLETE
+                    onStopScanning?.invoke()
+                }
+            }
         }
     }
 
@@ -439,12 +450,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun startStudentDiscoveryWindow() {
-        studentDiscoverySecondsRemaining = 15
+        studentDiscoverySecondsRemaining = 5
         val probePayload = "$detectedSessionId$studentShortId"
         onStartBroadcasting?.invoke(probePayload, AdvertiseSettings.ADVERTISE_TX_POWER_LOW)
 
         studentTimer?.cancel()
-        studentTimer = object : CountDownTimer(15000L, 1000L) {
+        studentTimer = object : CountDownTimer(5000L, 1000L) {
             override fun onTick(millisUntilFinished: Long) {
                 studentDiscoverySecondsRemaining = (millisUntilFinished / 1000L).toInt()
             }

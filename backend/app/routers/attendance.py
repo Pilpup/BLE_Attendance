@@ -321,10 +321,18 @@ async def audit_and_finalize_session(
         elif item["status"] == "SPOOFER_REJECTED":
             spoofer_count += 1
 
+        resolved_student_id = user_map.get(device_id)
+        if not resolved_student_id:
+            user_stmt = select(User).where(User.roll_number.ilike(f"%{device_id}")).limit(1)
+            user_res = await db.execute(user_stmt)
+            matched_user = user_res.scalar_one_or_none()
+            if matched_user:
+                resolved_student_id = matched_user.id
+
         record = AttendanceRecord(
             id=uuid.uuid4(),
             session_id=session_obj.id,
-            student_id=user_map.get(device_id),
+            student_id=resolved_student_id,
             ble_device_id=device_id,
             status=item["status"],
             verification_method=item["verification_method"],

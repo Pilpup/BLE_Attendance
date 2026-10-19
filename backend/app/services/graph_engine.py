@@ -73,4 +73,24 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
             "mutuals": mutuals,
         })
 
+    # Step 4: Handle offline students witnessed by verified peers in class
+    # Any peer mentioned in a verified student's desk neighbors who did not submit a report directly
+    witness_map: Dict[str, List[str]] = {}
+    for reporter_id in verified_set:
+        for neighbor in reports.get(reporter_id, []):
+            if neighbor not in reports:
+                witness_map.setdefault(neighbor, []).append(reporter_id)
+
+    for offline_id, witnesses in witness_map.items():
+        results.append({
+            "ble_device_id": offline_id,
+            "status": "VERIFIED_PRESENT",
+            "verification_method": "PEER_WITNESS",
+            "affinity_score": 0.85 if len(witnesses) >= 2 else 0.70,
+            "bridge_device_id": witnesses[0] if witnesses else None,
+            "reported_neighbors": [],
+            "remarks": f"Offline student witnessed by verified neighbor(s) [{', '.join(witnesses)}]",
+            "mutuals": witnesses,
+        })
+
     return results
