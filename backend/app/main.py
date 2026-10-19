@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import attendance
+from app.routers import attendance, auth
 
 app = FastAPI(
     title="BLE Attendance Verification API",
@@ -21,9 +21,8 @@ app.add_middleware(
 
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(attendance.router, prefix=settings.API_V1_STR)
-# When JWT is ready, your teammate adds:
-# from app.routers import auth
-# app.include_router(auth.router, prefix=f"{settings.API_V1_STR}/auth", tags=["Auth"])
+app.include_router(auth.router, prefix=settings.API_V1_STR)
+
 
 
 @app.get("/health", tags=["System"])

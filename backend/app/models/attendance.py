@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -20,6 +20,10 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(120), nullable=False)
     roll_number: Mapped[Optional[str]] = mapped_column(String(50), unique=True, nullable=True, index=True)
     role: Mapped[str] = mapped_column(String(20), default="STUDENT")
+    department: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    program: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    semester: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    section: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)

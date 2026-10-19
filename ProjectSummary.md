@@ -241,16 +241,32 @@ app/src/main/java/com/attendance/ble/
 
 ---
 
-### 6.2 Backend Server (`server/` - Python FastAPI & Neon Postgres)
+### 6.2 Backend Server (`backend/` - Python FastAPI & Neon Postgres)
 
 ```
-server/
-├── requirements.txt                     # FastAPI, uvicorn, PyJWT, bcrypt, psycopg2
-├── database.py                          # Neon.tech PostgreSQL connection with SQLite fallback
-├── auth.py                              # Password hashing (bcrypt) & JWT token verification
-├── graph_engine.py                      # Social-Mesh Audit Algorithm (Mutuals + Triadic Closure)
-└── main.py                              # FastAPI REST endpoints + WebSocket stream
+backend/
+├── requirements.txt                     # FastAPI, uvicorn, SQLAlchemy (asyncio), asyncpg, PyJWT, bcrypt
+├── .env.example                         # Neon PostgreSQL connection template & JWT secrets
+├── app/
+│   ├── config.py                        # Pydantic Settings & environment config
+│   ├── database.py                      # Neon asyncpg engine with PgBouncer pooling
+│   ├── main.py                          # FastAPI application & router mounts
+│   ├── core/
+│   │   └── security.py                  # Bcrypt hashing, JWT generation, & FastAPI auth dependencies
+│   ├── models/
+│   │   └── attendance.py                # SQLAlchemy ORM: User, Course, AttendanceSession, AttendanceRecord
+│   ├── routers/
+│   │   ├── auth.py                      # Register, Login, & User Profile endpoints
+│   │   └── attendance.py                # Courses, Session lifecycle, & Mesh Audit endpoints
+│   ├── schemas/
+│   │   ├── auth.py                      # Pydantic request & response models for authentication
+│   │   └── attendance.py                # Pydantic models for sessions, records, & mesh audits
+│   └── services/
+│       └── graph_engine.py              # Social-Mesh Audit Algorithm (Mutuals + Triadic Closure)
+└── tests/
+    └── test_backend.py                  # Pytest verification suite
 ```
+
 
 #### Database Schema (`Neon.tech` PostgreSQL):
 ```sql

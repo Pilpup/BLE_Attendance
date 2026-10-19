@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # ─────────────────────────────────────────────
@@ -14,8 +14,7 @@ class CourseResponse(BaseModel):
     course_name: str
     teacher_id: UUID
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ─────────────────────────────────────────────
@@ -23,7 +22,7 @@ class CourseResponse(BaseModel):
 # ─────────────────────────────────────────────
 class BLEAuditRecordItem(BaseModel):
     ble_device_id: str = Field(
-        ..., min_length=4, max_length=4, description="4-char hex ID from Android (e.g. 'A4B1')"
+        ..., min_length=1, max_length=50, description="BLE ID or Roll Number (e.g. 'A4B1' or '22BCSE104')"
     )
     student_id: Optional[UUID] = Field(None, description="Linked user UUID (optional, set after JWT)")
     status: str = Field(
@@ -37,7 +36,7 @@ class BLEAuditRecordItem(BaseModel):
         description="1.00 = Direct Mutual, 0.50 = Triadic Bridge, 0.00 = Rogue/Absent"
     )
     bridge_device_id: Optional[str] = Field(
-        None, min_length=4, max_length=4,
+        None, min_length=1, max_length=50,
         description="Bridge node ID for TRIADIC_CLOSURE verifications"
     )
     reported_neighbors: List[str] = Field(
@@ -51,8 +50,7 @@ class AttendanceRecordResponse(BLEAuditRecordItem):
     session_id: UUID
     recorded_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # ─────────────────────────────────────────────
@@ -72,6 +70,13 @@ class SessionFinalizeRequest(BaseModel):
     )
 
 
+class MeshAuditRunRequest(BaseModel):
+    reports: dict[str, List[str]] = Field(
+        ...,
+        description="Classroom BLE discovery dictionary: {student_ble_id: [top_3_neighbor_ids]}"
+    )
+
+
 class AttendanceSessionResponse(BaseModel):
     id: UUID
     course_id: UUID
@@ -85,5 +90,4 @@ class AttendanceSessionResponse(BaseModel):
     total_spoofers: int
     records: Optional[List[AttendanceRecordResponse]] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
