@@ -103,14 +103,6 @@ class MainActivity : ComponentActivity() {
                 color = Color.White
             ) {
                 MainScreen(
-                    isTeacherMode = viewModel.isTeacherMode,
-                    onToggleMode = { isTeacher ->
-                        bleAdvertiser.stopBroadcasting()
-                        bleScanner.stopScanning()
-                        viewModel.stopTeacherSession()
-                        viewModel.stopStudentScanning()
-                        viewModel.toggleMode(isTeacher)
-                    },
                     // Teacher Props
                     isSessionActive = viewModel.isSessionActive,
                     sessionId = viewModel.sessionId,

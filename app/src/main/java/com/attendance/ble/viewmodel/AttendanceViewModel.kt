@@ -119,7 +119,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         currentUserName = prefs.getString("user_name", "Guest") ?: "Guest"
         currentUserRole = prefs.getString("user_role", "STUDENT") ?: "STUDENT"
         currentRollNumber = prefs.getString("roll_number", defaultLocalId) ?: defaultLocalId
-        isTeacherMode = (currentUserRole == "TEACHER") && prefs.getBoolean("is_teacher_mode", true)
+        isTeacherMode = (currentUserRole == "TEACHER" && authToken != null)
         val savedUrl = prefs.getString("server_url", null)
         if (!savedUrl.isNullOrBlank() && !savedUrl.contains("10.0.2.2")) {
             ApiClient.baseUrl = savedUrl

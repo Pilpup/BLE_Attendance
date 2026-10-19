@@ -34,9 +34,6 @@ import com.attendance.ble.viewmodel.StudentPhase
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
-    isTeacherMode: Boolean,
-    onToggleMode: (Boolean) -> Unit,
-
     // Teacher Props
     isSessionActive: Boolean,
     sessionId: String,
@@ -83,7 +80,6 @@ fun MainScreen(
     var showConfigDialog by remember { mutableStateOf(false) }
 
     val isTeacherPrivileged = isLoggedIn && userRole == "TEACHER"
-    val effectiveTeacherMode = isTeacherPrivileged && isTeacherMode
 
     if (showConfigDialog) {
         AuthServerDialog(
@@ -109,12 +105,12 @@ fun MainScreen(
                 title = {
                     Column {
                         Text(
-                            text = if (effectiveTeacherMode) "Teacher Console" else "Student Attendance",
+                            text = if (isTeacherPrivileged) "Teacher Console" else "Student Attendance",
                             fontWeight = FontWeight.Bold,
                             fontSize = 18.sp
                         )
                         Text(
-                            text = if (effectiveTeacherMode) {
+                            text = if (isTeacherPrivileged) {
                                 if (isLoggedIn) "$userName • Orchestrator" else "BLE Orchestrator"
                             } else {
                                 "Roll: $studentId • Proximity Node"
@@ -176,30 +172,7 @@ fun MainScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Mode Switcher Tab - ONLY VISIBLE IF USER HAS TEACHER PRIVILEGES!
             if (isTeacherPrivileged) {
-                TabRow(
-                    selectedTabIndex = if (effectiveTeacherMode) 0 else 1,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp)),
-                    containerColor = cardBg,
-                    divider = {}
-                ) {
-                    Tab(
-                        selected = effectiveTeacherMode,
-                        onClick = { onToggleMode(true) },
-                        text = { Text("Teacher Console", fontWeight = FontWeight.Bold, fontSize = 13.sp) }
-                    )
-                    Tab(
-                        selected = !effectiveTeacherMode,
-                        onClick = { onToggleMode(false) },
-                        text = { Text("Student Mode", fontWeight = FontWeight.Bold, fontSize = 13.sp) }
-                    )
-                }
-            }
-
-            if (effectiveTeacherMode) {
                 TeacherSection(
                     isSessionActive = isSessionActive,
                     sessionId = sessionId,
