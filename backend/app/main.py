@@ -54,3 +54,14 @@ async def root():
 @app.get("/health", tags=["System"])
 async def health_check():
     return {"status": "ok", "env": settings.APP_ENV}
+
+
+@app.get("/debug-db", tags=["System"])
+async def debug_db():
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        return {"status": "connected", "database": "tables verified successfully"}
+    except Exception as e:
+        return {"status": "connection_error", "error": str(e), "type": type(e).__name__}
+
