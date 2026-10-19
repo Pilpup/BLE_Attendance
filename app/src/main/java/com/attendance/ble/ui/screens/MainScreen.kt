@@ -6,8 +6,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -20,6 +22,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.attendance.ble.network.AttendanceRecordItem
+import com.attendance.ble.network.CourseResponse
+import com.attendance.ble.network.RegisterRequest
 import com.attendance.ble.ui.theme.*
 import com.attendance.ble.viewmodel.PeerData
 import com.attendance.ble.viewmodel.StudentPhase
@@ -39,8 +43,13 @@ fun MainScreen(
     finalizedRecords: List<AttendanceRecordItem> = emptyList(),
     isCloudSyncing: Boolean = false,
     cloudStatusMessage: String? = null,
+    availableCourses: List<CourseResponse> = emptyList(),
+    selectedCourse: CourseResponse? = null,
+    onSelectCourse: (CourseResponse) -> Unit = {},
+    onCreateCourse: (String, String) -> Unit = { _, _ -> },
     onStartTeacherSession: () -> Unit,
     onStopTeacherSession: () -> Unit,
+    onShareAttendance: () -> Unit = {},
 
     // Student Props
     studentId: String,
@@ -48,8 +57,10 @@ fun MainScreen(
     detectedSessionId: String,
     detectedSessionSalt: String,
     deskNeighbours: List<PeerData>,
+    studentDiscoveryRemainingSeconds: Int = 0,
     onStartStudentScanning: () -> Unit,
     onStopStudentScanning: () -> Unit,
+    onUpdateRollNumber: (String) -> Unit = {},
 
     // Auth & Server Props
     isLoggedIn: Boolean = false,
@@ -59,6 +70,7 @@ fun MainScreen(
     authErrorText: String? = null,
     serverUrl: String = "http://10.0.2.2:8000/",
     onLogin: (String, String) -> Unit = { _, _ -> },
+    onRegister: (RegisterRequest) -> Unit = {},
     onLogout: () -> Unit = {},
     onUpdateServerUrl: (String) -> Unit = {},
 
@@ -77,8 +89,10 @@ fun MainScreen(
             authErrorText = authErrorText,
             onDismiss = { showConfigDialog = false },
             onLogin = onLogin,
+            onRegister = onRegister,
             onLogout = onLogout,
-            onUpdateServerUrl = onUpdateServerUrl
+            onUpdateServerUrl = onUpdateServerUrl,
+            onUpdateRollNumber = onUpdateRollNumber
         )
     }
 
@@ -101,7 +115,7 @@ fun MainScreen(
                 },
                 actions = {
                     TextButton(onClick = { showConfigDialog = true }) {
-                        Text(if (isLoggedIn) userName else "Server / Login", fontSize = 13.sp)
+                        Text(if (isLoggedIn) userName else "ID / Server", fontSize = 13.sp)
                     }
                     TextButton(onClick = onRequestPermissions) {
                         Text("Permissions", fontSize = 13.sp)
@@ -152,8 +166,13 @@ fun MainScreen(
                     finalizedRecords = finalizedRecords,
                     isCloudSyncing = isCloudSyncing,
                     cloudStatusMessage = cloudStatusMessage,
+                    availableCourses = availableCourses,
+                    selectedCourse = selectedCourse,
+                    onSelectCourse = onSelectCourse,
+                    onCreateCourse = onCreateCourse,
                     onStartSession = onStartTeacherSession,
-                    onStopSession = onStopTeacherSession
+                    onStopSession = onStopTeacherSession,
+                    onShareAttendance = onShareAttendance
                 )
             } else {
                 StudentSection(
@@ -161,6 +180,7 @@ fun MainScreen(
                     detectedSessionId = detectedSessionId,
                     detectedSessionSalt = detectedSessionSalt,
                     deskNeighbours = deskNeighbours,
+                    studentDiscoveryRemainingSeconds = studentDiscoveryRemainingSeconds,
                     onStartScanning = onStartStudentScanning,
                     onStopScanning = onStopStudentScanning
                 )
@@ -169,6 +189,7 @@ fun MainScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TeacherSection(
     isSessionActive: Boolean,
@@ -179,8 +200,13 @@ private fun TeacherSection(
     finalizedRecords: List<AttendanceRecordItem>,
     isCloudSyncing: Boolean,
     cloudStatusMessage: String?,
+    availableCourses: List<CourseResponse>,
+    selectedCourse: CourseResponse?,
+    onSelectCourse: (CourseResponse) -> Unit,
+    onCreateCourse: (String, String) -> Unit,
     onStartSession: () -> Unit,
-    onStopSession: () -> Unit
+    onStopSession: () -> Unit,
+    onShareAttendance: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -259,6 +285,51 @@ private fun TeacherSection(
             }
         }
 
+        // Course Selector Row
+        if (!isSessionActive) {
+            var showAddCourseDialog by remember { mutableStateOf(false) }
+            if (showAddCourseDialog) {
+                AddCourseDialog(
+                    onDismiss = { showAddCourseDialog = false },
+                    onConfirm = { code, name ->
+                        onCreateCourse(code, name)
+                        showAddCourseDialog = false
+                    }
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("COURSE", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textSecondary)
+                    TextButton(
+                        onClick = { showAddCourseDialog = true },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Text("+ New Course", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = primaryBlue)
+                    }
+                }
+                if (availableCourses.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        availableCourses.forEach { course ->
+                            val isSelected = selectedCourse?.id == course.id
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = { onSelectCourse(course) },
+                                label = { Text(course.courseCode, fontWeight = FontWeight.Bold, fontSize = 12.sp) }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         // Cloud sync status banner
         if (cloudStatusMessage != null || isCloudSyncing) {
             Card(
@@ -287,12 +358,25 @@ private fun TeacherSection(
 
         // Audit Records List or Live Payload Card
         if (finalizedRecords.isNotEmpty()) {
-            Text(
-                text = "AUDIT RESULTS (${finalizedRecords.size} STUDENTS)",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                color = textSecondary
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "AUDIT RESULTS (${finalizedRecords.size} STUDENTS)",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = textSecondary
+                )
+                OutlinedButton(
+                    onClick = onShareAttendance,
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    modifier = Modifier.height(34.dp)
+                ) {
+                    Text("Export CSV", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
 
             LazyColumn(
                 modifier = Modifier
@@ -302,7 +386,7 @@ private fun TeacherSection(
             ) {
                 items(finalizedRecords) { rec ->
                     val isVerified = rec.status == "VERIFIED_PRESENT"
-                    val isSpoofer = rec.status == "FLAGGED_SPOOFER"
+                    val isSpoofer = rec.status == "FLAGGED_SPOOFER" || rec.status == "SPOOFER_REJECTED"
                     val badgeBg = if (isVerified) successGreenBg else if (isSpoofer) alertRedBg else warningOrangeBg
                     val badgeColor = if (isVerified) successGreen else if (isSpoofer) alertRed else warningOrange
 
@@ -406,6 +490,7 @@ private fun StudentSection(
     detectedSessionId: String,
     detectedSessionSalt: String,
     deskNeighbours: List<PeerData>,
+    studentDiscoveryRemainingSeconds: Int = 0,
     onStartScanning: () -> Unit,
     onStopScanning: () -> Unit
 ) {
@@ -459,7 +544,7 @@ private fun StudentSection(
                             text = when (studentPhase) {
                                 StudentPhase.VERIFIED_PRESENT -> "ATTENDANCE CONFIRMED"
                                 StudentPhase.DISCOVERY_COMPLETE -> "PROXIMITY VERIFIED"
-                                StudentPhase.PROBING_NEIGHBORS -> "PROBING NEIGHBORS (2s)"
+                                StudentPhase.PROBING_NEIGHBORS -> "DISCOVERING NEIGHBORS (${studentDiscoveryRemainingSeconds}s)"
                                 StudentPhase.LISTENING_FOR_TEACHER -> "LISTENING FOR TEACHER..."
                                 StudentPhase.STANDBY -> "STANDBY"
                             },
@@ -643,27 +728,61 @@ private fun AuthServerDialog(
     authErrorText: String?,
     onDismiss: () -> Unit,
     onLogin: (String, String) -> Unit,
+    onRegister: (RegisterRequest) -> Unit,
     onLogout: () -> Unit,
-    onUpdateServerUrl: (String) -> Unit
+    onUpdateServerUrl: (String) -> Unit,
+    onUpdateRollNumber: (String) -> Unit
 ) {
+    var isRegisterMode by remember { mutableStateOf(false) }
     var emailInput by remember { mutableStateOf("") }
     var passwordInput by remember { mutableStateOf("") }
+    var nameInput by remember { mutableStateOf("") }
+    var roleInput by remember { mutableStateOf("STUDENT") }
+    var rollNumberInput by remember { mutableStateOf(rollNumber) }
+    var departmentInput by remember { mutableStateOf("CSE") }
+    var facultyCodeInput by remember { mutableStateOf("") }
     var serverUrlInput by remember { mutableStateOf(serverUrl) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
-                text = if (isLoggedIn) "Account & Server" else "Sign In / Server",
+                text = if (isLoggedIn) "Account & Settings" else if (isRegisterMode) "Register New Account" else "Sign In & Settings",
                 fontWeight = FontWeight.Bold,
                 fontSize = 18.sp
             )
         },
         text = {
             Column(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                // Local Roll Number Config (Critical for Offline Mesh)
+                Text("STUDENT IDENTITY (BLE ROLL NUMBER)", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textSecondary)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = rollNumberInput,
+                        onValueChange = { rollNumberInput = it },
+                        label = { Text("Roll Number") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Button(
+                        onClick = { onUpdateRollNumber(rollNumberInput) },
+                        enabled = rollNumberInput.isNotBlank() && rollNumberInput.trim().uppercase() != rollNumber
+                    ) {
+                        Text("Save")
+                    }
+                }
+
+                HorizontalDivider(color = cardBorder)
+
                 if (isLoggedIn) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
@@ -677,21 +796,101 @@ private fun AuthServerDialog(
                         }
                     }
                 } else {
-                    OutlinedTextField(
-                        value = emailInput,
-                        onValueChange = { emailInput = it },
-                        label = { Text("Email") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = passwordInput,
-                        onValueChange = { passwordInput = it },
-                        label = { Text("Password") },
-                        singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    // Auth Mode Toggle: Sign In vs Register
+                    TabRow(
+                        selectedTabIndex = if (isRegisterMode) 1 else 0,
+                        modifier = Modifier.clip(RoundedCornerShape(8.dp)),
+                        containerColor = logBg,
+                        divider = {}
+                    ) {
+                        Tab(
+                            selected = !isRegisterMode,
+                            onClick = { isRegisterMode = false },
+                            text = { Text("Sign In", fontWeight = FontWeight.SemiBold, fontSize = 12.sp) }
+                        )
+                        Tab(
+                            selected = isRegisterMode,
+                            onClick = { isRegisterMode = true },
+                            text = { Text("Register", fontWeight = FontWeight.SemiBold, fontSize = 12.sp) }
+                        )
+                    }
+
+                    if (isRegisterMode) {
+                        OutlinedTextField(
+                            value = nameInput,
+                            onValueChange = { nameInput = it },
+                            label = { Text("Full Name") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = emailInput,
+                            onValueChange = { emailInput = it },
+                            label = { Text("Email") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = passwordInput,
+                            onValueChange = { passwordInput = it },
+                            label = { Text("Password (min 6 chars)") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        // Role Selector
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = roleInput == "STUDENT",
+                                onClick = { roleInput = "STUDENT" },
+                                label = { Text("Student") }
+                            )
+                            FilterChip(
+                                selected = roleInput == "TEACHER",
+                                onClick = { roleInput = "TEACHER" },
+                                label = { Text("Teacher") }
+                            )
+                        }
+
+                        OutlinedTextField(
+                            value = departmentInput,
+                            onValueChange = { departmentInput = it },
+                            label = { Text("Department (e.g. CSE)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        if (roleInput == "TEACHER") {
+                            OutlinedTextField(
+                                value = facultyCodeInput,
+                                onValueChange = { facultyCodeInput = it },
+                                label = { Text("Faculty Signup Passcode") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    } else {
+                        OutlinedTextField(
+                            value = emailInput,
+                            onValueChange = { emailInput = it },
+                            label = { Text("Email") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = passwordInput,
+                            onValueChange = { passwordInput = it },
+                            label = { Text("Password") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
                     if (authErrorText != null) {
                         Text(authErrorText, color = alertRed, fontSize = 12.sp)
                     }
@@ -722,6 +921,30 @@ private fun AuthServerDialog(
                     ) {
                         Text("Log Out")
                     }
+                } else if (isRegisterMode) {
+                    Button(
+                        onClick = {
+                            onUpdateServerUrl(serverUrlInput)
+                            onRegister(
+                                RegisterRequest(
+                                    name = nameInput,
+                                    email = emailInput,
+                                    password = passwordInput,
+                                    role = roleInput,
+                                    rollNumber = rollNumberInput,
+                                    department = departmentInput,
+                                    facultyCode = if (roleInput == "TEACHER") facultyCodeInput else null
+                                )
+                            )
+                        },
+                        enabled = !isAuthLoading && nameInput.isNotBlank() && emailInput.isNotBlank() && passwordInput.length >= 6
+                    ) {
+                        if (isAuthLoading) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White)
+                        } else {
+                            Text("Register")
+                        }
+                    }
                 } else {
                     Button(
                         onClick = {
@@ -749,3 +972,49 @@ private fun AuthServerDialog(
         }
     )
 }
+
+@Composable
+private fun AddCourseDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (code: String, name: String) -> Unit
+) {
+    var code by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Create New Course", fontWeight = FontWeight.Bold, fontSize = 18.sp) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { code = it },
+                    label = { Text("Course Code (e.g. CS401)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Course Name (e.g. Distributed Systems)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(code.trim().uppercase(), name.trim()) },
+                enabled = code.isNotBlank() && name.isNotBlank()
+            ) {
+                Text("Create")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+

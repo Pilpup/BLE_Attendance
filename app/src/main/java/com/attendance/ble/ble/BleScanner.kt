@@ -42,6 +42,10 @@ class BleScanner(
             return
         }
 
+        try {
+            scanner.stopScan(scanCallback)
+        } catch (_: Exception) {}
+
         scanner.startScan(listOf(filter), settings, scanCallback)
         onScanningChanged(true)
     }

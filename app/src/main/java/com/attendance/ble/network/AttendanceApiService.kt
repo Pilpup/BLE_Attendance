@@ -24,6 +24,12 @@ interface AttendanceApiService {
         @Header("Authorization") token: String
     ): Response<List<CourseResponse>>
 
+    @POST("api/v1/attendance/courses")
+    suspend fun createCourse(
+        @Header("Authorization") token: String,
+        @Body body: CourseCreateRequest
+    ): Response<CourseResponse>
+
     @POST("api/v1/attendance/sessions")
     suspend fun createSession(
         @Header("Authorization") token: String,

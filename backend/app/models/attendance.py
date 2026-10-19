@@ -57,7 +57,7 @@ class AttendanceSession(Base):
 
     # Relationship: one session → many records
     records: Mapped[List["AttendanceRecord"]] = relationship(
-        back_populates="session", cascade="all, delete-orphan"
+        back_populates="session", cascade="all, delete-orphan", lazy="selectin"
     )
 
 

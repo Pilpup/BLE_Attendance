@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -12,6 +12,7 @@ from app.database import get_db
 from app.models.attendance import AttendanceRecord, AttendanceSession, Course, User
 from app.schemas.attendance import (
     AttendanceSessionResponse,
+    CourseCreateRequest,
     CourseResponse,
     MeshAuditRunRequest,
     SessionCreateRequest,
@@ -24,6 +25,7 @@ router = APIRouter(prefix="/attendance", tags=["Attendance"])
 
 # In-memory store for live peer reports submitted by students during active sessions
 live_session_reports: dict[uuid.UUID, dict[str, List[str]]] = {}
+live_session_users: dict[uuid.UUID, dict[str, uuid.UUID]] = {}
 
 
 # Mock context: auto-creates a test teacher + course so Swagger testing works
@@ -70,6 +72,25 @@ async def list_courses(db: AsyncSession = Depends(get_db)):
     return result.scalars().all()
 
 
+@router.post("/courses", response_model=CourseResponse, status_code=status.HTTP_201_CREATED)
+async def create_course(
+    payload: CourseCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_teacher),
+):
+    """Teachers can register new courses to take attendance for."""
+    course = Course(
+        id=uuid.uuid4(),
+        course_code=payload.course_code.strip().upper(),
+        course_name=payload.course_name.strip(),
+        teacher_id=current_user.id,
+    )
+    db.add(course)
+    await db.commit()
+    await db.refresh(course)
+    return course
+
+
 @router.post(
     "/sessions",
     response_model=AttendanceSessionResponse,
@@ -85,15 +106,22 @@ async def create_attendance_session(
         course = course_res.scalars().first()
         if not course:
             raise HTTPException(status_code=404, detail="Course not found")
-        if course.teacher_id != current_user.id:
+        # Allow if it's the demo course CS401 or belongs to current teacher
+        if course.teacher_id != current_user.id and course.course_code != "CS401":
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You are not authorized to start attendance for this course",
             )
         target_course_id = course.id
     else:
-        _, default_course = await _get_or_create_mock_context(db)
-        target_course_id = default_course.id
+        # Check if this teacher already has a course, otherwise fallback to default
+        c_res = await db.execute(select(Course).where(Course.teacher_id == current_user.id))
+        teacher_course = c_res.scalars().first()
+        if teacher_course:
+            target_course_id = teacher_course.id
+        else:
+            _, default_course = await _get_or_create_mock_context(db)
+            target_course_id = default_course.id
 
     session = AttendanceSession(
         id=uuid.uuid4(),
@@ -107,6 +135,7 @@ async def create_attendance_session(
     db.add(session)
     await db.commit()
     await db.refresh(session)
+    session.records = []
     return session
 
 
@@ -181,30 +210,61 @@ async def finalize_attendance_session(
     status_code=status.HTTP_200_OK,
 )
 async def submit_student_neighbors(
-    session_id: uuid.UUID,
+    session_id: str,
     payload: SubmitNeighborsRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_student),
 ):
     """
     Student uploads their Top-3 discovered desk neighbors via Wi-Fi/5G.
+    Accepts either UUID or 4-char session token (e.g. '89F2').
     """
-    result = await db.execute(
-        select(AttendanceSession).where(AttendanceSession.id == session_id)
-    )
+    parsed_uuid = None
+    try:
+        parsed_uuid = uuid.UUID(session_id)
+    except ValueError:
+        pass
+
+    if parsed_uuid:
+        query = select(AttendanceSession).where(
+            or_(AttendanceSession.id == parsed_uuid, AttendanceSession.session_token == session_id)
+        )
+    else:
+        query = select(AttendanceSession).where(
+            AttendanceSession.session_token == session_id
+        )
+
+    result = await db.execute(query)
     session_obj = result.scalars().first()
     if not session_obj:
         raise HTTPException(status_code=404, detail="Attendance session not found")
     if session_obj.status != "ACTIVE":
         raise HTTPException(status_code=400, detail="Attendance session is not active")
 
-    student_key = current_user.roll_number or str(current_user.id)
-    live_session_reports.setdefault(session_id, {})[student_key] = payload.neighbors
+    target_session_id = session_obj.id
+    # Normalize student key to match 4-character BLE short ID
+    if current_user.roll_number and len(current_user.roll_number) >= 4:
+        student_key = current_user.roll_number[-4:].upper()
+    elif current_user.roll_number:
+        student_key = current_user.roll_number.upper()
+    else:
+        student_key = str(current_user.id).replace("-", "")[:4].upper()
+
+    normalized_neighbors = [n[-4:].upper() if len(n) >= 4 else n.upper() for n in payload.neighbors]
+
+    live_session_reports.setdefault(target_session_id, {})[student_key] = normalized_neighbors
+    live_session_users.setdefault(target_session_id, {})[student_key] = current_user.id
+
+    if payload.relayed_reports:
+        for offline_sender, offline_nbrs in payload.relayed_reports.items():
+            sender_key = offline_sender[-4:].upper() if len(offline_sender) >= 4 else offline_sender.upper()
+            norm_nbrs = [n[-4:].upper() if len(n) >= 4 else n.upper() for n in offline_nbrs]
+            live_session_reports[target_session_id].setdefault(sender_key, norm_nbrs)
 
     return {
         "status": "success",
         "student": student_key,
-        "recorded_neighbors": payload.neighbors,
+        "recorded_neighbors": normalized_neighbors,
     }
 
 
@@ -237,15 +297,16 @@ async def audit_and_finalize_session(
 
     # merge cloud-submitted student reports with BLE teacher-collected reports
     combined_reports = {**live_session_reports.pop(session_id, {}), **payload.reports}
+    user_map = live_session_users.pop(session_id, {})
 
     # execute social-graph audit engine
     audit_results = audit_classroom_mesh(combined_reports)
-
 
     verified_count = 0
     spoofer_count = 0
 
     for item in audit_results:
+        device_id = item["ble_device_id"].upper()
         if item["status"] == "VERIFIED_PRESENT":
             verified_count += 1
         elif item["status"] == "SPOOFER_REJECTED":
@@ -254,7 +315,8 @@ async def audit_and_finalize_session(
         record = AttendanceRecord(
             id=uuid.uuid4(),
             session_id=session_obj.id,
-            ble_device_id=item["ble_device_id"].upper(),
+            student_id=user_map.get(device_id),
+            ble_device_id=device_id,
             status=item["status"],
             verification_method=item["verification_method"],
             affinity_score=item["affinity_score"],

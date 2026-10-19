@@ -4,17 +4,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.config import settings
 
-# Neon uses PgBouncer in transaction pooling mode.
-# statement_cache_size=0 is REQUIRED to prevent "prepared statement does not exist" errors.
+is_postgres = settings.DATABASE_URL.startswith("postgresql")
+connect_args = {
+    "statement_cache_size": 0,
+    "prepared_statement_cache_size": 0,
+} if is_postgres else {}
+
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=(settings.APP_ENV == "development"),
-    connect_args={
-        "statement_cache_size": 0,
-        "prepared_statement_cache_size": 0,
-    },
+    connect_args=connect_args,
     pool_pre_ping=True,
-    pool_recycle=300,
+    pool_recycle=300 if is_postgres else -1,
 )
 
 AsyncSessionLocal = async_sessionmaker(

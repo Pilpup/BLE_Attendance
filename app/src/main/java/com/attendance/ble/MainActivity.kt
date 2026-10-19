@@ -109,7 +109,7 @@ class MainActivity : ComponentActivity() {
                         bleScanner.stopScanning()
                         viewModel.stopTeacherSession()
                         viewModel.stopStudentScanning()
-                        viewModel.isTeacherMode = isTeacher
+                        viewModel.toggleMode(isTeacher)
                     },
                     // Teacher Props
                     isSessionActive = viewModel.isSessionActive,
@@ -120,6 +120,10 @@ class MainActivity : ComponentActivity() {
                     finalizedRecords = viewModel.finalizedRecords,
                     isCloudSyncing = viewModel.isCloudSyncing,
                     cloudStatusMessage = viewModel.cloudStatusMessage,
+                    availableCourses = viewModel.availableCourses,
+                    selectedCourse = viewModel.selectedCourse,
+                    onSelectCourse = { course -> viewModel.selectedCourse = course },
+                    onCreateCourse = { code, name -> viewModel.createCourse(code, name) },
                     onStartTeacherSession = {
                         checkAndExecute {
                             viewModel.startTeacherSession(durationSeconds = 60)
@@ -128,12 +132,16 @@ class MainActivity : ComponentActivity() {
                     onStopTeacherSession = {
                         viewModel.stopTeacherSession()
                     },
+                    onShareAttendance = {
+                        shareAttendanceCsv(viewModel.generateCsvReport(), viewModel.sessionId)
+                    },
                     // Student Props
                     studentId = viewModel.studentId,
                     studentPhase = viewModel.studentPhase,
                     detectedSessionId = viewModel.detectedSessionId,
                     detectedSessionSalt = viewModel.detectedSessionSalt,
                     deskNeighbours = viewModel.topDeskNeighbours,
+                    studentDiscoveryRemainingSeconds = viewModel.studentDiscoverySecondsRemaining,
                     onStartStudentScanning = {
                         checkAndExecute {
                             viewModel.startStudentScanning()
@@ -141,6 +149,9 @@ class MainActivity : ComponentActivity() {
                     },
                     onStopStudentScanning = {
                         viewModel.stopStudentScanning()
+                    },
+                    onUpdateRollNumber = { roll ->
+                        viewModel.updateRollNumber(roll)
                     },
                     // Auth & Server Props
                     isLoggedIn = viewModel.authToken != null,
@@ -150,6 +161,7 @@ class MainActivity : ComponentActivity() {
                     authErrorText = viewModel.authErrorText,
                     serverUrl = ApiClient.baseUrl,
                     onLogin = { email, pass -> viewModel.login(email, pass) },
+                    onRegister = { req -> viewModel.register(req) },
                     onLogout = { viewModel.logout() },
                     onUpdateServerUrl = { url -> viewModel.setServerUrl(url) },
                     onRequestPermissions = {
@@ -158,6 +170,17 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    private fun shareAttendanceCsv(csvContent: String, sessionId: String) {
+        val sendIntent = Intent().apply {
+            action = Intent.ACTION_SEND
+            putExtra(Intent.EXTRA_TEXT, csvContent)
+            putExtra(Intent.EXTRA_SUBJECT, "BLE Attendance - Session $sessionId")
+            type = "text/plain"
+        }
+        val shareIntent = Intent.createChooser(sendIntent, "Export Attendance CSV")
+        startActivity(shareIntent)
     }
 
     override fun onDestroy() {

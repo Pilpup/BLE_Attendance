@@ -36,16 +36,16 @@ def test_jwt_generation_and_decoding():
 
 def test_mesh_audit_topology():
     # 5-student scenario:
-    # A & B are desk neighbors (Mutuals -> 1.0)
-    # C is next to B, but B dropped C due to Top-3 ranking. C claims B (Triadic closure through B -> 0.5)
-    # D is Hallway Spoofer claiming B (Unreciprocated -> 0.0)
-    # E is isolated in corner (0 neighbors -> 0.0)
+    # A & B are mutual desk neighbors (1.00)
+    # C is adjacent to A & B, claiming both (Triadic closure -> 0.50)
+    # D is Hallway Spoofer claiming only B without reciprocation (0.00)
+    # E is isolated in corner with 0 neighbors (0.00)
     reports = {
         "A": ["B"],
-        "B": ["A"],       # B only has A in its top neighbors
-        "C": ["B"],       # C claims B, but B didn't reciprocate C
-        "D": ["B"],       # D claims B from hallway
-        "E": [],          # E heard nobody
+        "B": ["A"],
+        "C": ["A", "B"],
+        "D": ["B"],
+        "E": [],
     }
 
     results = audit_classroom_mesh(reports)
@@ -60,28 +60,18 @@ def test_mesh_audit_topology():
     assert res_map["B"]["verification_method"] == "DIRECT_MUTUAL"
     assert res_map["B"]["affinity_score"] == 1.00
 
-    # Verify C is triadic closure via B
+    # Verify C is triadic closure via shared bridges
     assert res_map["C"]["status"] == "VERIFIED_PRESENT"
     assert res_map["C"]["verification_method"] == "TRIADIC_CLOSURE"
     assert res_map["C"]["affinity_score"] == 0.50
-    assert res_map["C"]["bridge_device_id"] == "B"
 
-    # Verify D is spoofer rejected (since C is already verified, D claiming B without being in cluster is spoofer)
-    # Note: in triadic loop, if D claims B and B is verified, D also shares bridge B.
-    # What distinguishes D (hallway spoofer) in real life is RF threshold (< -70 dBm cutoff).
-    # But for graph test, let's test stranger claiming unknown node:
-    stranger_reports = {
-        "A": ["B"],
-        "B": ["A"],
-        "ROGUE": ["UNKNOWN_X"],
-        "ISOLATED": [],
-    }
-    stranger_results = audit_classroom_mesh(stranger_reports)
-    s_map = {r["ble_device_id"]: r for r in stranger_results}
-    assert s_map["ROGUE"]["status"] == "SPOOFER_REJECTED"
-    assert s_map["ROGUE"]["affinity_score"] == 0.00
-    assert s_map["ISOLATED"]["status"] == "ISOLATED_FLAGGED"
-    assert s_map["ISOLATED"]["affinity_score"] == 0.00
+    # Verify D is spoofer rejected (unreciprocated single claim)
+    assert res_map["D"]["status"] == "SPOOFER_REJECTED"
+    assert res_map["D"]["affinity_score"] == 0.00
+
+    # Verify E is isolated
+    assert res_map["E"]["status"] == "ISOLATED_FLAGGED"
+    assert res_map["E"]["affinity_score"] == 0.00
 
 
 def test_fastapi_routes_registered():

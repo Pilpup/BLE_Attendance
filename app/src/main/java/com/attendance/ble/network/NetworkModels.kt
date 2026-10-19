@@ -36,6 +36,11 @@ data class TokenResponse(
 )
 
 // Course & Session models
+data class CourseCreateRequest(
+    @SerializedName("course_code") val courseCode: String,
+    @SerializedName("course_name") val courseName: String
+)
+
 data class CourseResponse(
     val id: String,
     @SerializedName("course_code") val courseCode: String,
@@ -73,5 +78,6 @@ data class MeshAuditRunRequest(
 
 // Payload when student submits their top neighbors directly
 data class SubmitNeighborsRequest(
-    val neighbors: List<String>
+    val neighbors: List<String>,
+    @SerializedName("relayed_reports") val relayedReports: Map<String, List<String>>? = null
 )

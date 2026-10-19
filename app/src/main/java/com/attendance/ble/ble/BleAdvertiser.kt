@@ -60,6 +60,10 @@ class BleAdvertiser(
             println("Warning: broadcastToken size (${tokenBytes.size} bytes) may exceed BLE payload limit")
         }
 
+        try {
+            advertiser.stopAdvertising(advertiseCallback)
+        } catch (_: Exception) {}
+
         advertiser.startAdvertising(settings, data, advertiseCallback)
     }
 

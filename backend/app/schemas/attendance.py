@@ -8,6 +8,11 @@ from pydantic import BaseModel, ConfigDict, Field
 # ─────────────────────────────────────────────
 # Course
 # ─────────────────────────────────────────────
+class CourseCreateRequest(BaseModel):
+    course_code: str = Field(..., min_length=2, max_length=20, description="e.g. CS401")
+    course_name: str = Field(..., min_length=2, max_length=100, description="e.g. Distributed Systems")
+
+
 class CourseResponse(BaseModel):
     id: UUID
     course_code: str
@@ -81,6 +86,10 @@ class SubmitNeighborsRequest(BaseModel):
     neighbors: List[str] = Field(
         ...,
         description="Top-3 discovered peer IDs or roll numbers (median RSSI >= -70 dBm)"
+    )
+    relayed_reports: Optional[dict[str, List[str]]] = Field(
+        default=None,
+        description="Vouchers collected from offline peers over BLE: {offline_student_id: [nbr1, nbr2, nbr3]}"
     )
 
 

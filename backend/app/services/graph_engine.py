@@ -25,7 +25,7 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
         for student_id, claimed_neighbors in reports.items():
             if student_id not in verified_set:
                 shared_bridges = set(claimed_neighbors) & verified_set
-                if len(shared_bridges) > 0:
+                if len(shared_bridges) >= 2:
                     verified_set.add(student_id)
                     bridge_map[student_id] = next(iter(shared_bridges))
                     changed = True
