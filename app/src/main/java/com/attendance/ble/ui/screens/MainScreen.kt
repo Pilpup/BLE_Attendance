@@ -3,6 +3,7 @@ package com.attendance.ble.ui.screens
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -20,6 +21,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.attendance.ble.network.AttendanceRecordItem
@@ -51,6 +53,7 @@ fun MainScreen(
     onStartTeacherSession: () -> Unit,
     onStopTeacherSession: () -> Unit,
     onShareAttendance: () -> Unit = {},
+    onResetSession: () -> Unit = {},
 
     // Student Props
     studentId: String,
@@ -79,6 +82,9 @@ fun MainScreen(
 ) {
     var showConfigDialog by remember { mutableStateOf(false) }
 
+    val isTeacherPrivileged = isLoggedIn && userRole == "TEACHER"
+    val effectiveTeacherMode = isTeacherPrivileged && isTeacherMode
+
     if (showConfigDialog) {
         AuthServerDialog(
             isLoggedIn = isLoggedIn,
@@ -103,23 +109,55 @@ fun MainScreen(
                 title = {
                     Column {
                         Text(
-                            text = if (isTeacherMode) "Teacher Console" else "Student Attendance",
+                            text = if (effectiveTeacherMode) "Teacher Console" else "Student Attendance",
                             fontWeight = FontWeight.Bold,
                             fontSize = 18.sp
                         )
                         Text(
-                            text = if (isTeacherMode) "BLE Beacon Orchestrator" else "ID: $studentId • Proximity Node",
+                            text = if (effectiveTeacherMode) {
+                                if (isLoggedIn) "$userName • Orchestrator" else "BLE Orchestrator"
+                            } else {
+                                "Roll: $studentId • Proximity Node"
+                            },
                             fontSize = 12.sp,
                             color = textSecondary
                         )
                     }
                 },
                 actions = {
-                    TextButton(onClick = { showConfigDialog = true }) {
-                        Text(if (isLoggedIn) userName else "ID / Server", fontSize = 13.sp)
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = if (isTeacherPrivileged) childPurpleBg else if (isLoggedIn) primaryBlueBg else logBg,
+                        border = BorderStroke(1.dp, if (isTeacherPrivileged) childPurple else if (isLoggedIn) primaryBlue else cardBorder),
+                        modifier = Modifier.clickable { showConfigDialog = true }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isLoggedIn) successGreen else textMuted)
+                            )
+                            Text(
+                                text = if (isLoggedIn) {
+                                    if (isTeacherPrivileged) "TEACHER" else "STUDENT"
+                                } else "GUEST",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isTeacherPrivileged) childPurple else if (isLoggedIn) primaryBlue else textSecondary
+                            )
+                        }
                     }
-                    TextButton(onClick = onRequestPermissions) {
-                        Text("Permissions", fontSize = 13.sp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    TextButton(
+                        onClick = onRequestPermissions,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text("Permissions", fontSize = 12.sp, color = textSecondary)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -134,30 +172,34 @@ fun MainScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(16.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Role Switcher Tab
-            TabRow(
-                selectedTabIndex = if (isTeacherMode) 0 else 1,
-                modifier = Modifier.clip(RoundedCornerShape(10.dp)),
-                containerColor = cardBg,
-                divider = {}
-            ) {
-                Tab(
-                    selected = isTeacherMode,
-                    onClick = { onToggleMode(true) },
-                    text = { Text("Teacher Mode", fontWeight = FontWeight.SemiBold) }
-                )
-                Tab(
-                    selected = !isTeacherMode,
-                    onClick = { onToggleMode(false) },
-                    text = { Text("Student Mode", fontWeight = FontWeight.SemiBold) }
-                )
+            // Mode Switcher Tab - ONLY VISIBLE IF USER HAS TEACHER PRIVILEGES!
+            if (isTeacherPrivileged) {
+                TabRow(
+                    selectedTabIndex = if (effectiveTeacherMode) 0 else 1,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp)),
+                    containerColor = cardBg,
+                    divider = {}
+                ) {
+                    Tab(
+                        selected = effectiveTeacherMode,
+                        onClick = { onToggleMode(true) },
+                        text = { Text("Teacher Console", fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+                    )
+                    Tab(
+                        selected = !effectiveTeacherMode,
+                        onClick = { onToggleMode(false) },
+                        text = { Text("Student Mode", fontWeight = FontWeight.Bold, fontSize = 13.sp) }
+                    )
+                }
             }
 
-            if (isTeacherMode) {
+            if (effectiveTeacherMode) {
                 TeacherSection(
                     isSessionActive = isSessionActive,
                     sessionId = sessionId,
@@ -173,7 +215,8 @@ fun MainScreen(
                     onCreateCourse = onCreateCourse,
                     onStartSession = onStartTeacherSession,
                     onStopSession = onStopTeacherSession,
-                    onShareAttendance = onShareAttendance
+                    onShareAttendance = onShareAttendance,
+                    onResetSession = onResetSession
                 )
             } else {
                 StudentSection(
@@ -207,280 +250,560 @@ private fun TeacherSection(
     onCreateCourse: (String, String) -> Unit,
     onStartSession: () -> Unit,
     onStopSession: () -> Unit,
-    onShareAttendance: () -> Unit
+    onShareAttendance: () -> Unit,
+    onResetSession: () -> Unit
 ) {
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        // Status Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    if (finalizedRecords.isNotEmpty()) {
+        // ==========================================
+        // AUDIT RESULTS SCREEN (Full Height Scrollable)
+        // ==========================================
+        val verifiedCount = finalizedRecords.count { it.status == "VERIFIED_PRESENT" || it.status == "PRESENT" }
+        val witnessedCount = finalizedRecords.count { it.verificationMethod.contains("WITNESS") }
+        val spooferCount = finalizedRecords.count { it.status.contains("SPOOF") || it.status.contains("REJECT") }
+
+        var selectedFilter by remember { mutableStateOf("ALL") }
+
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+            // Dashboard Summary Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = cardBg),
+                border = BorderStroke(1.dp, cardBorder),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
             ) {
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = if (isSessionActive) successGreenBg else logBg
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(if (isSessionActive) successGreen else textMuted)
-                        )
-                        Text(
-                            text = if (isSessionActive) "BROADCASTING" else "INACTIVE",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isSessionActive) successGreen else textMuted
-                        )
+                        Column {
+                            Text(
+                                text = "AUDIT RESULTS",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = textSecondary
+                            )
+                            Text(
+                                text = selectedCourse?.courseCode ?: "Session #$sessionId",
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = textPrimary
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = successGreenBg,
+                            border = BorderStroke(1.dp, successGreen)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(6.dp)
+                                        .clip(CircleShape)
+                                        .background(successGreen)
+                                )
+                                Text(
+                                    text = "SAVED TO CLOUD",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = successGreen
+                                )
+                            }
+                        }
                     }
-                }
 
-                Spacer(modifier = Modifier.height(18.dp))
-
-                Text(
-                    text = if (isSessionActive) "${remainingSeconds}s" else "--",
-                    fontSize = 54.sp,
-                    fontWeight = FontWeight.Black,
-                    color = if (isSessionActive) primaryBlue else textMuted
-                )
-                Text(
-                    text = if (isSessionActive) "Attendance window active" else "Ready to start session",
-                    fontSize = 13.sp,
-                    color = textSecondary
-                )
-
-                Spacer(modifier = Modifier.height(18.dp))
-                HorizontalDivider(color = cardBorder)
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("SESSION ID", fontSize = 11.sp, color = textSecondary, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(sessionId, fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                    }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("IN-ROOM NONCE", fontSize = 11.sp, color = textSecondary, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(sessionSalt, fontSize = 20.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                    }
-                }
-            }
-        }
-
-        // Course Selector Row
-        if (!isSessionActive) {
-            var showAddCourseDialog by remember { mutableStateOf(false) }
-            if (showAddCourseDialog) {
-                AddCourseDialog(
-                    onDismiss = { showAddCourseDialog = false },
-                    onConfirm = { code, name ->
-                        onCreateCourse(code, name)
-                        showAddCourseDialog = false
-                    }
-                )
-            }
-
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("COURSE", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textSecondary)
-                    TextButton(
-                        onClick = { showAddCourseDialog = true },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                    ) {
-                        Text("+ New Course", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = primaryBlue)
-                    }
-                }
-                if (availableCourses.isNotEmpty()) {
+                    // 3 Metric Stat Cards
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        availableCourses.forEach { course ->
-                            val isSelected = selectedCourse?.id == course.id
-                            FilterChip(
-                                selected = isSelected,
-                                onClick = { onSelectCourse(course) },
-                                label = { Text(course.courseCode, fontWeight = FontWeight.Bold, fontSize = 12.sp) }
+                        Card(
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = CardDefaults.cardColors(containerColor = successGreenBg),
+                            border = BorderStroke(1.dp, Color(0xFFBBF7D0))
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text("$verifiedCount", fontSize = 20.sp, fontWeight = FontWeight.Black, color = successGreen)
+                                Text("Verified", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = successGreen)
+                            }
+                        }
+
+                        Card(
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = CardDefaults.cardColors(containerColor = primaryBlueBg),
+                            border = BorderStroke(1.dp, Color(0xFFBFDBFE))
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text("$witnessedCount", fontSize = 20.sp, fontWeight = FontWeight.Black, color = primaryBlue)
+                                Text("Witnessed", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = primaryBlue)
+                            }
+                        }
+
+                        Card(
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = CardDefaults.cardColors(containerColor = if (spooferCount > 0) alertRedBg else logBg),
+                            border = BorderStroke(1.dp, if (spooferCount > 0) Color(0xFFFECACA) else cardBorder)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(vertical = 8.dp, horizontal = 4.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text(
+                                    "$spooferCount",
+                                    fontSize = 20.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = if (spooferCount > 0) alertRed else textMuted
+                                )
+                                Text(
+                                    "Flagged",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (spooferCount > 0) alertRed else textMuted
+                                )
+                            }
+                        }
+                    }
+
+                    // Action buttons: Export CSV & New Session
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = onShareAttendance,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text("Export CSV", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Button(
+                            onClick = onResetSession,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = primaryBlue),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text("+ New Session", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+
+            // Filter Chips
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                item {
+                    FilterChip(
+                        selected = selectedFilter == "ALL",
+                        onClick = { selectedFilter = "ALL" },
+                        label = { Text("All (${finalizedRecords.size})", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = selectedFilter == "VERIFIED",
+                        onClick = { selectedFilter = "VERIFIED" },
+                        label = { Text("Verified ($verifiedCount)", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = selectedFilter == "WITNESSED",
+                        onClick = { selectedFilter = "WITNESSED" },
+                        label = { Text("Witnessed ($witnessedCount)", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                    )
+                }
+                if (spooferCount > 0) {
+                    item {
+                        FilterChip(
+                            selected = selectedFilter == "FLAGGED",
+                            onClick = { selectedFilter = "FLAGGED" },
+                            label = { Text("Flagged ($spooferCount)", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                        )
+                    }
+                }
+            }
+
+            // Filtered Attendance List - Takes all remaining screen height!
+            val filteredList = when (selectedFilter) {
+                "VERIFIED" -> finalizedRecords.filter { it.status == "VERIFIED_PRESENT" || it.status == "PRESENT" }
+                "WITNESSED" -> finalizedRecords.filter { it.verificationMethod.contains("WITNESS") }
+                "FLAGGED" -> finalizedRecords.filter { it.status.contains("SPOOF") || it.status.contains("REJECT") }
+                else -> finalizedRecords
+            }
+
+            if (filteredList.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .background(cardBg, RoundedCornerShape(12.dp))
+                        .border(1.dp, cardBorder, RoundedCornerShape(12.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("No records match the selected filter.", color = textMuted, fontSize = 13.sp)
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(filteredList) { rec ->
+                        val isVerified = rec.status == "VERIFIED_PRESENT" || rec.status == "PRESENT"
+                        val isSpoofer = rec.status == "FLAGGED_SPOOFER" || rec.status == "SPOOFER_REJECTED"
+                        val badgeBg = if (isVerified) successGreenBg else if (isSpoofer) alertRedBg else warningOrangeBg
+                        val badgeColor = if (isVerified) successGreen else if (isSpoofer) alertRed else warningOrange
+                        val badgeText = if (isVerified) "VERIFIED" else if (isSpoofer) "FLAGGED" else "ISOLATED"
+
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = cardBg),
+                            border = BorderStroke(1.dp, if (isSpoofer) alertRed.copy(alpha = 0.3f) else cardBorder),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(36.dp)
+                                                .clip(CircleShape)
+                                                .background(if (isVerified) successGreenBg else if (isSpoofer) alertRedBg else logBg)
+                                                .border(1.dp, badgeColor.copy(alpha = 0.5f), CircleShape),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = rec.bleDeviceId.takeLast(2),
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = badgeColor
+                                            )
+                                        }
+                                        Column {
+                                            Text(
+                                                text = "Roll: ${rec.bleDeviceId}",
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 15.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = textPrimary
+                                            )
+                                            Text(
+                                                text = "${rec.verificationMethod} • Score: ${(rec.affinityScore * 100).toInt()}%",
+                                                fontSize = 11.sp,
+                                                color = textSecondary
+                                            )
+                                        }
+                                    }
+
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = badgeBg,
+                                        border = BorderStroke(1.dp, badgeColor.copy(alpha = 0.4f))
+                                    ) {
+                                        Text(
+                                            text = badgeText,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp,
+                                            color = badgeColor
+                                        )
+                                    }
+                                }
+
+                                if (!rec.remarks.isNullOrBlank()) {
+                                    Text(
+                                        text = "Note: ${rec.remarks}",
+                                        fontSize = 11.sp,
+                                        color = textSecondary,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .background(logBg, RoundedCornerShape(6.dp))
+                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // ==========================================
+        // SESSION SETUP & BROADCAST ORCHESTRATION
+        // ==========================================
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            // Course Selector Card
+            if (!isSessionActive) {
+                var showAddCourseDialog by remember { mutableStateOf(false) }
+                if (showAddCourseDialog) {
+                    AddCourseDialog(
+                        onDismiss = { showAddCourseDialog = false },
+                        onConfirm = { code, name ->
+                            onCreateCourse(code, name)
+                            showAddCourseDialog = false
+                        }
+                    )
+                }
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = cardBg),
+                    border = BorderStroke(1.dp, cardBorder)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("SELECT COURSE", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textSecondary)
+                            TextButton(
+                                onClick = { showAddCourseDialog = true },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text("+ New Course", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = primaryBlue)
+                            }
+                        }
+                        if (availableCourses.isNotEmpty()) {
+                            LazyRow(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(availableCourses) { course ->
+                                    val isSelected = selectedCourse?.id == course.id
+                                    FilterChip(
+                                        selected = isSelected,
+                                        onClick = { onSelectCourse(course) },
+                                        label = { Text(course.courseCode, fontWeight = FontWeight.Bold, fontSize = 12.sp) }
+                                    )
+                                }
+                            }
+                        } else {
+                            Text(
+                                "No courses created yet. Tap '+ New Course' to add one.",
+                                fontSize = 12.sp,
+                                color = textMuted
                             )
                         }
                     }
                 }
             }
-        }
 
-        // Cloud sync status banner
-        if (cloudStatusMessage != null || isCloudSyncing) {
+            // Session Broadcast Hero Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = primaryBlueBg),
-                border = BorderStroke(1.dp, primaryBlue)
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = cardBg),
+                border = BorderStroke(1.dp, cardBorder),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
             ) {
-                Row(
-                    modifier = Modifier.padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    if (isCloudSyncing) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = primaryBlue)
-                    }
-                    Text(
-                        text = cloudStatusMessage ?: "Communicating with server...",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = primaryBlue
-                    )
-                }
-            }
-        }
-
-        // Audit Records List or Live Payload Card
-        if (finalizedRecords.isNotEmpty()) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "AUDIT RESULTS (${finalizedRecords.size} STUDENTS)",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = textSecondary
-                )
-                OutlinedButton(
-                    onClick = onShareAttendance,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                    modifier = Modifier.height(34.dp)
-                ) {
-                    Text("Export CSV", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                }
-            }
-
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(finalizedRecords) { rec ->
-                    val isVerified = rec.status == "VERIFIED_PRESENT"
-                    val isSpoofer = rec.status == "FLAGGED_SPOOFER" || rec.status == "SPOOFER_REJECTED"
-                    val badgeBg = if (isVerified) successGreenBg else if (isSpoofer) alertRedBg else warningOrangeBg
-                    val badgeColor = if (isVerified) successGreen else if (isSpoofer) alertRed else warningOrange
-
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = CardDefaults.cardColors(containerColor = cardBg),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = if (isSessionActive) successGreenBg else logBg,
+                        border = BorderStroke(1.dp, if (isSessionActive) successGreen else cardBorder)
                     ) {
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(14.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Column {
-                                Text(
-                                    text = "Roll: ${rec.bleDeviceId}",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                                Text(
-                                    text = "${rec.verificationMethod} • Score: ${(rec.affinityScore * 100).toInt()}%",
-                                    fontSize = 11.sp,
-                                    color = textSecondary
-                                )
-                            }
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = badgeBg
-                            ) {
-                                Text(
-                                    text = if (isVerified) "VERIFIED" else if (isSpoofer) "SPOOFER" else "ISOLATED",
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 11.sp,
-                                    color = badgeColor
-                                )
-                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isSessionActive) successGreen else textMuted)
+                            )
+                            Text(
+                                text = if (isSessionActive) "BROADCASTING ACTIVE" else "READY TO START",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isSessionActive) successGreen else textMuted
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Text(
+                        text = if (isSessionActive) "${remainingSeconds}s" else "60s",
+                        fontSize = 52.sp,
+                        fontWeight = FontWeight.Black,
+                        color = if (isSessionActive) primaryBlue else textMuted
+                    )
+                    Text(
+                        text = if (isSessionActive) "Attendance window running" else "Standard session duration",
+                        fontSize = 13.sp,
+                        color = textSecondary
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+                    HorizontalDivider(color = cardBorder)
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("SESSION ID", fontSize = 11.sp, color = textSecondary, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = sessionId.ifEmpty { "--" },
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                color = textPrimary
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("IN-ROOM NONCE", fontSize = 11.sp, color = textSecondary, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = sessionSalt.ifEmpty { "--" },
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                color = textPrimary
+                            )
                         }
                     }
                 }
             }
-        } else {
+
+            // Live Payload Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
+                shape = RoundedCornerShape(12.dp),
                 colors = CardDefaults.cardColors(containerColor = cardBg),
-                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                border = BorderStroke(1.dp, cardBorder)
             ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text("LIVE BLE PAYLOAD", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textSecondary)
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Text("BLE ADVERTISER PAYLOAD", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textSecondary)
                     Spacer(modifier = Modifier.height(8.dp))
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(appBg, RoundedCornerShape(8.dp))
+                            .background(logBg, RoundedCornerShape(8.dp))
                             .border(1.dp, cardBorder, RoundedCornerShape(8.dp))
-                            .padding(12.dp)
+                            .padding(10.dp)
                     ) {
                         Text(
-                            text = broadcastPayload,
+                            text = broadcastPayload.ifEmpty { "Idle (no token active)" },
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.SemiBold,
-                            fontSize = 14.sp,
+                            fontSize = 13.sp,
                             color = if (isSessionActive) textPrimary else textMuted
                         )
                     }
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text("Power: HIGH (+4 dBm) • Interval: 100ms", fontSize = 11.sp, color = textSecondary)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("Tx Power: HIGH (+4 dBm) • BLE Advert Interval: 100ms", fontSize = 11.sp, color = textSecondary)
+                }
+            }
+
+            // Cloud sync progress banner
+            if (cloudStatusMessage != null || isCloudSyncing) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = primaryBlueBg),
+                    border = BorderStroke(1.dp, primaryBlue)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        if (isCloudSyncing) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = primaryBlue)
+                        }
+                        Text(
+                            text = cloudStatusMessage ?: "Auditing attendance...",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = primaryBlue
+                        )
+                    }
                 }
             }
 
             Spacer(modifier = Modifier.weight(1f))
-        }
 
-        Button(
-            onClick = { if (isSessionActive) onStopSession() else onStartSession() },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(52.dp),
-            shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = if (isSessionActive) alertRed else primaryBlue
-            )
-        ) {
-            Text(
-                text = if (isSessionActive) "End Session & Audit" else "Start 60s Session",
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold
-            )
+            Button(
+                onClick = { if (isSessionActive) onStopSession() else onStartSession() },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (isSessionActive) alertRed else primaryBlue
+                )
+            ) {
+                Text(
+                    text = if (isSessionActive) "End Session & Run Cloud Audit" else "Start 60s Session",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }
@@ -497,30 +820,50 @@ private fun StudentSection(
 ) {
     Column(
         modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Status Card
+        // Hero Status Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
+            colors = CardDefaults.cardColors(
+                containerColor = when (studentPhase) {
+                    StudentPhase.VERIFIED_PRESENT, StudentPhase.DISCOVERY_COMPLETE -> successGreenBg
+                    StudentPhase.PROBING_NEIGHBORS -> primaryBlueBg
+                    StudentPhase.LISTENING_FOR_TEACHER -> warningOrangeBg
+                    StudentPhase.STANDBY -> cardBg
+                }
+            ),
+            border = BorderStroke(
+                1.dp,
+                when (studentPhase) {
+                    StudentPhase.VERIFIED_PRESENT, StudentPhase.DISCOVERY_COMPLETE -> successGreen
+                    StudentPhase.PROBING_NEIGHBORS -> primaryBlue
+                    StudentPhase.LISTENING_FOR_TEACHER -> warningOrange
+                    StudentPhase.STANDBY -> cardBorder
+                }
+            ),
             elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
+                    .padding(18.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Surface(
                     shape = RoundedCornerShape(20.dp),
-                    color = when (studentPhase) {
-                        StudentPhase.VERIFIED_PRESENT -> successGreenBg
-                        StudentPhase.DISCOVERY_COMPLETE -> successGreenBg
-                        StudentPhase.PROBING_NEIGHBORS -> primaryBlueBg
-                        StudentPhase.LISTENING_FOR_TEACHER -> warningOrangeBg
-                        StudentPhase.STANDBY -> logBg
-                    }
+                    color = Color.White.copy(alpha = 0.85f),
+                    border = BorderStroke(
+                        1.dp,
+                        when (studentPhase) {
+                            StudentPhase.VERIFIED_PRESENT, StudentPhase.DISCOVERY_COMPLETE -> successGreen
+                            StudentPhase.PROBING_NEIGHBORS -> primaryBlue
+                            StudentPhase.LISTENING_FOR_TEACHER -> warningOrange
+                            StudentPhase.STANDBY -> cardBorder
+                        }
+                    )
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -533,8 +876,7 @@ private fun StudentSection(
                                 .clip(CircleShape)
                                 .background(
                                     when (studentPhase) {
-                                        StudentPhase.VERIFIED_PRESENT -> successGreen
-                                        StudentPhase.DISCOVERY_COMPLETE -> successGreen
+                                        StudentPhase.VERIFIED_PRESENT, StudentPhase.DISCOVERY_COMPLETE -> successGreen
                                         StudentPhase.PROBING_NEIGHBORS -> primaryBlue
                                         StudentPhase.LISTENING_FOR_TEACHER -> warningOrange
                                         StudentPhase.STANDBY -> textMuted
@@ -544,16 +886,15 @@ private fun StudentSection(
                         Text(
                             text = when (studentPhase) {
                                 StudentPhase.VERIFIED_PRESENT -> "ATTENDANCE CONFIRMED"
-                                StudentPhase.DISCOVERY_COMPLETE -> "PROXIMITY RECORDED (OFFLINE MESH)"
-                                StudentPhase.PROBING_NEIGHBORS -> "DISCOVERING NEIGHBORS (${studentDiscoveryRemainingSeconds}s)"
+                                StudentPhase.DISCOVERY_COMPLETE -> "PEER PROXIMITY RECORDED"
+                                StudentPhase.PROBING_NEIGHBORS -> "DISCOVERING PEERS (${studentDiscoveryRemainingSeconds}s)"
                                 StudentPhase.LISTENING_FOR_TEACHER -> "LISTENING FOR TEACHER..."
                                 StudentPhase.STANDBY -> "STANDBY"
                             },
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = when (studentPhase) {
-                                StudentPhase.VERIFIED_PRESENT -> successGreen
-                                StudentPhase.DISCOVERY_COMPLETE -> successGreen
+                                StudentPhase.VERIFIED_PRESENT, StudentPhase.DISCOVERY_COMPLETE -> successGreen
                                 StudentPhase.PROBING_NEIGHBORS -> primaryBlue
                                 StudentPhase.LISTENING_FOR_TEACHER -> warningOrange
                                 StudentPhase.STANDBY -> textMuted
@@ -562,75 +903,116 @@ private fun StudentSection(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("DETECTED SESSION", fontSize = 11.sp, color = textSecondary, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(detectedSessionId, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                    }
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("DETECTED NONCE", fontSize = 11.sp, color = textSecondary, fontWeight = FontWeight.Bold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(detectedSessionSalt, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                    }
-                }
-            }
-        }
-
-        // Verified Air Verdict / Proximity Confirmation Banner
-        if (studentPhase == StudentPhase.VERIFIED_PRESENT || studentPhase == StudentPhase.DISCOVERY_COMPLETE) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = successGreenBg),
-                border = BorderStroke(1.dp, successGreen)
-            ) {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(successGreen),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("✓", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                    }
-                    Column {
+                when (studentPhase) {
+                    StudentPhase.VERIFIED_PRESENT, StudentPhase.DISCOVERY_COMPLETE -> {
+                        Box(
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(CircleShape)
+                                .background(successGreen),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("✓", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                        }
                         Text(
-                            if (studentPhase == StudentPhase.VERIFIED_PRESENT) "AIR VERDICT VERIFIED" else "DESK PROXIMITY CONFIRMED",
+                            "Attendance Verified!",
                             fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp,
+                            fontSize = 18.sp,
                             color = successGreen
                         )
                         Text(
-                            if (studentPhase == StudentPhase.VERIFIED_PRESENT)
-                                "Attendance confirmed for Session $detectedSessionId"
-                            else
-                                "Desk proximity confirmed. Attendance verified via classroom peer witnessing.",
+                            "Classroom peer witnessing recorded. Your presence is verified for Session $detectedSessionId.",
                             fontSize = 12.sp,
-                            color = textSecondary
+                            color = textSecondary,
+                            textAlign = TextAlign.Center
                         )
+                    }
+                    StudentPhase.PROBING_NEIGHBORS -> {
+                        Text(
+                            text = "${studentDiscoveryRemainingSeconds}s",
+                            fontSize = 46.sp,
+                            fontWeight = FontWeight.Black,
+                            color = primaryBlue
+                        )
+                        Text(
+                            "Broadcasting ID & probing nearby classmate devices",
+                            fontSize = 13.sp,
+                            color = textSecondary,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                    StudentPhase.LISTENING_FOR_TEACHER -> {
+                        Text(
+                            "Scanning Classroom Beacon...",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = warningOrange
+                        )
+                        Text(
+                            "Keep Bluetooth on and stay inside the classroom.",
+                            fontSize = 12.sp,
+                            color = textSecondary,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                    StudentPhase.STANDBY -> {
+                        Text(
+                            "Ready to Record",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = textPrimary
+                        )
+                        Text(
+                            "Tap 'Listen for Teacher' when attendance begins.",
+                            fontSize = 12.sp,
+                            color = textSecondary,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                if (detectedSessionId.isNotEmpty() && detectedSessionId != "None") {
+                    HorizontalDivider(color = cardBorder)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("DETECTED SESSION", fontSize = 10.sp, color = textSecondary, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(detectedSessionId, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                        }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text("ROOM NONCE", fontSize = 10.sp, color = textSecondary, fontWeight = FontWeight.Bold)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(detectedSessionSalt, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                        }
                     }
                 }
             }
         }
 
-        // Desk Neighbors Section Header
-        Text(
-            text = "DESK NEIGHBORS (RSSI >= -85 dBm)",
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Bold,
-            color = textSecondary
-        )
+        // Desk Neighbors Section
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "DESK NEIGHBORS (RSSI >= -85 dBm)",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = textSecondary
+            )
+            if (deskNeighbours.isNotEmpty()) {
+                Text(
+                    text = "${deskNeighbours.size} detected",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = successGreen
+                )
+            }
+        }
 
         if (deskNeighbours.isEmpty()) {
             Box(
@@ -641,11 +1023,27 @@ private fun StudentSection(
                     .border(1.dp, cardBorder, RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                Text(
-                    text = if (studentPhase == StudentPhase.LISTENING_FOR_TEACHER) "Waiting for teacher to start session..." else "No neighbors detected yet",
-                    color = textMuted,
-                    fontSize = 13.sp
-                )
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = if (studentPhase == StudentPhase.LISTENING_FOR_TEACHER)
+                            "Waiting for teacher beacon..."
+                        else if (studentPhase == StudentPhase.PROBING_NEIGHBORS)
+                            "Scanning for nearby classmates..."
+                        else
+                            "No neighbors detected yet",
+                        color = textSecondary,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        text = "Classmate devices will appear here automatically",
+                        color = textMuted,
+                        fontSize = 11.sp
+                    )
+                }
             }
         } else {
             LazyColumn(
@@ -655,10 +1053,12 @@ private fun StudentSection(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(deskNeighbours) { peer ->
+                    val isStrong = peer.medianRssi >= -75
                     Card(
                         modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp),
+                        shape = RoundedCornerShape(12.dp),
                         colors = CardDefaults.cardColors(containerColor = cardBg),
+                        border = BorderStroke(1.dp, cardBorder),
                         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
                     ) {
                         Row(
@@ -668,29 +1068,52 @@ private fun StudentSection(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Column {
-                                Text(
-                                    text = "Peer: ${peer.peerId}",
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp,
-                                    fontFamily = FontFamily.Monospace
-                                )
-                                Text(
-                                    text = "${peer.count} packets captured",
-                                    fontSize = 11.sp,
-                                    color = textSecondary
-                                )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clip(CircleShape)
+                                        .background(primaryBlueBg)
+                                        .border(1.dp, primaryBlue.copy(alpha = 0.4f), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = peer.peerId.takeLast(2),
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = primaryBlue
+                                    )
+                                }
+                                Column {
+                                    Text(
+                                        text = "Roll: ${peer.peerId}",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 14.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = textPrimary
+                                    )
+                                    Text(
+                                        text = "${peer.count} packets captured",
+                                        fontSize = 11.sp,
+                                        color = textSecondary
+                                    )
+                                }
                             }
+
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
-                                color = successGreenBg
+                                color = if (isStrong) successGreenBg else warningOrangeBg,
+                                border = BorderStroke(1.dp, if (isStrong) successGreen else warningOrange)
                             ) {
                                 Text(
                                     text = "${peer.medianRssi} dBm",
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 12.sp,
-                                    color = successGreen
+                                    color = if (isStrong) successGreen else warningOrange
                                 )
                             }
                         }

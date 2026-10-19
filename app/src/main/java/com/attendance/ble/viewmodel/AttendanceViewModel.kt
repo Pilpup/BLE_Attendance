@@ -119,7 +119,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         currentUserName = prefs.getString("user_name", "Guest") ?: "Guest"
         currentUserRole = prefs.getString("user_role", "STUDENT") ?: "STUDENT"
         currentRollNumber = prefs.getString("roll_number", defaultLocalId) ?: defaultLocalId
-        isTeacherMode = prefs.getBoolean("is_teacher_mode", currentUserRole == "TEACHER")
+        isTeacherMode = (currentUserRole == "TEACHER") && prefs.getBoolean("is_teacher_mode", true)
         val savedUrl = prefs.getString("server_url", null)
         if (!savedUrl.isNullOrBlank() && !savedUrl.contains("10.0.2.2")) {
             ApiClient.baseUrl = savedUrl
@@ -132,6 +132,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    // Clear previous audit results to start fresh
+    fun resetSession() {
+        stopTeacherSession()
+        finalizedRecords = emptyList()
+        cloudStatusMessage = null
+    }
+
     // Persist and update student roll number (even offline)
     fun updateRollNumber(newRoll: String) {
         val trimmed = newRoll.trim().uppercase()
@@ -141,8 +148,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // Persist mode toggle
+    // Persist mode toggle (restricted to users with teacher privileges)
     fun toggleMode(isTeacher: Boolean) {
+        if (isTeacher && currentUserRole != "TEACHER") {
+            isTeacherMode = false
+            return
+        }
         isTeacherMode = isTeacher
         prefs.edit().putBoolean("is_teacher_mode", isTeacher).apply()
         if (isTeacher && authToken != null && availableCourses.isEmpty()) {
@@ -236,11 +247,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         authErrorText = null
         availableCourses = emptyList()
         selectedCourse = null
+        isTeacherMode = false
         prefs.edit()
             .remove("auth_token")
             .remove("user_name")
             .remove("user_role")
             .remove("roll_number")
+            .putBoolean("is_teacher_mode", false)
             .apply()
     }
 

@@ -135,6 +135,9 @@ class MainActivity : ComponentActivity() {
                     onShareAttendance = {
                         shareAttendanceCsv(viewModel.generateCsvReport(), viewModel.sessionId)
                     },
+                    onResetSession = {
+                        viewModel.resetSession()
+                    },
                     // Student Props
                     studentId = viewModel.studentId,
                     studentPhase = viewModel.studentPhase,
