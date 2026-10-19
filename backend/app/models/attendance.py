@@ -3,8 +3,30 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+# PostgreSQL Enums matching the database schema in Neon
+user_role_enum = PG_ENUM("STUDENT", "TEACHER", "ADMIN", name="user_role", create_type=False)
+session_status_enum = PG_ENUM(
+    "SCHEDULED", "ACTIVE", "COMPLETED", "CANCELLED", name="session_status", create_type=False
+)
+attendance_status_enum = PG_ENUM(
+    "VERIFIED_PRESENT",
+    "SPOOFER_REJECTED",
+    "ISOLATED_FLAGGED",
+    "ABSENT",
+    name="attendance_status",
+    create_type=False,
+)
+verification_method_enum = PG_ENUM(
+    "DIRECT_MUTUAL",
+    "TRIADIC_CLOSURE",
+    "MANUAL_OVERRIDE",
+    "NONE",
+    name="verification_method",
+    create_type=False,
+)
 
 
 class Base(DeclarativeBase):
@@ -19,7 +41,7 @@ class User(Base):
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(120), nullable=False)
     roll_number: Mapped[Optional[str]] = mapped_column(String(50), unique=True, nullable=True, index=True)
-    role: Mapped[str] = mapped_column(String(20), default="STUDENT")
+    role: Mapped[str] = mapped_column(user_role_enum, default="STUDENT")
     department: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     program: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     semester: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -37,7 +59,10 @@ class Course(Base):
     course_code: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
     course_name: Mapped[str] = mapped_column(String(200), nullable=False)
     teacher_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
-    
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
 
 class AttendanceSession(Base):
     __tablename__ = "attendance_sessions"
@@ -46,7 +71,7 @@ class AttendanceSession(Base):
     course_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("courses.id"))
     teacher_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     session_token: Mapped[str] = mapped_column(String(32), nullable=False)
-    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    status: Mapped[str] = mapped_column(session_status_enum, default="ACTIVE")
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

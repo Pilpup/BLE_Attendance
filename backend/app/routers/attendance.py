@@ -18,10 +18,12 @@ from app.core.security import (
 from app.database import get_db
 from app.models.attendance import AttendanceRecord, AttendanceSession, Course, User
 from app.schemas.attendance import (
+    AttendanceRecordResponse,
     AttendanceSessionResponse,
     CourseCreateRequest,
     CourseResponse,
     MeshAuditRunRequest,
+    RecordOverrideRequest,
     SessionCreateRequest,
     SessionFinalizeRequest,
     SubmitNeighborsRequest,
@@ -59,9 +61,9 @@ async def _resolve_session(session_id: str, db: AsyncSession) -> Optional[Attend
     return result.scalars().first()
 
 
-# Mock context: auto-creates a test teacher + course so Swagger testing works
-# without JWT. Your teammate replaces `get_current_mock_teacher` with:
-#   current_user: User = Depends(get_current_user)
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper Context for dev testing if db is empty
+# ─────────────────────────────────────────────────────────────────────────────
 async def _get_or_create_mock_context(db: AsyncSession):
     """Ensures a default teacher and course exist for development testing."""
     result = await db.execute(select(User).limit(1))
@@ -94,7 +96,9 @@ async def _get_or_create_mock_context(db: AsyncSession):
     return teacher, course
 
 
-# Endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+# Course Endpoints
+# ─────────────────────────────────────────────────────────────────────────────
 @router.get("/courses", response_model=List[CourseResponse])
 async def list_courses(db: AsyncSession = Depends(get_db)):
     """List available courses. Use the returned UUID as course_id when creating a session."""
@@ -122,6 +126,34 @@ async def create_course(
     return course
 
 
+@router.get("/courses/{course_id}/sessions", response_model=List[AttendanceSessionResponse])
+async def list_course_sessions(
+    course_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_teacher),
+):
+    """Teacher lists all past attendance sessions for a specific course."""
+    course_res = await db.execute(select(Course).where(Course.id == course_id))
+    course = course_res.scalars().first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    if course.teacher_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to view sessions for this course",
+        )
+
+    result = await db.execute(
+        select(AttendanceSession)
+        .where(AttendanceSession.course_id == course_id)
+        .order_by(AttendanceSession.started_at.desc())
+    )
+    return result.scalars().all()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Session Lifecycle & Guardrails
+# ─────────────────────────────────────────────────────────────────────────────
 @router.post(
     "/sessions",
     response_model=AttendanceSessionResponse,
@@ -132,6 +164,10 @@ async def create_attendance_session(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
+    """
+    Teacher initiates an attendance session before starting BLE conductor ticks.
+    [Guardrail]: Rejects creation if an ACTIVE session is already running for this course.
+    """
     if payload.course_id:
         course_res = await db.execute(select(Course).where(Course.id == payload.course_id))
         course = course_res.scalars().first()
@@ -162,6 +198,19 @@ async def create_attendance_session(
             await db.refresh(default_c)
             target_course_id = default_c.id
 
+    # Guardrail: Check if an ACTIVE session is already in progress
+    active_check = await db.execute(
+        select(AttendanceSession).where(
+            AttendanceSession.course_id == target_course_id,
+            AttendanceSession.status == "ACTIVE",
+        )
+    )
+    if active_check.scalars().first():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An active attendance session is already in progress for this course. Finalize or cancel it before starting a new one.",
+        )
+
     session = AttendanceSession(
         id=uuid.uuid4(),
         course_id=target_course_id,
@@ -178,6 +227,45 @@ async def create_attendance_session(
     return session
 
 
+@router.post("/sessions/{session_id}/cancel", response_model=AttendanceSessionResponse)
+async def cancel_attendance_session(
+    session_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_teacher),
+):
+    """
+    [Guardrail]: Teacher cancels an accidental or abandoned session.
+    Prevents lingering active session locks.
+    """
+    result = await db.execute(
+        select(AttendanceSession).where(AttendanceSession.id == session_id)
+    )
+    session_obj = result.scalars().first()
+    if not session_obj:
+        raise HTTPException(status_code=404, detail="Attendance session not found")
+    if session_obj.teacher_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only cancel your own attendance sessions",
+        )
+    if session_obj.status == "COMPLETED":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot cancel an attendance session that has already been finalized/completed",
+        )
+    if session_obj.status == "CANCELLED":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Attendance session is already cancelled",
+        )
+
+    session_obj.status = "CANCELLED"
+    session_obj.ended_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(session_obj)
+    return session_obj
+
+
 @router.post(
     "/sessions/{session_id}/finalize",
     response_model=AttendanceSessionResponse,
@@ -189,9 +277,8 @@ async def finalize_attendance_session(
     current_user: User = Depends(require_teacher),
 ):
     """
-    Client-side audit upload:
-    Teacher's phone posts the full mesh audit results computed locally.
-    Stores affinity scores (1.0 / 0.5 / 0.0), bridge nodes, and reported neighbors.
+    Client-side audit upload: Teacher phone posts pre-calculated graph results.
+    [Guardrail]: Enforces status != COMPLETED and status != CANCELLED.
     """
     session_obj = await _resolve_session(session_id, db)
 
@@ -201,6 +288,11 @@ async def finalize_attendance_session(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only finalize your own attendance sessions",
+        )
+    if session_obj.status == "CANCELLED":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot finalize a cancelled session",
         )
     if session_obj.status == "COMPLETED":
         return session_obj
@@ -301,6 +393,10 @@ async def audit_and_finalize_session(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
+    """
+    Server-side audit execution: Runs audit_classroom_mesh() on the backend.
+    [Guardrail]: Enforces status != COMPLETED and status != CANCELLED.
+    """
     session_obj = await _resolve_session(session_id, db)
 
     if not session_obj:
@@ -309,6 +405,11 @@ async def audit_and_finalize_session(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only finalize your own attendance sessions",
+        )
+    if session_obj.status == "CANCELLED":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot finalize a cancelled session",
         )
     if session_obj.status == "COMPLETED":
         return session_obj
@@ -374,3 +475,42 @@ async def get_session_details(
     if not session_obj:
         raise HTTPException(status_code=404, detail="Attendance session not found")
     return session_obj
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Teacher Record Override Endpoint
+# ─────────────────────────────────────────────────────────────────────────────
+@router.patch("/records/{record_id}/override", response_model=AttendanceRecordResponse)
+async def override_attendance_record(
+    record_id: uuid.UUID,
+    payload: RecordOverrideRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_teacher),
+):
+    """
+    Teacher manual override for an edge-case student (e.g. isolated or dead battery).
+    """
+    result = await db.execute(
+        select(AttendanceRecord, AttendanceSession)
+        .join(AttendanceSession, AttendanceRecord.session_id == AttendanceSession.id)
+        .where(AttendanceRecord.id == record_id)
+    )
+    row = result.first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Attendance record not found")
+
+    record_obj, session_obj = row
+    if session_obj.teacher_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to override records for this session",
+        )
+
+    record_obj.status = payload.status
+    record_obj.verification_method = "MANUAL_OVERRIDE"
+    if payload.remarks:
+        record_obj.remarks = payload.remarks
+
+    await db.commit()
+    await db.refresh(record_obj)
+    return record_obj

@@ -91,7 +91,6 @@ def test_mesh_audit_offline_peer_witness():
     assert res_map["OFF1"]["status"] == "VERIFIED_PRESENT"
     assert res_map["OFF1"]["verification_method"] == "PEER_WITNESS"
     assert res_map["OFF1"]["affinity_score"] == 0.85
-    assert "OFF1" in res_map
 
     # OFF2 was only claimed by spoofer D (who is not in verified_set)
     # Therefore OFF2 is NOT verified
@@ -105,7 +104,20 @@ def test_fastapi_routes_registered():
     assert "/api/v1/auth/login" in paths
     assert "/api/v1/auth/me" in paths
     assert "/api/v1/attendance/courses" in paths
+    assert "/api/v1/attendance/courses/{course_id}/sessions" in paths
     assert "/api/v1/attendance/sessions" in paths
+    assert "/api/v1/attendance/sessions/{session_id}/cancel" in paths
     assert "/api/v1/attendance/sessions/{session_id}/finalize" in paths
+    assert "/api/v1/attendance/sessions/{session_id}/submit-neighbors" in paths
     assert "/api/v1/attendance/sessions/{session_id}/audit-and-finalize" in paths
     assert "/api/v1/attendance/sessions/{session_id}" in paths
+    assert "/api/v1/attendance/records/{record_id}/override" in paths
+
+
+def test_openapi_schema_definitions():
+    schemas = app.openapi()["components"]["schemas"]
+    assert "RecordOverrideRequest" in schemas
+    assert "AttendanceSessionResponse" in schemas
+    assert "AttendanceRecordResponse" in schemas
+    assert "CourseCreateRequest" in schemas
+    assert "SubmitNeighborsRequest" in schemas

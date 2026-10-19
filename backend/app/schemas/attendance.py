@@ -58,6 +58,17 @@ class AttendanceRecordResponse(BLEAuditRecordItem):
     model_config = ConfigDict(from_attributes=True)
 
 
+class RecordOverrideRequest(BaseModel):
+    status: str = Field(
+        default="VERIFIED_PRESENT",
+        description="New attendance status: VERIFIED_PRESENT | ABSENT | ISOLATED_FLAGGED",
+    )
+    remarks: Optional[str] = Field(
+        default="Manual override by instructor",
+        description="Reason for manual override",
+    )
+
+
 # ─────────────────────────────────────────────
 # Session
 # ─────────────────────────────────────────────
