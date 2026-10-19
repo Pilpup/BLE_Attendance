@@ -1,0 +1,82 @@
+import uuid
+from datetime import datetime, timezone
+from typing import List, Optional
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric, String
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    full_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    roll_number: Mapped[Optional[str]] = mapped_column(String(50), unique=True, nullable=True, index=True)
+    role: Mapped[str] = mapped_column(String(20), default="STUDENT")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class Course(Base):
+    __tablename__ = "courses"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    course_code: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
+    course_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    teacher_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    
+
+class AttendanceSession(Base):
+    __tablename__ = "attendance_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    course_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("courses.id"))
+    teacher_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    session_token: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="ACTIVE")
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    total_enrolled: Mapped[int] = mapped_column(default=0)
+    total_verified: Mapped[int] = mapped_column(default=0)
+    total_spoofers: Mapped[int] = mapped_column(default=0)
+
+    # Relationship: one session → many records
+    records: Mapped[List["AttendanceRecord"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
+
+
+class AttendanceRecord(Base):
+    __tablename__ = "attendance_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("attendance_sessions.id")
+    )
+    student_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    ble_device_id: Mapped[str] = mapped_column(String(4), nullable=False, index=True)  # 4-char hex
+    status: Mapped[str] = mapped_column(String(30), default="ABSENT")
+    verification_method: Mapped[str] = mapped_column(String(30), default="NONE")
+    affinity_score: Mapped[float] = mapped_column(Numeric(3, 2), default=0.00)
+    bridge_device_id: Mapped[Optional[str]] = mapped_column(String(4), nullable=True)
+    reported_neighbors: Mapped[list] = mapped_column(JSONB, default=list)
+    remarks: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+    # Relationship: many records → one session
+    session: Mapped["AttendanceSession"] = relationship(back_populates="records")
