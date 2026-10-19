@@ -7,9 +7,8 @@ import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
 
 object ApiClient {
-    // 10.0.2.2 maps to host machine localhost in Android Emulator
-    // Update to your PC's LAN IP (e.g. http://192.168.1.50:8000/) for physical phone testing
-    var baseUrl: String = "http://10.0.2.2:8000/"
+    // Live Render cloud backend
+    var baseUrl: String = "https://ble-attendance-api-dbf1.onrender.com/"
         set(value) {
             field = if (value.endsWith("/")) value else "$value/"
             retrofitInstance = null

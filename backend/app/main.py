@@ -41,6 +41,16 @@ app.include_router(attendance.router, prefix=settings.API_V1_STR)
 app.include_router(auth.router, prefix=settings.API_V1_STR)
 
 
+@app.get("/", tags=["System"])
+async def root():
+    return {
+        "status": "online",
+        "service": "BLE Attendance Verification API",
+        "docs": "/docs",
+        "health": "/health"
+    }
+
+
 @app.get("/health", tags=["System"])
 async def health_check():
     return {"status": "ok", "env": settings.APP_ENV}
