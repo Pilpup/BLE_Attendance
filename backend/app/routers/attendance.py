@@ -7,7 +7,12 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.security import get_current_user, require_student, require_teacher
+from app.core.security import (
+    get_current_user,
+    get_optional_user,
+    require_student,
+    require_teacher,
+)
 from app.database import get_db
 from app.models.attendance import AttendanceRecord, AttendanceSession, Course, User
 from app.schemas.attendance import (
@@ -26,6 +31,30 @@ router = APIRouter(prefix="/attendance", tags=["Attendance"])
 # In-memory store for live peer reports submitted by students during active sessions
 live_session_reports: dict[uuid.UUID, dict[str, List[str]]] = {}
 live_session_users: dict[uuid.UUID, dict[str, uuid.UUID]] = {}
+
+
+async def _resolve_session(session_id: str, db: AsyncSession) -> Optional[AttendanceSession]:
+    """Resolves an AttendanceSession by UUID or 4-char session token."""
+    target_uuid = None
+    try:
+        target_uuid = uuid.UUID(session_id)
+    except ValueError:
+        pass
+
+    if target_uuid:
+        query = (
+            select(AttendanceSession)
+            .options(selectinload(AttendanceSession.records))
+            .where(or_(AttendanceSession.id == target_uuid, AttendanceSession.session_token == session_id))
+        )
+    else:
+        query = (
+            select(AttendanceSession)
+            .options(selectinload(AttendanceSession.records))
+            .where(AttendanceSession.session_token == session_id)
+        )
+    result = await db.execute(query)
+    return result.scalars().first()
 
 
 # Mock context: auto-creates a test teacher + course so Swagger testing works
@@ -144,7 +173,7 @@ async def create_attendance_session(
     response_model=AttendanceSessionResponse,
 )
 async def finalize_attendance_session(
-    session_id: uuid.UUID,
+    session_id: str,
     payload: SessionFinalizeRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_teacher),
@@ -154,12 +183,7 @@ async def finalize_attendance_session(
     Teacher's phone posts the full mesh audit results computed locally.
     Stores affinity scores (1.0 / 0.5 / 0.0), bridge nodes, and reported neighbors.
     """
-    result = await db.execute(
-        select(AttendanceSession)
-        .options(selectinload(AttendanceSession.records))
-        .where(AttendanceSession.id == session_id)
-    )
-    session_obj = result.scalars().first()
+    session_obj = await _resolve_session(session_id, db)
 
     if not session_obj:
         raise HTTPException(status_code=404, detail="Attendance session not found")
@@ -169,7 +193,7 @@ async def finalize_attendance_session(
             detail="You can only finalize your own attendance sessions",
         )
     if session_obj.status == "COMPLETED":
-        raise HTTPException(status_code=400, detail="Session has already been finalized")
+        return session_obj
 
     verified_count = 0
     spoofer_count = 0
@@ -213,47 +237,36 @@ async def submit_student_neighbors(
     session_id: str,
     payload: SubmitNeighborsRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_student),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
     """
     Student uploads their Top-3 discovered desk neighbors via Wi-Fi/5G.
     Accepts either UUID or 4-char session token (e.g. '89F2').
+    Supports both authenticated students and unauthenticated/guest students.
     """
-    parsed_uuid = None
-    try:
-        parsed_uuid = uuid.UUID(session_id)
-    except ValueError:
-        pass
-
-    if parsed_uuid:
-        query = select(AttendanceSession).where(
-            or_(AttendanceSession.id == parsed_uuid, AttendanceSession.session_token == session_id)
-        )
-    else:
-        query = select(AttendanceSession).where(
-            AttendanceSession.session_token == session_id
-        )
-
-    result = await db.execute(query)
-    session_obj = result.scalars().first()
+    session_obj = await _resolve_session(session_id, db)
     if not session_obj:
         raise HTTPException(status_code=404, detail="Attendance session not found")
     if session_obj.status != "ACTIVE":
         raise HTTPException(status_code=400, detail="Attendance session is not active")
 
     target_session_id = session_obj.id
-    # Normalize student key to match 4-character BLE short ID
-    if current_user.roll_number and len(current_user.roll_number) >= 4:
-        student_key = current_user.roll_number[-4:].upper()
-    elif current_user.roll_number:
-        student_key = current_user.roll_number.upper()
+    if current_user:
+        # Normalize student key to match 4-character BLE short ID
+        if current_user.roll_number and len(current_user.roll_number) >= 4:
+            student_key = current_user.roll_number[-4:].upper()
+        elif current_user.roll_number:
+            student_key = current_user.roll_number.upper()
+        else:
+            student_key = str(current_user.id).replace("-", "")[:4].upper()
+        live_session_users.setdefault(target_session_id, {})[student_key] = current_user.id
     else:
-        student_key = str(current_user.id).replace("-", "")[:4].upper()
+        raw_id = payload.student_id or "STUD"
+        student_key = raw_id[-4:].upper() if len(raw_id) >= 4 else raw_id.upper()
 
     normalized_neighbors = [n[-4:].upper() if len(n) >= 4 else n.upper() for n in payload.neighbors]
 
     live_session_reports.setdefault(target_session_id, {})[student_key] = normalized_neighbors
-    live_session_users.setdefault(target_session_id, {})[student_key] = current_user.id
 
     if payload.relayed_reports:
         for offline_sender, offline_nbrs in payload.relayed_reports.items():
@@ -273,17 +286,12 @@ async def submit_student_neighbors(
     response_model=AttendanceSessionResponse,
 )
 async def audit_and_finalize_session(
-    session_id: uuid.UUID,
+    session_id: str,
     payload: MeshAuditRunRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
-    result = await db.execute(
-        select(AttendanceSession)
-        .options(selectinload(AttendanceSession.records))
-        .where(AttendanceSession.id == session_id)
-    )
-    session_obj = result.scalars().first()
+    session_obj = await _resolve_session(session_id, db)
 
     if not session_obj:
         raise HTTPException(status_code=404, detail="Attendance session not found")
@@ -293,11 +301,12 @@ async def audit_and_finalize_session(
             detail="You can only finalize your own attendance sessions",
         )
     if session_obj.status == "COMPLETED":
-        raise HTTPException(status_code=400, detail="Session has already been finalized")
+        return session_obj
 
     # merge cloud-submitted student reports with BLE teacher-collected reports
-    combined_reports = {**live_session_reports.pop(session_id, {}), **payload.reports}
-    user_map = live_session_users.pop(session_id, {})
+    cloud_reports = live_session_reports.pop(session_obj.id, {})
+    user_map = live_session_users.pop(session_obj.id, {})
+    combined_reports = {**cloud_reports, **payload.reports}
 
     # execute social-graph audit engine
     audit_results = audit_classroom_mesh(combined_reports)
@@ -339,16 +348,11 @@ async def audit_and_finalize_session(
 
 @router.get("/sessions/{session_id}", response_model=AttendanceSessionResponse)
 async def get_session_details(
-    session_id: uuid.UUID,
+    session_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(
-        select(AttendanceSession)
-        .options(selectinload(AttendanceSession.records))
-        .where(AttendanceSession.id == session_id)
-    )
-    session_obj = result.scalars().first()
+    session_obj = await _resolve_session(session_id, db)
     if not session_obj:
         raise HTTPException(status_code=404, detail="Attendance session not found")
     return session_obj

@@ -95,6 +95,39 @@ async def get_current_user(
     return user
 
 
+# optional authenticated user (returns None if unauthenticated instead of raising 401)
+async def get_optional_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(HTTPBearer(auto_error=False)),
+    db: AsyncSession = Depends(get_db),
+) -> Optional[User]:
+    if not credentials or not credentials.credentials:
+        return None
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+        user_id_str: Optional[str] = payload.get("sub")
+        if not user_id_str:
+            return None
+    except Exception:
+        return None
+
+    try:
+        user_uuid = uuid.UUID(user_id_str)
+        stmt = select(User).where(User.id == user_uuid)
+    except ValueError:
+        stmt = select(User).where(User.roll_number == user_id_str)
+
+    try:
+        result = await db.execute(stmt)
+        return result.scalars().first()
+    except Exception:
+        return None
+
+
 # ensure authenticated user has TEACHER role
 async def require_teacher(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role != "TEACHER":

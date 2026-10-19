@@ -15,12 +15,14 @@ async def lifespan(app: FastAPI):
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-            # Normalize existing PostgreSQL enum columns to VARCHAR to prevent type mismatch
+            # Normalize existing PostgreSQL enum and length columns to VARCHAR(50)
             for stmt in [
                 "ALTER TABLE users ALTER COLUMN role TYPE VARCHAR(50) USING role::text;",
                 "ALTER TABLE attendance_sessions ALTER COLUMN status TYPE VARCHAR(50) USING status::text;",
                 "ALTER TABLE attendance_records ALTER COLUMN status TYPE VARCHAR(50) USING status::text;",
                 "ALTER TABLE attendance_records ALTER COLUMN verification_method TYPE VARCHAR(50) USING verification_method::text;",
+                "ALTER TABLE attendance_records ALTER COLUMN ble_device_id TYPE VARCHAR(50);",
+                "ALTER TABLE attendance_records ALTER COLUMN bridge_device_id TYPE VARCHAR(50);",
             ]:
                 try:
                     await conn.execute(text(stmt))
@@ -78,12 +80,21 @@ async def debug_db():
                 "ALTER TABLE attendance_sessions ALTER COLUMN status TYPE VARCHAR(50) USING status::text;",
                 "ALTER TABLE attendance_records ALTER COLUMN status TYPE VARCHAR(50) USING status::text;",
                 "ALTER TABLE attendance_records ALTER COLUMN verification_method TYPE VARCHAR(50) USING verification_method::text;",
+                "ALTER TABLE attendance_records ALTER COLUMN ble_device_id TYPE VARCHAR(50);",
+                "ALTER TABLE attendance_records ALTER COLUMN bridge_device_id TYPE VARCHAR(50);",
             ]:
                 try:
                     await conn.execute(text(stmt))
                 except Exception:
                     pass
-        return {"status": "connected", "database": "tables and columns verified and normalized successfully"}
+            sess_rows = (await conn.execute(text("SELECT id, session_token, status, total_verified, total_spoofers, created_at FROM attendance_sessions ORDER BY created_at DESC LIMIT 5;"))).mappings().all()
+            rec_rows = (await conn.execute(text("SELECT id, session_id, ble_device_id, status, verification_method, recorded_at FROM attendance_records ORDER BY recorded_at DESC LIMIT 5;"))).mappings().all()
+
+        return {
+            "status": "connected",
+            "recent_sessions": [dict(r) for r in sess_rows],
+            "recent_records": [dict(r) for r in rec_rows],
+        }
     except Exception as e:
         return {"status": "connection_error", "error": str(e), "type": type(e).__name__}
 

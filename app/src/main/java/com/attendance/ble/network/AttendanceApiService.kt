@@ -45,7 +45,7 @@ interface AttendanceApiService {
 
     @POST("api/v1/attendance/sessions/{sessionId}/submit-neighbors")
     suspend fun submitNeighbors(
-        @Header("Authorization") token: String,
+        @Header("Authorization") token: String?,
         @Path("sessionId") sessionId: String,
         @Body body: SubmitNeighborsRequest
     ): Response<Unit>

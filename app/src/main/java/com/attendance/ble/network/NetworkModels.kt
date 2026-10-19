@@ -78,6 +78,7 @@ data class MeshAuditRunRequest(
 
 // Payload when student submits their top neighbors directly
 data class SubmitNeighborsRequest(
+    @SerializedName("student_id") val studentId: String? = null,
     val neighbors: List<String>,
     @SerializedName("relayed_reports") val relayedReports: Map<String, List<String>>? = null
 )

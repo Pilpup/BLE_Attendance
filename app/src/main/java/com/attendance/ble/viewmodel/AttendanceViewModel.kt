@@ -121,8 +121,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         currentRollNumber = prefs.getString("roll_number", defaultLocalId) ?: defaultLocalId
         isTeacherMode = prefs.getBoolean("is_teacher_mode", currentUserRole == "TEACHER")
         val savedUrl = prefs.getString("server_url", null)
-        if (!savedUrl.isNullOrBlank()) {
+        if (!savedUrl.isNullOrBlank() && !savedUrl.contains("10.0.2.2")) {
             ApiClient.baseUrl = savedUrl
+        } else {
+            ApiClient.baseUrl = "https://ble-attendance-api-dbf1.onrender.com/"
+            prefs.edit().putString("server_url", ApiClient.baseUrl).apply()
         }
         if (authToken != null && isTeacherMode) {
             loadCourses()
@@ -301,17 +304,19 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Upload student's own top neighbors over Wi-Fi / cellular
     fun submitMyNeighborsToCloud() {
-        val token = authToken ?: return
         val sessId = detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: return
         val neighborIds = topDeskNeighbours.map { it.peerId }
         val relayed = collectedMeshReports.toMap()
+        val token = authToken
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val req = SubmitNeighborsRequest(
+                    studentId = studentShortId,
                     neighbors = neighborIds,
                     relayedReports = if (relayed.isNotEmpty()) relayed else null
                 )
-                ApiClient.service.submitNeighbors("Bearer $token", sessId, req)
+                val authHeader = if (token != null) "Bearer $token" else null
+                ApiClient.service.submitNeighbors(authHeader, sessId, req)
             } catch (_: Exception) {}
         }
     }
@@ -367,18 +372,96 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }.start()
     }
 
-    // Finalize session and trigger server-side mesh audit
+    // On-device graph audit engine fallback (identical logic to server graph_engine)
+    fun runLocalMeshAudit(reports: Map<String, List<String>>): List<AttendanceRecordItem> {
+        val directMutuals = mutableMapOf<String, List<String>>()
+        val bridgeMap = mutableMapOf<String, String>()
+        val verifiedSet = mutableSetOf<String>()
+        val results = mutableListOf<AttendanceRecordItem>()
+
+        // 1. Direct mutual pairs (A in P(B) and B in P(A))
+        for ((studentId, claimedNeighbors) in reports) {
+            val mutuals = claimedNeighbors.filter { peer ->
+                reports[peer]?.contains(studentId) == true
+            }
+            directMutuals[studentId] = mutuals
+            if (mutuals.isNotEmpty()) {
+                verifiedSet.add(studentId)
+            }
+        }
+
+        // 2. Triadic closure via verified bridges
+        var changed = true
+        while (changed) {
+            changed = false
+            for ((studentId, claimedNeighbors) in reports) {
+                if (!verifiedSet.contains(studentId)) {
+                    val sharedBridges = claimedNeighbors.filter { verifiedSet.contains(it) }.toSet()
+                    if (sharedBridges.size >= 2) {
+                        verifiedSet.add(studentId)
+                        bridgeMap[studentId] = sharedBridges.first()
+                        changed = true
+                    }
+                }
+            }
+        }
+
+        // 3. Classification
+        for ((studentId, claimedNeighbors) in reports) {
+            val mutuals = directMutuals[studentId] ?: emptyList()
+            val (status, method, score, remarks) = when {
+                mutuals.isNotEmpty() -> listOf(
+                    "VERIFIED_PRESENT",
+                    "DIRECT_MUTUAL",
+                    "1.0",
+                    "Direct mutual desk neighbor with [${mutuals.joinToString()}]"
+                )
+                verifiedSet.contains(studentId) -> listOf(
+                    "VERIFIED_PRESENT",
+                    "TRIADIC_CLOSURE",
+                    "0.5",
+                    "Triadic closure via verified bridge node ${bridgeMap[studentId]}"
+                )
+                claimedNeighbors.isEmpty() -> listOf(
+                    "ISOLATED_FLAGGED",
+                    "NONE",
+                    "0.0",
+                    "Zero desk neighbors detected (isolated seat)"
+                )
+                else -> listOf(
+                    "SPOOFER_REJECTED",
+                    "NONE",
+                    "0.0",
+                    "Unreciprocated link to [${claimedNeighbors.joinToString()}] (Hallway Spoofer)"
+                )
+            }
+            results.add(
+                AttendanceRecordItem(
+                    bleDeviceId = studentId,
+                    status = status,
+                    verificationMethod = method,
+                    affinityScore = score.toDoubleOrNull() ?: 0.0,
+                    remarks = remarks
+                )
+            )
+        }
+        return results
+    }
+
+    // Finalize session and trigger server-side mesh audit with on-device fallback
     fun finalizeSessionAndAudit() {
         stopTeacherSession()
 
         val token = authToken
-        val sessId = backendSessionId
+        val sessId = backendSessionId ?: sessionId.takeIf { it != "----" }
+        val reportsMap = collectedMeshReports.toMap()
+
         if (token != null && sessId != null) {
             isCloudSyncing = true
             cloudStatusMessage = "Auditing classroom mesh..."
             viewModelScope.launch(Dispatchers.IO) {
                 try {
-                    val reportPayload = MeshAuditRunRequest(collectedMeshReports.toMap())
+                    val reportPayload = MeshAuditRunRequest(reportsMap)
                     val res = ApiClient.service.auditAndFinalize("Bearer $token", sessId, reportPayload)
                     withContext(Dispatchers.Main) {
                         isCloudSyncing = false
@@ -386,38 +469,59 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             val body = res.body()!!
                             finalizedRecords = body.records ?: emptyList()
                             cloudStatusMessage = "Audit complete: ${body.totalVerified} verified, ${body.totalSpoofers} rejected"
-
-                            // Broadcast air verdicts for verified students
-                            val verifiedList = finalizedRecords
-                                .filter { it.status == "VERIFIED_PRESENT" }
-                                .map { it.bleDeviceId }
-                            broadcastVerdictsSequence(verifiedList)
                         } else {
-                            cloudStatusMessage = "Audit failed: HTTP ${res.code()}"
+                            finalizedRecords = runLocalMeshAudit(reportsMap)
+                            cloudStatusMessage = "Local audit complete: ${finalizedRecords.count { it.status == "VERIFIED_PRESENT" }} verified (server code ${res.code()})"
                         }
+
+                        // Broadcast air verdicts for verified students
+                        val verifiedList = finalizedRecords
+                            .filter { it.status == "VERIFIED_PRESENT" || it.status == "ISOLATED_FLAGGED" }
+                            .map { it.bleDeviceId }
+                        broadcastVerdictsSequence(verifiedList)
                     }
                 } catch (e: Exception) {
                     withContext(Dispatchers.Main) {
                         isCloudSyncing = false
-                        cloudStatusMessage = "Cloud finalize failed: ${e.localizedMessage}"
+                        finalizedRecords = runLocalMeshAudit(reportsMap)
+                        cloudStatusMessage = "Local audit complete: ${finalizedRecords.count { it.status == "VERIFIED_PRESENT" }} verified (offline fallback)"
+                        val verifiedList = finalizedRecords
+                            .filter { it.status == "VERIFIED_PRESENT" || it.status == "ISOLATED_FLAGGED" }
+                            .map { it.bleDeviceId }
+                        broadcastVerdictsSequence(verifiedList)
                     }
                 }
             }
+        } else {
+            finalizedRecords = runLocalMeshAudit(reportsMap)
+            cloudStatusMessage = "Local audit complete: ${finalizedRecords.count { it.status == "VERIFIED_PRESENT" }} verified"
+            val verifiedList = finalizedRecords
+                .filter { it.status == "VERIFIED_PRESENT" || it.status == "ISOLATED_FLAGGED" }
+                .map { it.bleDeviceId }
+            broadcastVerdictsSequence(verifiedList)
         }
     }
 
-    // Sequence through verified students, broadcasting 400ms verdict bursts
+    // Sequence through verified students, broadcasting verdict bursts
     private fun broadcastVerdictsSequence(verifiedRolls: List<String>) {
         if (verifiedRolls.isEmpty()) return
+        var loopCount = 0
+        val maxLoops = 3
         var idx = 0
         fun sendNext() {
             if (idx < verifiedRolls.size) {
                 val target = verifiedRolls[idx]
                 onStartBroadcasting?.invoke("V:$target:OK", AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
                 idx++
-                mainHandler.postDelayed({ sendNext() }, 400L)
+                mainHandler.postDelayed({ sendNext() }, 600L)
             } else {
-                onStopBroadcasting?.invoke()
+                loopCount++
+                if (loopCount < maxLoops) {
+                    idx = 0
+                    sendNext()
+                } else {
+                    onStopBroadcasting?.invoke()
+                }
             }
         }
         sendNext()
@@ -479,30 +583,39 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     "$detectedSessionId$studentShortId"
                 }
 
+                // Broadcast voucher continuously so teacher scan window reliably catches it (35s timeout)
                 onStartBroadcasting?.invoke(voucher, AdvertiseSettings.ADVERTISE_TX_POWER_HIGH)
                 mainHandler.postDelayed({
-                    onStopBroadcasting?.invoke()
-                }, 3000L)
+                    if (studentPhase != StudentPhase.VERIFIED_PRESENT) {
+                        onStopBroadcasting?.invoke()
+                    }
+                }, 35000L)
             }
         }.start()
     }
 
     // Process incoming BLE packet
     fun onPacketReceived(rssi: Int, messageText: String) {
-        // Teacher receiving student vouchers (8, 12, 16, or 20 bytes matching active session ID)
+        val cleanMsg = messageText.trim()
+
+        // Teacher receiving student vouchers (starts with active session ID, >= 8 chars)
         if (isTeacherMode && isSessionActive) {
-            if (messageText.length in listOf(8, 12, 16, 20) && messageText.startsWith(sessionId)) {
-                val senderId = messageText.substring(4, 8)
-                val neighbors = if (messageText.length > 8) messageText.substring(8).chunked(4) else emptyList()
+            if (cleanMsg.startsWith(sessionId) && cleanMsg.length >= 8) {
+                val senderId = cleanMsg.substring(4, 8)
+                val neighbors = if (cleanMsg.length > 8) {
+                    cleanMsg.substring(8).chunked(4).filter { it.length == 4 }
+                } else {
+                    emptyList()
+                }
                 collectedMeshReports[senderId] = neighbors
             }
             return
         }
 
         // Student hearing teacher beacon (S:<SessionID>:<Salt>)
-        val isBeacon = messageText.startsWith("S:") || messageText.startsWith("SESSION:")
+        val isBeacon = cleanMsg.startsWith("S:") || cleanMsg.startsWith("SESSION:")
         if (!isTeacherMode && isBeacon && studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
-            val parts = messageText.split(":")
+            val parts = cleanMsg.split(":")
             if (parts.size >= 3) {
                 detectedSessionId = parts[1]
                 detectedSessionSalt = parts[2]
@@ -513,10 +626,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         // Student hearing peer probe (8 bytes: [SessionID (4)][PeerID (4)])
-        if (!isTeacherMode && messageText.length == 8 && studentPhase == StudentPhase.PROBING_NEIGHBORS) {
+        if (!isTeacherMode && cleanMsg.length == 8 && studentPhase == StudentPhase.PROBING_NEIGHBORS) {
             // Drop packet in 0ms if it came from next door's classroom
-            if (messageText.startsWith(detectedSessionId)) {
-                val peerId = messageText.substring(4)
+            if (cleanMsg.startsWith(detectedSessionId)) {
+                val peerId = cleanMsg.substring(4)
                 if (peerId != studentShortId) {
                     val existing = discoveredPeers[peerId]
                     if (existing != null) {
@@ -531,23 +644,28 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             return
         }
 
-        // Student hearing offline peer relay voucher (8, 12, 16, or 20 bytes)
-        if (!isTeacherMode && messageText.length in listOf(8, 12, 16, 20) && messageText.startsWith(detectedSessionId)) {
-            val senderId = messageText.substring(4, 8)
+        // Student hearing offline peer relay voucher (starts with active session ID, >= 8 chars)
+        if (!isTeacherMode && cleanMsg.length >= 8 && cleanMsg.startsWith(detectedSessionId)) {
+            val senderId = cleanMsg.substring(4, 8)
             if (senderId != studentShortId) {
-                val neighbors = if (messageText.length > 8) messageText.substring(8).chunked(4) else emptyList()
+                val neighbors = if (cleanMsg.length > 8) {
+                    cleanMsg.substring(8).chunked(4).filter { it.length == 4 }
+                } else {
+                    emptyList()
+                }
                 collectedMeshReports[senderId] = neighbors
             }
             return
         }
 
         // Student hearing teacher air verdict (V:<ID>:OK)
-        if (!isTeacherMode && messageText.startsWith("V:")) {
-            val parts = messageText.split(":")
+        if (!isTeacherMode && cleanMsg.startsWith("V:")) {
+            val parts = cleanMsg.split(":")
             if (parts.size >= 2) {
                 val targetId = parts[1].trim()
                 if (targetId == studentShortId || targetId == currentRollNumber) {
                     studentPhase = StudentPhase.VERIFIED_PRESENT
+                    onStopBroadcasting?.invoke()
                 }
             }
             return

@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -41,6 +42,7 @@ fun MainScreen(
     remainingSeconds: Int,
     broadcastPayload: String,
     finalizedRecords: List<AttendanceRecordItem> = emptyList(),
+    collectedVouchers: List<String> = emptyList(),
     isCloudSyncing: Boolean = false,
     cloudStatusMessage: String? = null,
     availableCourses: List<CourseResponse> = emptyList(),
@@ -68,7 +70,7 @@ fun MainScreen(
     userRole: String = "STUDENT",
     isAuthLoading: Boolean = false,
     authErrorText: String? = null,
-    serverUrl: String = "http://10.0.2.2:8000/",
+    serverUrl: String = "https://ble-attendance-api-dbf1.onrender.com/",
     onLogin: (String, String) -> Unit = { _, _ -> },
     onRegister: (RegisterRequest) -> Unit = {},
     onLogout: () -> Unit = {},
@@ -164,6 +166,7 @@ fun MainScreen(
                     remainingSeconds = remainingSeconds,
                     broadcastPayload = broadcastPayload,
                     finalizedRecords = finalizedRecords,
+                    collectedVouchers = collectedVouchers,
                     isCloudSyncing = isCloudSyncing,
                     cloudStatusMessage = cloudStatusMessage,
                     availableCourses = availableCourses,
@@ -198,6 +201,7 @@ private fun TeacherSection(
     remainingSeconds: Int,
     broadcastPayload: String,
     finalizedRecords: List<AttendanceRecordItem>,
+    collectedVouchers: List<String> = emptyList(),
     isCloudSyncing: Boolean,
     cloudStatusMessage: String?,
     availableCourses: List<CourseResponse>,
@@ -462,6 +466,69 @@ private fun TeacherSection(
                 }
             }
 
+            // Live received vouchers tracker
+            if (isSessionActive) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = CardDefaults.cardColors(containerColor = cardBg),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "RECEIVED VOUCHERS (${collectedVouchers.size})",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = textSecondary
+                            )
+                            if (collectedVouchers.isNotEmpty()) {
+                                Surface(shape = RoundedCornerShape(6.dp), color = successGreenBg) {
+                                    Text(
+                                        text = "LIVE",
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = successGreen
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        if (collectedVouchers.isEmpty()) {
+                            Text(
+                                text = "Listening for incoming student vouchers on BLE...",
+                                fontSize = 13.sp,
+                                color = textSecondary
+                            )
+                        } else {
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                items(collectedVouchers) { id ->
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = primaryBlueBg,
+                                        border = BorderStroke(1.dp, primaryBlue)
+                                    ) {
+                                        Text(
+                                            text = "Roll: $id",
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = primaryBlue
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.weight(1f))
         }
 
@@ -476,7 +543,7 @@ private fun TeacherSection(
             )
         ) {
             Text(
-                text = if (isSessionActive) "End Session" else "Start 60s Session",
+                text = if (isSessionActive) "End Session & Audit" else "Start 60s Session",
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Bold
             )

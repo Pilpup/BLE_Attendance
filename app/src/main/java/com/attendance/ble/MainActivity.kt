@@ -118,6 +118,7 @@ class MainActivity : ComponentActivity() {
                     remainingSeconds = viewModel.remainingSeconds,
                     broadcastPayload = viewModel.currentBroadcastToken,
                     finalizedRecords = viewModel.finalizedRecords,
+                    collectedVouchers = viewModel.collectedMeshReports.keys.toList(),
                     isCloudSyncing = viewModel.isCloudSyncing,
                     cloudStatusMessage = viewModel.cloudStatusMessage,
                     availableCourses = viewModel.availableCourses,
@@ -130,7 +131,7 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onStopTeacherSession = {
-                        viewModel.stopTeacherSession()
+                        viewModel.finalizeSessionAndAudit()
                     },
                     onShareAttendance = {
                         shareAttendanceCsv(viewModel.generateCsvReport(), viewModel.sessionId)

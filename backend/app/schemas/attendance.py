@@ -83,6 +83,10 @@ class MeshAuditRunRequest(BaseModel):
 
 
 class SubmitNeighborsRequest(BaseModel):
+    student_id: Optional[str] = Field(
+        default=None,
+        description="Student roll number or 4-char BLE ID if unauthenticated"
+    )
     neighbors: List[str] = Field(
         ...,
         description="Top-3 discovered peer IDs or roll numbers (median RSSI >= -70 dBm)"

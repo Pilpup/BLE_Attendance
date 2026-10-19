@@ -71,11 +71,11 @@ class AttendanceRecord(Base):
     student_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
     )
-    ble_device_id: Mapped[str] = mapped_column(String(4), nullable=False, index=True)  # 4-char hex
-    status: Mapped[str] = mapped_column(String(30), default="ABSENT")
-    verification_method: Mapped[str] = mapped_column(String(30), default="NONE")
+    ble_device_id: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(50), default="ABSENT")
+    verification_method: Mapped[str] = mapped_column(String(50), default="NONE")
     affinity_score: Mapped[float] = mapped_column(Numeric(3, 2), default=0.00)
-    bridge_device_id: Mapped[Optional[str]] = mapped_column(String(4), nullable=True)
+    bridge_device_id: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     reported_neighbors: Mapped[list] = mapped_column(JSONB, default=list)
     remarks: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     recorded_at: Mapped[datetime] = mapped_column(
