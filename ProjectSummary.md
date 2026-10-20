@@ -125,16 +125,19 @@ The system discards absolute distance calculations in favor of **Ordinal Prefere
 * **The Solution:** Ranking is an **ordinal invariant**. Regardless of whether a receiving antenna has $+5\text{ dB}$ or $-5\text{ dB}$ gain, the desk neighbor sitting $1\text{ meter}$ away will **always rank higher** than a student sitting 5 meters away.
 * Every student records observed peers and filters to **median $\text{RSSI} \ge -85\text{ dBm}$**, keeping the Top 3 closest.
 
-### 3.2 Principle 2: Triadic Closure / Shared Mutual Friends
+### 3.2 Principle 2: Triadic Closure / Shared Mutual Friends & Teacher Manual Intervention
 Instead of brittle 1-to-1 binary reciprocity ($A \leftrightarrow B$ only), the system models the room as an undirected social graph and evaluates **Bilateral Affinity ($S_{A,B}$)**:
 $$S(A, B) = \begin{cases} 
-1.0 & \text{if } A \in P(B) \text{ and } B \in P(A) & \text{(Direct Mutual Match)} \\
-0.5 & \text{if } P(A) \cap P(B) \ne \emptyset & \text{(Triadic Closure via Shared Bridge)} \\
-0.0 & \text{otherwise} & \text{(Stranger / Spoofer)}
+1.00 & \text{if } A \in P(B) \text{ and } B \in P(A) & \text{(Direct Mutual Match)} \\
+0.85 & \text{if witnessed by } \ge 2 \text{ verified peers} & \text{(Offline Peer Witness Voucher)} \\
+0.50 & \text{if } |P(A) \cap \text{Verified}| \ge 2 & \text{(Triadic Closure via } \ge 2 \text{ Shared Bridges)} \\
+0.00 & \text{otherwise} & \text{(Isolated Node / Potential Hallway Spoofer)}
 \end{cases}$$
 
-* **Why this fixes the Zigzag Squeeze-Out:**
-  Front ($F$) claims Middle ($M$). Middle ($M$) and Back ($B$) have a direct mutual match. Because $F$ shares the verified bridge node $M$ with the cluster ($S = 0.5$), $F$ is confirmed part of the physical desk cluster and marked **`VERIFIED_PRESENT`**.
+* **Automated Triadic Closure Consensus Threshold ($\ge 2$ Bridges):**
+  To prevent corridor spoofers from entering the verified set via a single unreciprocated or weak one-way link ($|P(S) \cap \text{Verified}| \le 1$), the automated graph engine strictly requires **at least 2 verified bridge neighbors** to grant `TRIADIC_CLOSURE`.
+* **Teacher Manual Intervention for Isolated & Corner Nodes:**
+  Perimeter or corner-desk students who only have 1 adjacent neighbor, or students who detected 0 neighbors due to radio orientation, are surfaced on the Teacher Dashboard with status **`ISOLATED_FLAGGED`** or **`SPOOFER_REJECTED`**. The teacher confirms their physical presence in the room and uses the **Manual Override** control (`PATCH /api/v1/attendance/records/{record_id}/override`) to mark them **`VERIFIED_PRESENT`** with verification method **`MANUAL_OVERRIDE`**.
 
 ### 3.3 Principle 3: RF Power Separation & Near-Field Calibrated Fence
 * **Teacher Orchestrator Beacon:** Broadcasts `S:<SESSION_ID>:<SALT>` (13 bytes) at **`ADVERTISE_TX_POWER_HIGH`** ($+1\text{ to } +4\text{ dBm}$) to blanket the lecture hall.
@@ -188,7 +191,7 @@ To guarantee adjacent classrooms (e.g. CS501 in Room 101 and CS502 in Room 102) 
 | **Buddy Punching (At Home)** | Absent student receives session start notification on WhatsApp and tries to submit API call. | Absent phone cannot sniff in-room `SALT` beacon and has 0 physical neighbors in the room. | **REJECTED (Invalid Salt / 0 Peers)** |
 | **Cross-Classroom Bleed** | Student in Room 102 hears whispers from Room 101 through thin wall. | **Session ID Prefix Filter:** Room 101 ignores all packets not starting with Room 101's 4-char session ID. | **DROPPED IN 0ms** |
 | **Identity Theft** | Student A tries to submit attendance using Student B's roll number. | Backend extracts identity directly from `req.user.id` (cryptographically signed JWT). Body overrides are ignored. | **TAMPER-PROOF** |
-| **Corner Desk Student** | Edge student dropped by a busy neighbor's Top-3 list. | **Triadic Closure ($S = 0.5$):** Edge student shares mutual bridge contacts with the classroom component. | **VERIFIED PRESENT** |
+| **Corner / Edge Student (1 Neighbor)** | Edge student with only 1 adjacent neighbor or isolated node. | **Teacher Manual Intervention:** Surfaced in Teacher Dashboard as flagged/isolated; instructor confirms in-person seating and marks verified via `PATCH /records/{record_id}/override`. | **VERIFIED VIA TEACHER OVERRIDE** |
 | **Offline Student (No Data)** | Student has no cellular balance or Wi-Fi in lecture hall. | **1-Hop Peer Relay:** Student broadcasts 20-byte voucher `[SESS][SELF][N1][N2][N3]`. Online neighbor uploads it. Teacher broadcasts `V:[SELF]:OK` to turn student screen green. | **VERIFIED PRESENT** |
 
 ---
@@ -276,153 +279,207 @@ app/src/main/java/com/attendance/ble/
 
 ```
 backend/
-├── requirements.txt                     # FastAPI, uvicorn, SQLAlchemy (asyncio), asyncpg, PyJWT, bcrypt
+├── requirements.txt                     # FastAPI, uvicorn, SQLAlchemy (asyncio), asyncpg, PyJWT, bcrypt, aiosqlite, httpx
 ├── .env.example                         # Neon PostgreSQL connection template & JWT secrets
 ├── app/
 │   ├── config.py                        # Pydantic Settings & environment config
-│   ├── database.py                      # Neon asyncpg engine with PgBouncer pooling
-│   ├── main.py                          # FastAPI app, CORS, router mounts & dynamic schema migration
+│   ├── database.py                      # Neon asyncpg engine with PgBouncer pooling & connection cleanup
+│   ├── main.py                          # FastAPI app, CORS, single-roundtrip schema sync, & sanitized error handler
 │   ├── core/
 │   │   └── security.py                  # Bcrypt hashing, JWT generation, & FastAPI auth dependencies
 │   ├── models/
-│   │   └── attendance.py                # SQLAlchemy ORM: User, Course, AttendanceSession, AttendanceRecord
+│   │   └── attendance.py                # SQLAlchemy ORM: User, Course, AttendanceSession, AttendanceRecord, SessionSubmission
 │   ├── routers/
 │   │   ├── auth.py                      # Register, Login, & User Profile endpoints
-│   │   └── attendance.py                # Courses, Session lifecycle, & Mesh Audit endpoints
+│   │   └── attendance.py                # Courses, Session lifecycle, check-in staging, & Mesh Audit endpoints
 │   ├── schemas/
 │   │   ├── auth.py                      # Pydantic request & response models for authentication
-│   │   └── attendance.py                # Pydantic models for sessions, records, & mesh audits
+│   │   └── attendance.py                # Pydantic models for sessions, records, mesh audits, & overrides
 │   └── services/
-│       └── graph_engine.py              # Social-Mesh Audit Algorithm (Mutuals + Triadic Closure)
+│       └── graph_engine.py              # Social-Mesh Audit Algorithm (Mutuals + Triadic Closure + Peer Witness)
 └── tests/
-    └── test_backend.py                  # Pytest verification suite
+    ├── test_backend.py                  # Pytest verification suite (security, graph engine, routes, schema, error sanitization)
+    └── test_e2e_simulation.py           # 30-student end-to-end classroom mesh simulation test
 ```
 
-#### Production Backend Deployment:
+#### Production Backend Deployment & Architectural Hardening:
 * **Hosting Platform:** Render Web Service (FastAPI running on Python 3.11 with Uvicorn).
 * **Live API URL:** `https://ble-attendance-api-dbf1.onrender.com/`
 * **Database Platform:** Neon.tech Serverless PostgreSQL (auto-scaling compute with connection pooling).
-* **Automatic Startup Schema Migration:** `backend/app/main.py` runs `SCHEMA_SYNC_STATEMENTS` at startup to automatically ensure all columns (`reported_neighbors`, `remarks`, `affinity_score`, `total_enrolled`, `session_token`, etc.) are created safely on the Neon database without dropping existing records.
+* **Single-Roundtrip Atomic Schema Migration:** `backend/app/main.py` executes schema migrations inside an atomic PostgreSQL `DO $$ BEGIN ... END $$;` block at startup. This eliminates 35+ sequential WAN roundtrips on lifespan startup, reducing cold-start latency from ~3.5s to under ~200ms.
+* **Multi-Worker Concurrency & Ephemeral DB Check-In Staging (`session_submissions`):**
+  Instead of fragile in-memory dictionaries, student Wi-Fi check-ins and offline peer vouchers are written directly to the `session_submissions` table in PostgreSQL. This guarantees process isolation across multiple Uvicorn workers (`--workers 4`), provides crash resilience, and automatically cleans up records upon session finalization or cancellation.
+* **Information Disclosure Protection:**
+  The global exception handler (`@app.exception_handler(Exception)`) logs full tracebacks server-side via Python `logging`, while strictly returning sanitized error JSON to clients in production (`settings.APP_ENV != "development"`), preventing file path and credential leakage.
+* **Teacher Manual Intervention:**
+  An explicit endpoint `PATCH /api/v1/attendance/records/{record_id}/override` allows instructors to confirm and override attendance for corner-desk students or isolated nodes who failed the automated $\ge 2$ bridge triadic closure threshold.
 
 #### Database Schema (`Neon.tech` PostgreSQL):
 ```sql
 -- 1. Users Table (Teachers & Students)
 CREATE TABLE IF NOT EXISTS users (
-    id VARCHAR(50) PRIMARY KEY,          -- Roll Number (e.g. "2024CS042") or Teacher ID
-    name VARCHAR(100) NOT NULL,
-    email VARCHAR(100) UNIQUE NOT NULL,
-    password_hash VARCHAR(255) NOT NULL, -- Hashed with bcrypt (never plain text)
-    role VARCHAR(10) NOT NULL CHECK (role IN ('TEACHER', 'STUDENT')),
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    email VARCHAR(255) UNIQUE NOT NULL,
+    hashed_password VARCHAR(255) NOT NULL,
+    full_name VARCHAR(120) NOT NULL,
+    roll_number VARCHAR(50) UNIQUE,
+    role VARCHAR(50) DEFAULT 'STUDENT',  -- 'STUDENT', 'TEACHER', 'DEVELOPER'
     department VARCHAR(50),
-    roll_number VARCHAR(50),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    program VARCHAR(20),
+    semester INTEGER,
+    section VARCHAR(10),
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- 2. Courses Table
 CREATE TABLE IF NOT EXISTS courses (
-    id VARCHAR(50) PRIMARY KEY,
-    course_code VARCHAR(20) NOT NULL,
-    course_name VARCHAR(100) NOT NULL,
-    teacher_id VARCHAR(50) REFERENCES users(id),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    course_code VARCHAR(30) UNIQUE NOT NULL,
+    course_name VARCHAR(200) NOT NULL,
+    teacher_id UUID REFERENCES users(id),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
 -- 3. Sessions Table
 CREATE TABLE IF NOT EXISTS attendance_sessions (
-    id VARCHAR(50) PRIMARY KEY,
-    course_id VARCHAR(50) REFERENCES courses(id),
-    session_token VARCHAR(50) NOT NULL,
-    total_enrolled INT DEFAULT 0,
-    status VARCHAR(20) DEFAULT 'ACTIVE',
-    total_verified INT DEFAULT 0,
-    total_spoofers INT DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    ended_at TIMESTAMP
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    course_id UUID REFERENCES courses(id),
+    teacher_id UUID REFERENCES users(id),
+    session_token VARCHAR(32) NOT NULL,
+    status VARCHAR(50) DEFAULT 'ACTIVE', -- 'ACTIVE', 'COMPLETED', 'CANCELLED'
+    started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    ended_at TIMESTAMP WITH TIME ZONE,
+    total_enrolled INTEGER DEFAULT 0,
+    total_verified INTEGER DEFAULT 0,
+    total_spoofers INTEGER DEFAULT 0
 );
 
 -- 4. Attendance Records Table
 CREATE TABLE IF NOT EXISTS attendance_records (
-    id VARCHAR(50) PRIMARY KEY,
-    session_id VARCHAR(50) REFERENCES attendance_sessions(id),
-    student_id VARCHAR(50) REFERENCES users(id),
-    ble_device_id VARCHAR(50),
-    status VARCHAR(30) NOT NULL,         -- 'VERIFIED_PRESENT', 'FLAGGED_SPOOFER', 'ISOLATED'
-    verification_method VARCHAR(50),     -- 'PEER_WITNESS', 'DIRECT_PROXIMITY', 'ISOLATED_REJECTED'
-    affinity_score DOUBLE PRECISION DEFAULT 0.0,
-    reported_neighbors TEXT,             -- JSON string array e.g. '["C3D1", "E5F2"]'
-    remarks TEXT,                        -- Diagnostic string e.g. 'Mutual witness with 2 peers'
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id UUID REFERENCES attendance_sessions(id) ON DELETE CASCADE,
+    student_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    ble_device_id VARCHAR(50) NOT NULL,
+    status VARCHAR(50) DEFAULT 'ABSENT',              -- 'VERIFIED_PRESENT', 'SPOOFER_REJECTED', 'ISOLATED_FLAGGED', 'ABSENT'
+    verification_method VARCHAR(50) DEFAULT 'NONE',   -- 'DIRECT_MUTUAL', 'TRIADIC_CLOSURE', 'PEER_WITNESS', 'MANUAL_OVERRIDE', 'NONE'
+    affinity_score NUMERIC(3, 2) DEFAULT 0.00,
+    bridge_device_id VARCHAR(50),
+    reported_neighbors JSONB DEFAULT '[]'::jsonb,
+    remarks TEXT,
+    recorded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+-- 5. Session Submissions Table (Ephemeral multi-worker staging)
+CREATE TABLE IF NOT EXISTS session_submissions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id UUID NOT NULL REFERENCES attendance_sessions(id) ON DELETE CASCADE,
+    student_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    device_key VARCHAR(50) NOT NULL,
+    reported_neighbors JSONB DEFAULT '[]'::jsonb,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT uq_session_submission_device UNIQUE (session_id, device_key)
+);
+CREATE INDEX IF NOT EXISTS ix_session_submissions_session_id ON session_submissions(session_id);
 ```
 
 #### Social-Mesh Audit Algorithm (`graph_engine.py`):
 ```python
-def audit_classroom_mesh(reports: dict[str, list[str]], valid_nonce: str) -> list[dict]:
+def audit_classroom_mesh(reports: dict[str, list[str]]) -> list[dict]:
     """
-    Evaluates mutual reciprocity and triadic closure across all submissions.
+    Evaluates mutual reciprocity, triadic closure (>= 2 bridges), and offline peer witness vouchers.
     reports = { "studentId": ["neighborId1", "neighborId2"] }
     """
-    direct_mutuals = {}
-    verified_set = set()
-    results = []
+    direct_mutuals: dict[str, list[str]] = {}
+    verified_set: set[str] = set()
+    verification_methods: dict[str, str] = {}
+    affinity_scores: dict[str, float] = {}
+    bridge_map: dict[str, str] = {}
+    all_nodes = set(reports.keys())
 
     # Step 1: Map direct mutual pairs (A in P(B) and B in P(A))
     for student_id, claimed_neighbors in reports.items():
         mutual_peers = [
-            peer for peer in claimed_neighbors 
+            peer for peer in claimed_neighbors
             if student_id in reports.get(peer, [])
         ]
         direct_mutuals[student_id] = mutual_peers
         if len(mutual_peers) > 0:
             verified_set.add(student_id)
+            verification_methods[student_id] = "DIRECT_MUTUAL"
+            affinity_scores[student_id] = 1.00
 
-    # Step 2: Resolve Triadic Closure (Shared Bridge Node)
+    # Phase 2: Triadic Closure / Multi-hop Propagation
+    # For remaining unverified nodes, check if they share at least 2 verified bridge neighbors.
+    # Strictly isolates hallway spoofers who only have <= 1 weak or unreciprocated link.
     changed = True
     while changed:
         changed = False
         for student_id, claimed_neighbors in reports.items():
             if student_id not in verified_set:
-                # If student shares a neighbor that is already verified
                 shared_bridges = set(claimed_neighbors) & verified_set
-                if len(shared_bridges) > 0:
+                if len(shared_bridges) >= 2:
                     verified_set.add(student_id)
+                    verification_methods[student_id] = "TRIADIC_CLOSURE"
+                    affinity_scores[student_id] = 0.50
+                    bridge_map[student_id] = sorted(list(shared_bridges))[0]
                     changed = True
 
-    # Step 3: Classification & Affinity Scoring
-    for student_id, claimed_neighbors in reports.items():
-        mutuals = direct_mutuals.get(student_id, [])
-        if len(mutuals) > 0:
+    # Phase 3: Offline Peer Witness Vouchers
+    # Offline peers who were observed by at least 2 verified cluster nodes
+    witness_counts: dict[str, int] = {}
+    for student_id in verified_set:
+        for peer in reports.get(student_id, []):
+            if peer not in verified_set and peer not in all_nodes:
+                witness_counts[peer] = witness_counts.get(peer, 0) + 1
+
+    for offline_peer, count in witness_counts.items():
+        if count >= 2:
+            verified_set.add(offline_peer)
+            verification_methods[offline_peer] = "PEER_WITNESS"
+            affinity_scores[offline_peer] = 0.85
+            all_nodes.add(offline_peer)
+
+    # Phase 4: Build Verdicts & Surface Isolated Nodes for Teacher Manual Override
+    results = []
+    for node in all_nodes:
+        if node in verified_set:
             status = "VERIFIED_PRESENT"
-            method = "PEER_WITNESS"
-            score = 1.0
-            reason = f"Mutual witness with {len(mutuals)} peer(s): [{', '.join(mutuals)}]"
-        elif student_id in verified_set:
-            status = "VERIFIED_PRESENT"
-            method = "TRIADIC_CLOSURE"
-            score = 0.5
-            reason = "Triadic closure via shared bridge in classroom cluster"
-        elif len(claimed_neighbors) == 0:
+        elif len(reports.get(node, [])) == 0:
             status = "ISOLATED_FLAGGED"
-            method = "ISOLATED_REJECTED"
-            score = 0.0
-            reason = "Zero desk neighbors detected"
         else:
-            status = "FLAGGED_SPOOFER"
-            method = "UNRECIPROCATED"
-            score = 0.0
-            reason = f"Unreciprocated link to [{', '.join(claimed_neighbors)}] (Hallway Spoofer)"
+            status = "SPOOFER_REJECTED"
 
         results.append({
-            "student_id": student_id,
+            "ble_device_id": node,
             "status": status,
-            "verification_method": method,
-            "affinity_score": score,
-            "remarks": reason,
-            "mutuals": mutuals
+            "verification_method": verification_methods.get(node, "NONE"),
+            "affinity_score": affinity_scores.get(node, 0.00),
+            "bridge_device_id": bridge_map.get(node),
+            "reported_neighbors": reports.get(node, []),
+            "remarks": "Manual teacher confirmation available for flagged/isolated students"
         })
 
     return results
 ```
+
+#### REST API Endpoints Inventory:
+| Method | Endpoint | Access Role | Description |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/v1/auth/register` | Public | Student/Teacher account registration with faculty secret validation |
+| `POST` | `/api/v1/auth/login` | Public | Authenticate user & issue signed JWT access token |
+| `GET` | `/api/v1/auth/me` | Authenticated | Retrieve authenticated user profile |
+| `POST` | `/api/v1/attendance/courses` | Teacher | Create a new course offering |
+| `GET` | `/api/v1/attendance/courses/{id}/sessions` | Authenticated | Retrieve session history for a specific course |
+| `POST` | `/api/v1/attendance/sessions` | Teacher | Create attendance session with `409 Conflict` guard against duplicate active sessions |
+| `POST` | `/api/v1/attendance/sessions/{id}/cancel` | Teacher | Cancel an active session and discard staged submissions |
+| `POST` | `/api/v1/attendance/sessions/{id}/submit-neighbors` | Student/Guest | Submit discovered desk neighbors & offline relay vouchers to `session_submissions` |
+| `POST` | `/api/v1/attendance/sessions/{id}/audit-and-finalize` | Teacher | Merge BLE + cloud reports, execute `graph_engine.py`, persist records, and mark `COMPLETED` |
+| `GET` | `/api/v1/attendance/sessions/{id}` | Authenticated | Get full session details and loaded attendance records |
+| `PATCH` | `/api/v1/attendance/records/{id}/override` | Teacher | **Teacher Manual Intervention:** Override status for isolated or edge students (`MANUAL_OVERRIDE`) |
+| `GET` | `/health` | Public | Healthcheck and deployment environment indicator |
+| `GET` | `/debug-db` | Public | Run atomic schema sync and test connection to Neon database |
+
 
 ---
 

@@ -91,7 +91,6 @@ def test_mesh_audit_offline_peer_witness():
     assert res_map["OFF1"]["status"] == "VERIFIED_PRESENT"
     assert res_map["OFF1"]["verification_method"] == "PEER_WITNESS"
     assert res_map["OFF1"]["affinity_score"] == 0.85
-    assert "OFF1" in res_map
 
     # OFF2 was only claimed by spoofer D (who is not in verified_set)
     # Therefore OFF2 is NOT verified
@@ -105,7 +104,63 @@ def test_fastapi_routes_registered():
     assert "/api/v1/auth/login" in paths
     assert "/api/v1/auth/me" in paths
     assert "/api/v1/attendance/courses" in paths
+    assert "/api/v1/attendance/courses/{course_id}/sessions" in paths
     assert "/api/v1/attendance/sessions" in paths
+    assert "/api/v1/attendance/sessions/{session_id}/cancel" in paths
     assert "/api/v1/attendance/sessions/{session_id}/finalize" in paths
+    assert "/api/v1/attendance/sessions/{session_id}/submit-neighbors" in paths
     assert "/api/v1/attendance/sessions/{session_id}/audit-and-finalize" in paths
     assert "/api/v1/attendance/sessions/{session_id}" in paths
+    assert "/api/v1/attendance/records/{record_id}/override" in paths
+
+
+def test_openapi_schema_definitions():
+    schemas = app.openapi()["components"]["schemas"]
+    assert "RecordOverrideRequest" in schemas
+    assert "AttendanceSessionResponse" in schemas
+    assert "AttendanceRecordResponse" in schemas
+    assert "CourseCreateRequest" in schemas
+    assert "SubmitNeighborsRequest" in schemas
+
+
+@pytest.mark.anyio
+async def test_global_exception_handler_sanitization():
+    import json
+    from app.main import global_exception_handler
+    from starlette.requests import Request
+
+    dummy_request = Request({"type": "http", "method": "GET", "path": "/test"})
+    exc = RuntimeError("Secret DB connection credentials / internal server path")
+
+    # In production mode: traceback must be masked
+    orig_env = settings.APP_ENV
+    try:
+        settings.APP_ENV = "production"
+        prod_response = await global_exception_handler(dummy_request, exc)
+        prod_data = json.loads(prod_response.body.decode())
+        assert prod_response.status_code == 500
+        assert "traceback" not in prod_data
+        assert prod_data["detail"] == "An internal server error occurred."
+        assert prod_data["type"] == "InternalServerError"
+
+        # In development mode: traceback is available for local debugging
+        settings.APP_ENV = "development"
+        dev_response = await global_exception_handler(dummy_request, exc)
+        dev_data = json.loads(dev_response.body.decode())
+        assert dev_response.status_code == 500
+        assert "traceback" in dev_data
+        assert "RuntimeError" in dev_data["type"]
+    finally:
+        settings.APP_ENV = orig_env
+
+
+def test_session_submission_model_integrity():
+    from app.models.attendance import SessionSubmission
+    columns = {c.name for c in SessionSubmission.__table__.columns}
+    assert "id" in columns
+    assert "session_id" in columns
+    assert "student_id" in columns
+    assert "device_key" in columns
+    assert "reported_neighbors" in columns
+    assert "created_at" in columns
+
