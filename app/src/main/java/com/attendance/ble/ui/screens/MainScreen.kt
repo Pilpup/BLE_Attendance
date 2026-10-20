@@ -75,13 +75,15 @@ fun MainScreen(
     onLogout: () -> Unit = {},
     onUpdateServerUrl: (String) -> Unit = {},
 
+    showAuthDialog: Boolean = false,
+    onDismissAuthDialog: () -> Unit = {},
+    onOpenAuthDialog: () -> Unit = {},
+
     onRequestPermissions: () -> Unit
 ) {
-    var showConfigDialog by remember { mutableStateOf(false) }
-
     val isTeacherPrivileged = isLoggedIn && userRole == "TEACHER"
 
-    if (showConfigDialog) {
+    if (showAuthDialog) {
         AuthServerDialog(
             isLoggedIn = isLoggedIn,
             userName = userName,
@@ -90,7 +92,7 @@ fun MainScreen(
             serverUrl = serverUrl,
             isAuthLoading = isAuthLoading,
             authErrorText = authErrorText,
-            onDismiss = { showConfigDialog = false },
+            onDismiss = onDismissAuthDialog,
             onLogin = onLogin,
             onRegister = onRegister,
             onLogout = onLogout,
@@ -125,7 +127,7 @@ fun MainScreen(
                         shape = RoundedCornerShape(20.dp),
                         color = if (isTeacherPrivileged) childPurpleBg else if (isLoggedIn) primaryBlueBg else logBg,
                         border = BorderStroke(1.dp, if (isTeacherPrivileged) childPurple else if (isLoggedIn) primaryBlue else cardBorder),
-                        modifier = Modifier.clickable { showConfigDialog = true }
+                        modifier = Modifier.clickable { onOpenAuthDialog() }
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),

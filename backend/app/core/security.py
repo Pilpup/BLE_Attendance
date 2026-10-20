@@ -15,12 +15,10 @@ from app.models.attendance import User
 
 security_scheme = HTTPBearer()
 
-
 # hash plain password using bcrypt
 def hash_password(password: str) -> str:
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
-
 
 # verify plain password against bcrypt hash
 def verify_password(plain_password: str, hashed_password: str) -> bool:
@@ -28,7 +26,6 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         plain_password.encode("utf-8"),
         hashed_password.encode("utf-8"),
     )
-
 
 # generate signed JWT access token
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
@@ -46,7 +43,6 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
         settings.JWT_SECRET_KEY,
         algorithm=settings.JWT_ALGORITHM,
     )
-
 
 # decode and extract current authenticated user from PostgreSQL database
 async def get_current_user(
@@ -69,7 +65,7 @@ async def get_current_user(
     except jwt.ExpiredSignatureError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session token has expired",
+            detail="Login session expired. Please sign in again.",
         )
     except jwt.InvalidTokenError:
         raise HTTPException(
@@ -93,7 +89,6 @@ async def get_current_user(
             detail="User not found or account deactivated",
         )
     return user
-
 
 # optional authenticated user (returns None if unauthenticated instead of raising 401)
 async def get_optional_user(
@@ -127,7 +122,6 @@ async def get_optional_user(
     except Exception:
         return None
 
-
 # ensure authenticated user has TEACHER role
 async def require_teacher(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role != "TEACHER":
@@ -136,7 +130,6 @@ async def require_teacher(current_user: User = Depends(get_current_user)) -> Use
             detail="Access restricted: Teacher authorization required",
         )
     return current_user
-
 
 # ensure authenticated user has STUDENT role
 async def require_student(current_user: User = Depends(get_current_user)) -> User:

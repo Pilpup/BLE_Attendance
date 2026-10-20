@@ -63,6 +63,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     val studentShortId: String get() = currentRollNumber.takeLast(4).padStart(4, '0').uppercase()
     var isAuthLoading: Boolean by mutableStateOf(false)
     var authErrorText: String? by mutableStateOf(null)
+    var showAuthDialog: Boolean by mutableStateOf(false)
 
     // Courses for Teacher
     var availableCourses by mutableStateOf<List<CourseResponse>>(emptyList())
@@ -267,6 +268,14 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             .apply()
     }
 
+    // Handles 401 Unauthorized from backend gracefully
+    fun handleAuthExpired(message: String = "Login session expired. Please sign in again.") {
+        logout()
+        authErrorText = message
+        cloudStatusMessage = message
+        showAuthDialog = true
+    }
+
     // Fetch courses taught by teacher
     fun loadCourses() {
         val token = authToken ?: return
@@ -276,7 +285,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 val res = ApiClient.service.listCourses("Bearer $token")
                 withContext(Dispatchers.Main) {
                     isLoadingCourses = false
-                    if (res.isSuccessful && res.body() != null) {
+                    if (res.code() == 401) {
+                        handleAuthExpired()
+                    } else if (res.isSuccessful && res.body() != null) {
                         availableCourses = res.body()!!
                         if (selectedCourse == null && availableCourses.isNotEmpty()) {
                             selectedCourse = availableCourses.first()
@@ -299,7 +310,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     com.attendance.ble.network.CourseCreateRequest(courseCode.trim().uppercase(), courseName.trim())
                 )
                 withContext(Dispatchers.Main) {
-                    if (res.isSuccessful && res.body() != null) {
+                    if (res.code() == 401) {
+                        handleAuthExpired()
+                        onComplete(false)
+                    } else if (res.isSuccessful && res.body() != null) {
                         val created = res.body()!!
                         availableCourses = availableCourses + created
                         selectedCourse = created
@@ -381,7 +395,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     val res = ApiClient.service.createSession("Bearer $token", req)
                     withContext(Dispatchers.Main) {
                         isCloudSyncing = false
-                        if (res.isSuccessful && res.body() != null) {
+                        if (res.code() == 401) {
+                            stopTeacherSession()
+                            handleAuthExpired()
+                        } else if (res.isSuccessful && res.body() != null) {
                             backendSessionId = res.body()!!.id
                             cloudStatusMessage = "Cloud session active: $sessionId"
                         } else {
@@ -430,7 +447,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     val res = ApiClient.service.auditAndFinalize("Bearer $token", sessId, reportPayload)
                     withContext(Dispatchers.Main) {
                         isCloudSyncing = false
-                        if (res.isSuccessful && res.body() != null) {
+                        if (res.code() == 401) {
+                            handleAuthExpired()
+                        } else if (res.isSuccessful && res.body() != null) {
                             val body = res.body()!!
                             finalizedRecords = body.records ?: emptyList()
                             cloudStatusMessage = "Audit complete: ${body.totalVerified} verified, ${body.totalSpoofers} rejected"

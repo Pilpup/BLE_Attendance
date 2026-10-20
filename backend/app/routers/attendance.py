@@ -41,9 +41,6 @@ from app.services.graph_engine import audit_classroom_mesh
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
 
-
-
-
 async def _resolve_session(session_id: str, db: AsyncSession) -> Optional[AttendanceSession]:
     """Resolves an AttendanceSession by UUID or 4-char session token."""
     target_uuid = None
@@ -68,9 +65,7 @@ async def _resolve_session(session_id: str, db: AsyncSession) -> Optional[Attend
     return result.scalars().first()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Helper Context for dev testing if db is empty
-# ─────────────────────────────────────────────────────────────────────────────
 async def _get_or_create_mock_context(db: AsyncSession):
     """Ensures a default teacher and course exist for development testing."""
     result = await db.execute(select(User).limit(1))
@@ -103,9 +98,7 @@ async def _get_or_create_mock_context(db: AsyncSession):
     return teacher, course
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Course Endpoints
-# ─────────────────────────────────────────────────────────────────────────────
 @router.get("/courses", response_model=List[CourseResponse])
 async def list_courses(db: AsyncSession = Depends(get_db)):
     """List available courses. Use the returned UUID as course_id when creating a session."""
@@ -158,9 +151,7 @@ async def list_course_sessions(
     return result.scalars().all()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Session Lifecycle & Guardrails
-# ─────────────────────────────────────────────────────────────────────────────
 @router.post(
     "/sessions",
     response_model=AttendanceSessionResponse,
@@ -243,10 +234,6 @@ async def cancel_attendance_session(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
-    """
-    [Guardrail]: Teacher cancels an accidental or abandoned session.
-    Prevents lingering active session locks.
-    """
     result = await db.execute(
         select(AttendanceSession).where(AttendanceSession.id == session_id)
     )
@@ -289,10 +276,6 @@ async def finalize_attendance_session(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
-    """
-    Client-side audit upload: Teacher phone posts pre-calculated graph results.
-    [Guardrail]: Enforces status != COMPLETED and status != CANCELLED.
-    """
     session_obj = await _resolve_session(session_id, db)
 
     if not session_obj:
@@ -354,11 +337,6 @@ async def submit_student_neighbors(
     db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_user),
 ):
-    """
-    Student uploads their Top-3 discovered desk neighbors via Wi-Fi/5G.
-    Accepts either UUID or 4-char session token (e.g. '89F2').
-    Supports both authenticated students and unauthenticated/guest students.
-    """
     session_obj = await _resolve_session(session_id, db)
     if not session_obj:
         raise HTTPException(status_code=404, detail="Attendance session not found")
@@ -450,10 +428,6 @@ async def audit_and_finalize_session(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_teacher),
 ):
-    """
-    Server-side audit execution: Runs audit_classroom_mesh() on the backend.
-    [Guardrail]: Enforces status != COMPLETED and status != CANCELLED.
-    """
     session_obj = await _resolve_session(session_id, db)
 
     if not session_obj:
@@ -542,9 +516,7 @@ async def get_session_details(
     return session_obj
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Teacher Record Override Endpoint
-# ─────────────────────────────────────────────────────────────────────────────
 @router.patch("/records/{record_id}/override", response_model=AttendanceRecordResponse)
 async def override_attendance_record(
     record_id: uuid.UUID,
