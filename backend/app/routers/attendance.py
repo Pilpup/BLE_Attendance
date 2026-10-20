@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -16,7 +16,7 @@ from app.core.security import (
     require_teacher,
 )
 from app.database import get_db
-from app.models.attendance import AttendanceRecord, AttendanceSession, Course, User
+from app.models.attendance import AttendanceRecord, AttendanceSession, Course, SessionSubmission, User
 from app.schemas.attendance import (
     AttendanceRecordResponse,
     AttendanceSessionResponse,
@@ -32,9 +32,7 @@ from app.services.graph_engine import audit_classroom_mesh
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
 
-# In-memory store for live peer reports submitted by students during active sessions
-live_session_reports: dict[uuid.UUID, dict[str, List[str]]] = {}
-live_session_users: dict[uuid.UUID, dict[str, uuid.UUID]] = {}
+
 
 
 async def _resolve_session(session_id: str, db: AsyncSession) -> Optional[AttendanceSession]:
@@ -261,6 +259,9 @@ async def cancel_attendance_session(
 
     session_obj.status = "CANCELLED"
     session_obj.ended_at = datetime.now(timezone.utc)
+    await db.execute(
+        delete(SessionSubmission).where(SessionSubmission.session_id == session_obj.id)
+    )
     await db.commit()
     await db.refresh(session_obj)
     return session_obj
@@ -361,20 +362,57 @@ async def submit_student_neighbors(
             student_key = current_user.roll_number.upper()
         else:
             student_key = str(current_user.id).replace("-", "")[:4].upper()
-        live_session_users.setdefault(target_session_id, {})[student_key] = current_user.id
+        user_id = current_user.id
     else:
         raw_id = payload.student_id or "STUD"
         student_key = raw_id[-4:].upper() if len(raw_id) >= 4 else raw_id.upper()
+        user_id = None
 
     normalized_neighbors = [n[-4:].upper() if len(n) >= 4 else n.upper() for n in payload.neighbors]
 
-    live_session_reports.setdefault(target_session_id, {})[student_key] = normalized_neighbors
+    # Persist student check-in in database (multi-worker safe, crash resilient)
+    existing_stmt = select(SessionSubmission).where(
+        SessionSubmission.session_id == target_session_id,
+        SessionSubmission.device_key == student_key,
+    )
+    existing_res = await db.execute(existing_stmt)
+    existing_sub = existing_res.scalar_one_or_none()
+
+    if existing_sub:
+        existing_sub.reported_neighbors = normalized_neighbors
+        if user_id:
+            existing_sub.student_id = user_id
+    else:
+        new_sub = SessionSubmission(
+            session_id=target_session_id,
+            student_id=user_id,
+            device_key=student_key,
+            reported_neighbors=normalized_neighbors,
+        )
+        db.add(new_sub)
 
     if payload.relayed_reports:
         for offline_sender, offline_nbrs in payload.relayed_reports.items():
             sender_key = offline_sender[-4:].upper() if len(offline_sender) >= 4 else offline_sender.upper()
             norm_nbrs = [n[-4:].upper() if len(n) >= 4 else n.upper() for n in offline_nbrs]
-            live_session_reports[target_session_id].setdefault(sender_key, norm_nbrs)
+
+            relay_stmt = select(SessionSubmission).where(
+                SessionSubmission.session_id == target_session_id,
+                SessionSubmission.device_key == sender_key,
+            )
+            relay_res = await db.execute(relay_stmt)
+            existing_relay = relay_res.scalar_one_or_none()
+
+            if not existing_relay:
+                relay_sub = SessionSubmission(
+                    session_id=target_session_id,
+                    student_id=None,
+                    device_key=sender_key,
+                    reported_neighbors=norm_nbrs,
+                )
+                db.add(relay_sub)
+
+    await db.commit()
 
     return {
         "status": "success",
@@ -414,9 +452,17 @@ async def audit_and_finalize_session(
     if session_obj.status == "COMPLETED":
         return session_obj
 
-    # merge cloud-submitted student reports with BLE teacher-collected reports
-    cloud_reports = live_session_reports.pop(session_obj.id, {})
-    user_map = live_session_users.pop(session_obj.id, {})
+    # Fetch all cloud-submitted student and relay reports from the database
+    sub_stmt = select(SessionSubmission).where(SessionSubmission.session_id == session_obj.id)
+    sub_res = await db.execute(sub_stmt)
+    submissions = sub_res.scalars().all()
+
+    cloud_reports: dict[str, List[str]] = {s.device_key: s.reported_neighbors for s in submissions}
+    user_map: dict[str, uuid.UUID] = {s.device_key: s.student_id for s in submissions if s.student_id}
+
+    # Clean up ephemeral session submissions now that attendance records are finalized
+    await db.execute(delete(SessionSubmission).where(SessionSubmission.session_id == session_obj.id))
+
     combined_reports = {**cloud_reports, **payload.reports}
 
     # execute social-graph audit engine

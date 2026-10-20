@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import ENUM as PG_ENUM, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -109,3 +109,27 @@ class AttendanceRecord(Base):
 
     # Relationship: many records → one session
     session: Mapped["AttendanceSession"] = relationship(back_populates="records")
+
+
+class SessionSubmission(Base):
+    __tablename__ = "session_submissions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("attendance_sessions.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    student_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    device_key: Mapped[str] = mapped_column(String(50), nullable=False)
+    reported_neighbors: Mapped[list] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), default=list
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "device_key", name="uq_session_submission_device"),
+    )
+

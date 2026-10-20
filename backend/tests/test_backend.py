@@ -121,3 +121,46 @@ def test_openapi_schema_definitions():
     assert "AttendanceRecordResponse" in schemas
     assert "CourseCreateRequest" in schemas
     assert "SubmitNeighborsRequest" in schemas
+
+
+@pytest.mark.anyio
+async def test_global_exception_handler_sanitization():
+    import json
+    from app.main import global_exception_handler
+    from starlette.requests import Request
+
+    dummy_request = Request({"type": "http", "method": "GET", "path": "/test"})
+    exc = RuntimeError("Secret DB connection credentials / internal server path")
+
+    # In production mode: traceback must be masked
+    orig_env = settings.APP_ENV
+    try:
+        settings.APP_ENV = "production"
+        prod_response = await global_exception_handler(dummy_request, exc)
+        prod_data = json.loads(prod_response.body.decode())
+        assert prod_response.status_code == 500
+        assert "traceback" not in prod_data
+        assert prod_data["detail"] == "An internal server error occurred."
+        assert prod_data["type"] == "InternalServerError"
+
+        # In development mode: traceback is available for local debugging
+        settings.APP_ENV = "development"
+        dev_response = await global_exception_handler(dummy_request, exc)
+        dev_data = json.loads(dev_response.body.decode())
+        assert dev_response.status_code == 500
+        assert "traceback" in dev_data
+        assert "RuntimeError" in dev_data["type"]
+    finally:
+        settings.APP_ENV = orig_env
+
+
+def test_session_submission_model_integrity():
+    from app.models.attendance import SessionSubmission
+    columns = {c.name for c in SessionSubmission.__table__.columns}
+    assert "id" in columns
+    assert "session_id" in columns
+    assert "student_id" in columns
+    assert "device_key" in columns
+    assert "reported_neighbors" in columns
+    assert "created_at" in columns
+
