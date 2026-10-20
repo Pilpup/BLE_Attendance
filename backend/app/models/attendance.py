@@ -59,9 +59,6 @@ class Course(Base):
     course_code: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
     course_name: Mapped[str] = mapped_column(String(200), nullable=False)
     teacher_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
-    )
 
 
 class AttendanceSession(Base):
