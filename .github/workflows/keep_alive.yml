@@ -1,0 +1,28 @@
+name: Keep Backend Alive
+
+on:
+  schedule:
+    # Runs every 10 minutes from 06:00 UTC to 14:00 UTC (9:00 AM to 5:00 PM local time UTC+3)
+    # Cron format: minute hour day-of-month month day-of-week
+    # Monday to Friday (1-5)
+    - cron: '*/10 6-14 * * 1-5'
+  workflow_dispatch: # Allows manual trigger from GitHub web UI anytime
+
+jobs:
+  ping:
+    name: Ping Render Backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Ping Health Endpoint
+        run: |
+          echo "Pinging Render backend at $(date -u)..."
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 https://ble-attendance-api-dbf1.onrender.com/health)
+          echo "Received HTTP status: $HTTP_STATUS"
+          if [ "$HTTP_STATUS" -eq 200 ]; then
+            echo "Render backend is alive and healthy!"
+          else
+            echo "Backend returned HTTP $HTTP_STATUS"
+            exit 1
+          fi
