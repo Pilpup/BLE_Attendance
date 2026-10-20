@@ -36,6 +36,12 @@ interface AttendanceApiService {
         @Body body: SessionCreateRequest
     ): Response<AttendanceSessionResponse>
 
+    @POST("api/v1/attendance/sessions/{sessionId}/cancel")
+    suspend fun cancelSession(
+        @Header("Authorization") token: String,
+        @Path("sessionId") sessionId: String
+    ): Response<AttendanceSessionResponse>
+
     @POST("api/v1/attendance/sessions/{sessionId}/audit-and-finalize")
     suspend fun auditAndFinalize(
         @Header("Authorization") token: String,

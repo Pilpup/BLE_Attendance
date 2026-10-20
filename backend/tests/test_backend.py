@@ -164,3 +164,98 @@ def test_session_submission_model_integrity():
     assert "reported_neighbors" in columns
     assert "created_at" in columns
 
+
+def test_is_session_stale_naive_and_aware():
+    from datetime import datetime, timedelta, timezone
+    from app.routers.attendance import _is_session_stale
+
+    assert _is_session_stale(None, minutes=2) is False
+
+    now_utc = datetime.now(timezone.utc)
+    recent_aware = now_utc - timedelta(seconds=30)
+    assert _is_session_stale(recent_aware, minutes=2) is False
+
+    old_aware = now_utc - timedelta(minutes=3)
+    assert _is_session_stale(old_aware, minutes=2) is True
+
+    # Test offset-naive datetimes (SQLite stores naive UTC datetimes)
+    recent_naive = now_utc.replace(tzinfo=None) - timedelta(seconds=30)
+    assert _is_session_stale(recent_naive, minutes=2) is False
+
+    old_naive = now_utc.replace(tzinfo=None) - timedelta(minutes=3)
+    assert _is_session_stale(old_naive, minutes=2) is True
+
+
+@pytest.mark.anyio
+async def test_session_auto_supersede():
+    import uuid
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from app.database import get_db
+    from app.models.attendance import Base, AttendanceSession
+    from sqlalchemy import select
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with test_session_factory() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Register and login teacher
+        t_reg = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "name": "Prof. Auto Supersede",
+                "email": "auto.supersede@univ.edu",
+                "password": "Password123!",
+                "role": "TEACHER",
+                "roll_number": "EMP999",
+                "department": "CSE",
+                "faculty_code": settings.FACULTY_SIGNUP_SECRET,
+            },
+        )
+        assert t_reg.status_code == 201
+
+        t_login = await client.post(
+            "/api/v1/auth/login",
+            json={"email": "auto.supersede@univ.edu", "password": "Password123!"},
+        )
+        assert t_login.status_code == 200
+        token = t_login.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        # Create session 1
+        s1 = await client.post(
+            "/api/v1/attendance/sessions",
+            headers=headers,
+            json={"session_token": "AAAA", "total_enrolled": 20},
+        )
+        assert s1.status_code == 201
+        s1_id = s1.json()["id"]
+
+        # Directly create session 2 without closing session 1 (simulating teacher closed app and reopened)
+        s2 = await client.post(
+            "/api/v1/attendance/sessions",
+            headers=headers,
+            json={"session_token": "BBBB", "total_enrolled": 20},
+        )
+        # Should succeed (HTTP 201) instead of failing with HTTP 409
+        assert s2.status_code == 201
+        s2_id = s2.json()["id"]
+        assert s1_id != s2_id
+
+        # Check DB state: session 1 must have been superseded (CANCELLED or EXPIRED)
+        async with test_session_factory() as s:
+            res = await s.execute(select(AttendanceSession).where(AttendanceSession.id == uuid.UUID(s1_id)))
+            s1_db = res.scalar_one()
+            assert s1_db.status in ("CANCELLED", "EXPIRED")
+
+

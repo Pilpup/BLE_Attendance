@@ -132,9 +132,19 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // Clear previous audit results to start fresh
+    // Clear previous audit results or cancel active session to start fresh
     fun resetSession() {
+        val sessId = backendSessionId
+        val token = authToken
+        if (isSessionActive && token != null && sessId != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    ApiClient.service.cancelSession("Bearer $token", sessId)
+                } catch (_: Exception) { }
+            }
+        }
         stopTeacherSession()
+        backendSessionId = null
         finalizedRecords = emptyList()
         cloudStatusMessage = null
     }

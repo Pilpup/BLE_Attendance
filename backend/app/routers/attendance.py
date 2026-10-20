@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+
+
+def _is_session_stale(started_at: Optional[datetime], minutes: int) -> bool:
+    if not started_at:
+        return False
+    now = datetime.now(timezone.utc)
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=timezone.utc)
+    return (now - started_at) > timedelta(minutes=minutes)
 
 from app.core.security import (
     get_current_user,
@@ -196,18 +205,21 @@ async def create_attendance_session(
             await db.refresh(default_c)
             target_course_id = default_c.id
 
-    # Guardrail: Check if an ACTIVE session is already in progress
+    # Auto-supersede and expire any lingering ACTIVE sessions for this course
     active_check = await db.execute(
         select(AttendanceSession).where(
             AttendanceSession.course_id == target_course_id,
             AttendanceSession.status == "ACTIVE",
         )
     )
-    if active_check.scalars().first():
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="An active attendance session is already in progress for this course. Finalize or cancel it before starting a new one.",
-        )
+    existing_active = active_check.scalars().all()
+    now_utc = datetime.now(timezone.utc)
+    for stale in existing_active:
+        is_stale = _is_session_stale(stale.started_at, minutes=2)
+        stale.status = "EXPIRED" if is_stale else "CANCELLED"
+        stale.ended_at = now_utc
+    if existing_active:
+        await db.commit()
 
     session = AttendanceSession(
         id=uuid.uuid4(),
@@ -352,6 +364,13 @@ async def submit_student_neighbors(
         raise HTTPException(status_code=404, detail="Attendance session not found")
     if session_obj.status != "ACTIVE":
         raise HTTPException(status_code=400, detail="Attendance session is not active")
+
+    # TTL check: Auto-expire active sessions older than 5 minutes
+    if _is_session_stale(session_obj.started_at, minutes=5):
+        session_obj.status = "EXPIRED"
+        session_obj.ended_at = datetime.now(timezone.utc)
+        await db.commit()
+        raise HTTPException(status_code=400, detail="Attendance session has expired")
 
     target_session_id = session_obj.id
     if current_user:
