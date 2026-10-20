@@ -5,7 +5,7 @@ on:
     # Runs every 10 minutes from 06:00 UTC to 14:00 UTC (9:00 AM to 5:00 PM local time UTC+3)
     # Cron format: minute hour day-of-month month day-of-week
     # Monday to Friday (1-5)
-    - cron: '*/10 6-14 * * 1-5'
+    - cron: '*/10 6-15 * * 1-6'
   workflow_dispatch: # Allows manual trigger from GitHub web UI anytime
 
 jobs:
