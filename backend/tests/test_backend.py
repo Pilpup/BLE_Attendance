@@ -76,21 +76,29 @@ def test_mesh_audit_topology():
 
 def test_mesh_audit_offline_peer_witness():
     # Online students A and B verify each other
-    # A and B both hear offline student OFF1 at desk range
-    # Hallway spoofer D claims OFF2, but D is unverified
+    # A and B both hear offline student OFF1 at desk range (2 witnesses -> Verified)
+    # A alone hears offline student OFF_SINGLE (1 witness -> Isolated Flagged for Teacher Override)
+    # Hallway spoofer D claims OFF2, but D is unverified (0 verified witnesses -> Ignored)
     reports = {
-        "A": ["B", "OFF1"],
+        "A": ["B", "OFF1", "OFF_SINGLE"],
         "B": ["A", "OFF1"],
         "D": ["OFF2"],
     }
     results = audit_classroom_mesh(reports)
     res_map = {r["ble_device_id"]: r for r in results}
 
-    # OFF1 was witnessed by 2 verified peers (A and B)
+    # OFF1 was witnessed by 2 verified peers (A and B) -> Verified Present
     assert "OFF1" in res_map
     assert res_map["OFF1"]["status"] == "VERIFIED_PRESENT"
     assert res_map["OFF1"]["verification_method"] == "PEER_WITNESS"
     assert res_map["OFF1"]["affinity_score"] == 0.85
+
+    # OFF_SINGLE was witnessed by only 1 peer (A) -> Isolated Flagged (Cannot buddy-punch)
+    assert "OFF_SINGLE" in res_map
+    assert res_map["OFF_SINGLE"]["status"] == "ISOLATED_FLAGGED"
+    assert res_map["OFF_SINGLE"]["verification_method"] == "NONE"
+    assert res_map["OFF_SINGLE"]["affinity_score"] == 0.00
+    assert "Teacher manual override" in res_map["OFF_SINGLE"]["remarks"]
 
     # OFF2 was only claimed by spoofer D (who is not in verified_set)
     # Therefore OFF2 is NOT verified

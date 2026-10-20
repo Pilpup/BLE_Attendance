@@ -125,19 +125,22 @@ The system discards absolute distance calculations in favor of **Ordinal Prefere
 * **The Solution:** Ranking is an **ordinal invariant**. Regardless of whether a receiving antenna has $+5\text{ dB}$ or $-5\text{ dB}$ gain, the desk neighbor sitting $1\text{ meter}$ away will **always rank higher** than a student sitting 5 meters away.
 * Every student records observed peers and filters to **median $\text{RSSI} \ge -85\text{ dBm}$**, keeping the Top 3 closest.
 
-### 3.2 Principle 2: Triadic Closure / Shared Mutual Friends & Teacher Manual Intervention
-Instead of brittle 1-to-1 binary reciprocity ($A \leftrightarrow B$ only), the system models the room as an undirected social graph and evaluates **Bilateral Affinity ($S_{A,B}$)**:
+### 3.2 Principle 2: Triadic Closure / Shared Mutual Friends & Pure In-Degree Peer Witnessing
+Instead of brittle 1-to-1 binary reciprocity ($A \leftrightarrow B$ only) or fragile 1-hop multi-packet relay broadcasting, the system models the room as a social graph and evaluates **Bilateral Affinity ($S_{A,B}$)** and **Directed In-Degree Witnessing**:
 $$S(A, B) = \begin{cases} 
 1.00 & \text{if } A \in P(B) \text{ and } B \in P(A) & \text{(Direct Mutual Match)} \\
-0.85 & \text{if witnessed by } \ge 2 \text{ verified peers} & \text{(Offline Peer Witness Voucher)} \\
+0.85 & \text{if witnessed by } \ge 2 \text{ verified peers} & \text{(Pure Graph In-Degree Peer Witness)} \\
 0.50 & \text{if } |P(A) \cap \text{Verified}| \ge 2 & \text{(Triadic Closure via } \ge 2 \text{ Shared Bridges)} \\
+0.00 & \text{if witnessed by } \le 1 \text{ verified peer} & \text{(Flagged for Teacher Manual Override)} \\
 0.00 & \text{otherwise} & \text{(Isolated Node / Potential Hallway Spoofer)}
 \end{cases}$$
 
-* **Automated Triadic Closure Consensus Threshold ($\ge 2$ Bridges):**
-  To prevent corridor spoofers from entering the verified set via a single unreciprocated or weak one-way link ($|P(S) \cap \text{Verified}| \le 1$), the automated graph engine strictly requires **at least 2 verified bridge neighbors** to grant `TRIADIC_CLOSURE`.
-* **Teacher Manual Intervention for Isolated & Corner Nodes:**
-  Perimeter or corner-desk students who only have 1 adjacent neighbor, or students who detected 0 neighbors due to radio orientation, are surfaced on the Teacher Dashboard with status **`ISOLATED_FLAGGED`** or **`SPOOFER_REJECTED`**. The teacher confirms their physical presence in the room and uses the **Manual Override** control (`PATCH /api/v1/attendance/records/{record_id}/override`) to mark them **`VERIFIED_PRESENT`** with verification method **`MANUAL_OVERRIDE`**.
+* **Pure In-Degree Graph Witnessing for Offline Students:**
+  Rather than requiring offline phones to switch radio modes and broadcast multi-hop relay packets (which cause radio collisions and timing sync failures), every phone (online or offline) broadcasts the exact same uniform 8-byte whisper probe `[SESSION][SELF]` at `ADVERTISE_TX_POWER_LOW`.
+  Online desk neighbors within $2.5\text{m}$ naturally detect the offline student's whisper at $\ge -85\text{ dBm}$ and include them in their top-3 candidate lists uploaded to the cloud.
+  When the backend executes the graph audit, any student with no direct HTTP upload who has an in-degree from **$\ge 2$ independent verified classmates** is automatically granted **`VERIFIED_PRESENT`** with verification method **`PEER_WITNESS`** ($0.85$ affinity).
+* **Single-Witness Corner Defense:**
+  If an offline student was witnessed by only 1 verified classmate (e.g., sitting on a perimeter corner desk where only 1 neighbor is online), the system classifies them as **`ISOLATED_FLAGGED`** ($0.00$ affinity) to prevent single-witness buddy punching. The teacher simply confirms their seating visually and uses the **Manual Override** control (`PATCH /api/v1/attendance/records/{record_id}/override`) to mark them verified.
 
 ### 3.3 Principle 3: RF Power Separation & Near-Field Calibrated Fence
 * **Teacher Orchestrator Beacon:** Broadcasts `S:<SESSION_ID>:<SALT>` (13 bytes) at **`ADVERTISE_TX_POWER_HIGH`** ($+1\text{ to } +4\text{ dBm}$) to blanket the lecture hall.
@@ -153,8 +156,7 @@ Legacy BLE advertising reserves 7 bytes for headers, leaving **strictly 24 bytes
 | Packet Type | Wire Format | Byte Size | Transmitter | Power Level | Purpose |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Teacher Beacon** | `S:<SESSION_ID>:<SALT>` | **13 bytes** | Teacher | `TX_POWER_HIGH` | Starts room window, syncs time OTP |
-| **Student Probe** | `[SESSION_ID (4)][SELF_ID (4)]` | **8 bytes** | Student | `TX_POWER_LOW` | 5-second near-field desk whisper |
-| **Offline Relay Voucher** | `[SESSION_ID (4)][SELF_ID (4)][N1 (4)][N2 (4)][N3 (4)]` | **12–20 bytes** | Offline Student | `TX_POWER_HIGH` | Passes mutual proof to online neighbors |
+| **Student Whisper Probe** | `[SESSION_ID (4)][SELF_ID (4)]` | **8 bytes** | Student (Online & Offline) | `TX_POWER_LOW` | 5-second near-field desk whisper |
 | **Teacher Air Verdict** | `V:<SELF_ID (4)>:OK` | **11 bytes** | Teacher | `TX_POWER_HIGH` | Broadcasts verified list to offline phones |
 
 > [!NOTE]

@@ -344,14 +344,15 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         onStopScanning?.invoke()
                     } else {
                         // Offline or non-200: fallback to local discovery complete
+                        // Student is verified via pure in-degree graph witnessing from online classmates
                         studentPhase = StudentPhase.DISCOVERY_COMPLETE
                         onStopScanning?.invoke()
                     }
                 }
             } catch (_: Exception) {
                 withContext(Dispatchers.Main) {
-                    // Offline fallback: BLE discovery was complete, neighbors detected.
-                    // Student will be verified via peer witnessing by online neighbors.
+                    // Offline fallback: BLE discovery was complete, near-field whisper was emitted.
+                    // Student will be verified via pure in-degree graph witnessing from online desk neighbors.
                     studentPhase = StudentPhase.DISCOVERY_COMPLETE
                     onStopScanning?.invoke()
                 }
@@ -527,7 +528,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 if (peerId != studentShortId) {
                     val existing = discoveredPeers[peerId]
                     if (existing != null) {
-                        existing.rssiSamples.add(rssi)
+                        val updatedSamples = existing.rssiSamples.toMutableList().apply { add(rssi) }
+                        discoveredPeers[peerId] = existing.copy(rssiSamples = updatedSamples)
                     } else {
                         val newPeer = PeerData(peerId)
                         newPeer.rssiSamples.add(rssi)

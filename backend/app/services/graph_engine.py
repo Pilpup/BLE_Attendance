@@ -73,7 +73,7 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
             "mutuals": mutuals,
         })
 
-    # Step 4: Handle offline students witnessed by verified peers in class
+    # Step 4: Pure In-Degree Social Graph Witnessing for Offline Students
     # Any peer mentioned in a verified student's desk neighbors who did not submit a report directly
     witness_map: Dict[str, List[str]] = {}
     for reporter_id in verified_set:
@@ -82,15 +82,30 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
                 witness_map.setdefault(neighbor, []).append(reporter_id)
 
     for offline_id, witnesses in witness_map.items():
-        results.append({
-            "ble_device_id": offline_id,
-            "status": "VERIFIED_PRESENT",
-            "verification_method": "PEER_WITNESS",
-            "affinity_score": 0.85 if len(witnesses) >= 2 else 0.70,
-            "bridge_device_id": witnesses[0] if witnesses else None,
-            "reported_neighbors": [],
-            "remarks": f"Offline student witnessed by verified neighbor(s) [{', '.join(witnesses)}]",
-            "mutuals": witnesses,
-        })
+        if len(witnesses) >= 2:
+            # Verified via >= 2 independent verified classmates (Tamper-proof against buddy punching)
+            results.append({
+                "ble_device_id": offline_id,
+                "status": "VERIFIED_PRESENT",
+                "verification_method": "PEER_WITNESS",
+                "affinity_score": 0.85,
+                "bridge_device_id": witnesses[0],
+                "reported_neighbors": [],
+                "remarks": f"Offline student witnessed by {len(witnesses)} verified classmates [{', '.join(witnesses)}]",
+                "mutuals": witnesses,
+            })
+        else:
+            # Single witness (Edge/corner desk student or potential buddy-punch attempt)
+            # Surfaced for Teacher Manual Override
+            results.append({
+                "ble_device_id": offline_id,
+                "status": "ISOLATED_FLAGGED",
+                "verification_method": "NONE",
+                "affinity_score": 0.00,
+                "bridge_device_id": witnesses[0],
+                "reported_neighbors": [],
+                "remarks": f"Single verified witness [{witnesses[0]}] - Teacher manual override recommended",
+                "mutuals": witnesses,
+            })
 
     return results
