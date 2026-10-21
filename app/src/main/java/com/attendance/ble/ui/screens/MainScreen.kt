@@ -59,6 +59,7 @@ fun MainScreen(
     detectedSessionSalt: String,
     deskNeighbours: List<PeerData>,
     studentDiscoveryRemainingSeconds: Int = 0,
+    studentStatusMessage: String? = null,
     onStartStudentScanning: () -> Unit,
     onStopStudentScanning: () -> Unit,
     onUpdateRollNumber: (String) -> Unit = {},
@@ -200,6 +201,7 @@ fun MainScreen(
                     detectedSessionSalt = detectedSessionSalt,
                     deskNeighbours = deskNeighbours,
                     studentDiscoveryRemainingSeconds = studentDiscoveryRemainingSeconds,
+                    studentStatusMessage = studentStatusMessage,
                     onStartScanning = onStartStudentScanning,
                     onStopScanning = onStopStudentScanning
                 )
@@ -790,6 +792,7 @@ private fun StudentSection(
     detectedSessionSalt: String,
     deskNeighbours: List<PeerData>,
     studentDiscoveryRemainingSeconds: Int = 0,
+    studentStatusMessage: String? = null,
     onStartScanning: () -> Unit,
     onStopScanning: () -> Unit
 ) {
@@ -942,6 +945,24 @@ private fun StudentSection(
                             fontSize = 12.sp,
                             color = textSecondary,
                             textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                // Server rejection notice (e.g. remote check-in blocked by the beacon salt guard)
+                if (studentStatusMessage != null) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = alertRedBg,
+                        border = BorderStroke(1.dp, alertRed)
+                    ) {
+                        Text(
+                            text = studentStatusMessage!!,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = alertRed,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                         )
                     }
                 }

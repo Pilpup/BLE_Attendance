@@ -102,11 +102,11 @@ async def test_30_student_classroom_mesh_simulation():
         spoofer_token = spoofer_login.json()["access_token"]
         spoofer_headers = {"Authorization": f"Bearer {spoofer_token}"}
 
-        # Phase 3: Teacher starts Attendance Session
+        # Phase 3: Teacher starts Attendance Session (salt registered, then broadcast ONLY via BLE)
         session_create_res = await client.post(
             "/api/v1/attendance/sessions",
             headers=teacher_headers,
-            json={"session_token": "89F2", "total_enrolled": 30},
+            json={"session_token": "89F2", "session_salt": "Y7Q9", "total_enrolled": 30},
         )
         assert session_create_res.status_code in [200, 201]
         session_data = session_create_res.json()
@@ -170,10 +170,10 @@ async def test_30_student_classroom_mesh_simulation():
             "ST25": (["ST24"], None),
         }
 
-        # Online students upload reports
+        # Online students upload reports ( Beacon salt "Y7Q9" heard in-room from teacher's S: beacon )
         for sid, (nbrs, relayed) in cluster_reports.items():
             headers = {"Authorization": f"Bearer {student_tokens[sid]}"}
-            payload = {"neighbors": nbrs}
+            payload = {"neighbors": nbrs, "session_salt": "Y7Q9"}
             if relayed:
                 payload["relayed_reports"] = relayed
             sub_res = await client.post(
@@ -184,11 +184,12 @@ async def test_30_student_classroom_mesh_simulation():
             assert sub_res.status_code == 200
 
         # Hallway Spoofer uploads an unreciprocated neighbor claim
-        # SPOF claims ST01, but ST01 never saw SPOF
+        # SPOF is inside radio range (hears the beacon salt), so the salt passes;
+        # the graph audit still rejects him for the unreciprocated claim.
         spoofer_sub = await client.post(
             "/api/v1/attendance/sessions/89F2/submit-neighbors",
             headers=spoofer_headers,
-            json={"neighbors": ["ST01"]},
+            json={"neighbors": ["ST01"], "session_salt": "Y7Q9"},
         )
         assert spoofer_sub.status_code == 200
 

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete, or_, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -217,6 +217,7 @@ async def create_attendance_session(
         course_id=target_course_id,
         teacher_id=current_user.id,
         session_token=payload.session_token,
+        session_salt=payload.session_salt,
         status="ACTIVE",
         total_enrolled=payload.total_enrolled,
         started_at=datetime.now(timezone.utc),
@@ -349,6 +350,49 @@ async def submit_student_neighbors(
         session_obj.ended_at = datetime.now(timezone.utc)
         await db.commit()
         raise HTTPException(status_code=400, detail="Attendance session has expired")
+
+    # Layer 2 anti-remote-submission guard (ProjectSummary §1.1):
+    # the student's phone must possess the salt distributed ONLY via the
+    # teacher's BLE beacon — proof of radio reception at the classroom.
+    if payload.session_salt != session_obj.session_salt:
+        # Flag the attempted remote submission so it surfaces on the teacher's
+        # audit dashboard instead of vanishing as a silent rejection.
+        if current_user:
+            raw_key = current_user.roll_number or str(current_user.id).replace("-", "")[:4]
+        else:
+            raw_key = payload.student_id or "STUD"
+        claimed_key = raw_key[-4:].upper() if len(raw_key) >= 4 else raw_key.upper()
+
+        # One spoofer flag per claimed device per session (deduplicated across retries)
+        spoof_res = await db.execute(
+            select(AttendanceRecord).where(
+                AttendanceRecord.session_id == session_obj.id,
+                AttendanceRecord.ble_device_id == claimed_key,
+            )
+        )
+        if spoof_res.scalars().first() is None:
+            db.add(
+                AttendanceRecord(
+                    id=uuid.uuid4(),
+                    session_id=session_obj.id,
+                    student_id=current_user.id if current_user else None,
+                    ble_device_id=claimed_key,
+                    status="SPOOFER_REJECTED",
+                    verification_method="SALT_REJECTED",
+                    affinity_score=0.00,
+                    reported_neighbors=[
+                        n[-4:].upper() if len(n) >= 4 else n.upper() for n in payload.neighbors
+                    ],
+                    remarks="Remote check-in blocked: in-room beacon salt mismatch",
+                    recorded_at=datetime.now(timezone.utc),
+                )
+            )
+            await db.commit()
+
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Nice try lil bro",
+        )
 
     target_session_id = session_obj.id
     if current_user:
@@ -498,6 +542,16 @@ async def audit_and_finalize_session(
     session_obj.ended_at = datetime.now(timezone.utc)
     session_obj.total_verified = verified_count
     session_obj.total_spoofers = spoofer_count
+
+    # Count ALL spoofers on the session, including remote submissions blocked by
+    # the Layer 2 salt guard (those are staged directly as SPOOFER_REJECTED records).
+    spoofer_res = await db.execute(
+        select(func.count()).select_from(AttendanceRecord).where(
+            AttendanceRecord.session_id == session_obj.id,
+            AttendanceRecord.status == "SPOOFER_REJECTED",
+        )
+    )
+    session_obj.total_spoofers = spoofer_res.scalar()
 
     await db.commit()
     await db.refresh(session_obj)

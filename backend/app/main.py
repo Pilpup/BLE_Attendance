@@ -36,6 +36,7 @@ BEGIN
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS course_id UUID;
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS teacher_id UUID;
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS session_token VARCHAR(32);
+    ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS session_salt VARCHAR(8);
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'ACTIVE';
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS ended_at TIMESTAMP WITH TIME ZONE;

@@ -244,7 +244,7 @@ async def test_session_auto_supersede():
         s1 = await client.post(
             "/api/v1/attendance/sessions",
             headers=headers,
-            json={"session_token": "AAAA", "total_enrolled": 20},
+            json={"session_token": "AAAA", "session_salt": "1A1A", "total_enrolled": 20},
         )
         assert s1.status_code == 201
         s1_id = s1.json()["id"]
@@ -253,7 +253,7 @@ async def test_session_auto_supersede():
         s2 = await client.post(
             "/api/v1/attendance/sessions",
             headers=headers,
-            json={"session_token": "BBBB", "total_enrolled": 20},
+            json={"session_token": "BBBB", "session_salt": "2B2B", "total_enrolled": 20},
         )
         # Should succeed (HTTP 201) instead of failing with HTTP 409
         assert s2.status_code == 201
@@ -265,5 +265,126 @@ async def test_session_auto_supersede():
             res = await s.execute(select(AttendanceSession).where(AttendanceSession.id == uuid.UUID(s1_id)))
             s1_db = res.scalar_one()
             assert s1_db.status in ("CANCELLED", "EXPIRED")
+
+
+@pytest.mark.anyio
+async def test_submit_neighbors_salt_enforcement():
+    """
+    Layer 2 anti-remote-submission guard (ProjectSummary §1.1):
+    An absent student who learned only the 4-char session token over chat
+    cannot stage a check-in — the endpoint rejects missing or wrong beacon salt.
+    """
+    import uuid
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from app.database import get_db
+    from app.models.attendance import Base
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with test_session_factory() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Register and login teacher
+        t_reg = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "name": "Prof. Salt Guard",
+                "email": "salt.guard@univ.edu",
+                "password": "Password123!",
+                "role": "TEACHER",
+                "roll_number": "EMP888",
+                "department": "CSE",
+                "faculty_code": settings.FACULTY_SIGNUP_SECRET,
+            },
+        )
+        assert t_reg.status_code == 201
+
+        t_login = await client.post(
+            "/api/v1/auth/login",
+            json={"email": "salt.guard@univ.edu", "password": "Password123!"},
+        )
+        assert t_login.status_code == 200
+        headers = {"Authorization": f"Bearer {t_login.json()['access_token']}"}
+
+        # Teacher registers the salt at session creation (required)
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers=headers,
+            json={"session_token": "ABCD", "session_salt": "Y7K9", "total_enrolled": 10},
+        )
+        assert s_res.status_code == 201
+        session_id = s_res.json()["id"]
+
+        submit_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
+
+        # 1) Missing salt (absent student replaying only the session token from chat)
+        missing = await client.post(
+            submit_url,
+            json={"student_id": "3456", "neighbors": ["1234", "2345"]},
+        )
+        assert missing.status_code == 403
+
+        # 2) Wrong salt (again: knowledge of the token alone is not enough)
+        wrong = await client.post(
+            submit_url,
+            json={"student_id": "3456", "neighbors": ["1234", "2345"], "session_salt": "WRNG"},
+        )
+        assert wrong.status_code == 403
+        assert "Nice try" in wrong.json()["detail"]
+
+        # 3) Matching salt — in-room students who actually heard the beacon (mutual pair)
+        valid_one = await client.post(
+            submit_url,
+            json={"student_id": "1234", "neighbors": ["5678"], "session_salt": "Y7K9"},
+        )
+        assert valid_one.status_code == 200
+        assert valid_one.json()["status"] == "success"
+
+        valid_two = await client.post(
+            submit_url,
+            json={"student_id": "5678", "neighbors": ["1234"], "session_salt": "Y7K9"},
+        )
+        assert valid_two.status_code == 200
+
+        # 4) Teacher session creation itself rejects missing salt (required field)
+        no_salt = await client.post(
+            "/api/v1/attendance/sessions",
+            headers=headers,
+            json={"session_token": "WXYZ", "total_enrolled": 10},
+        )
+        assert no_salt.status_code == 422
+
+        # 5) The salt-rejected attempt must surface on the teacher's audit dashboard
+        audit_res = await client.post(
+            f"/api/v1/attendance/sessions/{session_id}/audit-and-finalize",
+            headers=headers,
+            json={"reports": {}},
+        )
+        assert audit_res.status_code == 200
+        audit_data = audit_res.json()
+
+        assert audit_data["status"] == "COMPLETED"
+        assert audit_data["total_verified"] == 2
+        assert audit_data["total_spoofers"] == 1  # deduplicated: missing + wrong = one flag
+
+        record_map = {r["ble_device_id"]: r for r in audit_data["records"]}
+        spoofer_record = record_map["3456"]
+        assert spoofer_record["status"] == "SPOOFER_REJECTED"
+        assert spoofer_record["verification_method"] == "SALT_REJECTED"
+        assert "salt mismatch" in spoofer_record["remarks"]
+
+        assert record_map["1234"]["status"] == "VERIFIED_PRESENT"
+        assert record_map["1234"]["verification_method"] == "DIRECT_MUTUAL"
+        assert record_map["5678"]["status"] == "VERIFIED_PRESENT"
 
 

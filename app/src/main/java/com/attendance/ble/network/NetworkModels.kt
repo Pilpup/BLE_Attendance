@@ -50,6 +50,7 @@ data class CourseResponse(
 data class SessionCreateRequest(
     @SerializedName("course_id") val courseId: String? = null,
     @SerializedName("session_token") val sessionToken: String,
+    @SerializedName("session_salt") val sessionSalt: String? = null,
     @SerializedName("total_enrolled") val totalEnrolled: Int = 0
 )
 
@@ -80,5 +81,6 @@ data class MeshAuditRunRequest(
 data class SubmitNeighborsRequest(
     @SerializedName("student_id") val studentId: String? = null,
     val neighbors: List<String>,
+    @SerializedName("session_salt") val sessionSalt: String? = null,
     @SerializedName("relayed_reports") val relayedReports: Map<String, List<String>>? = null
 )

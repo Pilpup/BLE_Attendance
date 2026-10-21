@@ -81,6 +81,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var finalizedRecords by mutableStateOf<List<AttendanceRecordItem>>(emptyList())
     var isCloudSyncing: Boolean by mutableStateOf(false)
     var cloudStatusMessage: String? by mutableStateOf(null)
+    // Shown on the student's screen when the server rejects their check-in (salt mismatch)
+    var studentStatusMessage: String? by mutableStateOf(null)
     val collectedMeshReports = mutableStateMapOf<String, List<String>>()
 
     // Compact 13-byte teacher beacon
@@ -348,13 +350,21 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             try {
                 val req = SubmitNeighborsRequest(
                     studentId = studentShortId,
-                    neighbors = neighborIds
+                    neighbors = neighborIds,
+                    sessionSalt = detectedSessionSalt.takeIf { it != "------" }
                 )
                 val authHeader = if (token != null) "Bearer $token" else null
                 val res = ApiClient.service.submitNeighbors(authHeader, sessId, req)
                 withContext(Dispatchers.Main) {
                     if (res.isSuccessful) {
                         studentPhase = StudentPhase.VERIFIED_PRESENT
+                        onStopScanning?.invoke()
+                    } else if (res.code() == 403) {
+                        // Server rejected this check-in: beacon salt mismatch (remote submission attempt) — show the banter
+                        val detail = try { res.errorBody()?.string() } catch (_: Exception) { null }
+                        val extracted = Regex("\"detail\"\\s*:\\s*\"(.*?)\"").find(detail ?: "")?.groupValues?.get(1)
+                        studentStatusMessage = extracted ?: "Nice try lil bro"
+                        studentPhase = StudentPhase.STANDBY
                         onStopScanning?.invoke()
                     } else {
                         // Offline or non-200: fallback to local discovery complete
@@ -391,7 +401,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             isCloudSyncing = true
             viewModelScope.launch(Dispatchers.IO) {
                 try {
-                    val req = SessionCreateRequest(courseId = targetCourseId, sessionToken = sessionId)
+                    val req = SessionCreateRequest(
+                        courseId = targetCourseId,
+                        sessionToken = sessionId,
+                        sessionSalt = sessionSalt
+                    )
                     val res = ApiClient.service.createSession("Bearer $token", req)
                     withContext(Dispatchers.Main) {
                         isCloudSyncing = false
@@ -483,6 +497,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         detectedSessionSalt = "------"
         discoveredPeers.clear()
         collectedMeshReports.clear()
+        studentStatusMessage = null
         onStartScanning?.invoke()
     }
 

@@ -77,6 +77,12 @@ class SessionCreateRequest(BaseModel):
         None, description="Leave null to use the default demo course"
     )
     session_token: str = Field(..., max_length=32, description="Ephemeral token for this class")
+    session_salt: str = Field(
+        ...,
+        min_length=4,
+        max_length=8,
+        description="4-char salt distributed ONLY via the teacher's BLE beacon (S:<ID>:<SALT>)",
+    )
     total_enrolled: int = Field(default=0, ge=0)
 
 
@@ -105,6 +111,10 @@ class SubmitNeighborsRequest(BaseModel):
     relayed_reports: Optional[dict[str, List[str]]] = Field(
         default=None,
         description="Vouchers collected from offline peers over BLE: {offline_student_id: [nbr1, nbr2, nbr3]}"
+    )
+    session_salt: Optional[str] = Field(
+        default=None,
+        description="Salt captured from the teacher's in-room beacon; submissions without the matching salt are rejected"
     )
 
 

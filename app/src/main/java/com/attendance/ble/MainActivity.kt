@@ -137,6 +137,7 @@ class MainActivity : ComponentActivity() {
                     detectedSessionSalt = viewModel.detectedSessionSalt,
                     deskNeighbours = viewModel.topDeskNeighbours,
                     studentDiscoveryRemainingSeconds = viewModel.studentDiscoverySecondsRemaining,
+                    studentStatusMessage = viewModel.studentStatusMessage,
                     onStartStudentScanning = {
                         checkAndExecute {
                             viewModel.startStudentScanning()

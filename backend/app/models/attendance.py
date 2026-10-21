@@ -46,6 +46,9 @@ class AttendanceSession(Base):
     course_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("courses.id"))
     teacher_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     session_token: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Layer 2 anti-remote-submission salt, distributed only via the teacher's BLE beacon.
+    # Nullable in DB (pre-salt legacy rows); enforced as required at the API layer.
+    session_salt: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="ACTIVE")
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
