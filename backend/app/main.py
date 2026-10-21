@@ -48,6 +48,7 @@ BEGIN
     -- attendance_records
     ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS session_id UUID;
     ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS student_id UUID;
+    ALTER TABLE attendance_records ALTER COLUMN student_id DROP NOT NULL;
     ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS ble_device_id VARCHAR(50);
     ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'ABSENT';
     ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS verification_method VARCHAR(50) DEFAULT 'NONE';
