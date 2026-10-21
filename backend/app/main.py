@@ -76,8 +76,6 @@ BEGIN
 END $$;
 """
 
-SCHEMA_SYNC_STATEMENTS = [POSTGRES_SCHEMA_SYNC_BLOCK]
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

@@ -230,50 +230,61 @@ T = 60.5s    AUDIT COMPLETE ◄────────────────�
 
 ## 6. Codebase Architecture & File Responsibilities
 
-### 6.1 Android Client (`app/src/main/java/com/attendance/ble/`)
+### 6.1 Android Client — Multi-Module Gradle Tree (6 Modules)
+
+Since the staged refactor (Steps 1–5), the client is a six-module Gradle
+project. Feature modules never depend on each other; `:app` is the only
+module that sees every feature (the assembler).
 
 ```
-app/src/main/java/com/attendance/ble/
-├── MainActivity.kt                      # Activity lifecycle, permission guards, radio bindings, onResetSession
-├── ble/
-│   ├── BleConstants.kt                  # Base 16-bit UUID (0x1234) & runtime permission definitions
-│   ├── BleAdvertiser.kt                 # Compact ServiceData advertiser (omits redundant ServiceUuid)
-│   └── BleScanner.kt                    # Low-latency hardware-filtered scanner with noise rejection
-├── network/
-│   ├── ApiClient.kt                     # Retrofit instance with OkHttp logging (Render Cloud Backend)
-│   ├── AttendanceApiService.kt          # REST API interface (Auth, Courses, Sessions, Audits, Submissions)
-│   └── NetworkModels.kt                 # Pydantic-mirrored data classes (AttendanceRecordItem, Session, etc.)
-├── ui/
-│   ├── screens/
-│   │   └── MainScreen.kt                # Jetpack Compose UI: Strict role-based Teacher & Student views
-│   └── theme/
-│       └── Color.kt                     # Modern Material 3 color system (Light theme & Cyber palette)
-└── viewmodel/
-    └── AttendanceViewModel.kt           # State container, role guard, 60s countdown, 5s probe window, cloud sync
+ble_attendance/
+├── app/src/main/java/com/attendance/ble/                    # the shell & assembler
+│   ├── AndroidManifest.xml                                  # INTERNET only — BLE perms merge in from :feature:attendance
+│   ├── MainActivity.kt                                      # thin host: BLE permission gate, radio bridge, CSV share
+│   ├── ui/theme/Color.kt                                    # shell palette
+│   └── shell/
+│       ├── AppNavigation.kt                                 # destination routing; registers every DashboardCard once
+│       ├── HomeScreen.kt                                    # profile header, dev mock role-switcher, registry card loop
+│       └── MockUsers.kt                                     # 1-tap mock sessions (alice/profSmith/sarah/alex/sam)
+├── core/model/src/main/java/com/college/core/model/         # zero-dependency contracts
+│   ├── Role.kt          # STUDENT(1) STAFF(2) TEACHER(3) DEVELOPER(4); capability helpers; fromBackendName()
+│   ├── User.kt          # primaryRole = maxBy(priority); hasRole/canTakeAttendance/canAccessStaffTools/isDeveloper
+│   └── SessionState.kt  # LoggedOut / Loading / Authenticated(user, token)
+├── core/network/src/main/java/com/college/core/network/
+│   ├── SessionManager.kt # StateFlow holder; companion `default`; startSession/endSession/markLoading
+│   └── AuthInterceptor.kt# Bearer injection; 401 → endSession (only when a token was sent)
+├── core/ui/src/main/java/com/college/core/ui/
+│   ├── DashboardCard.kt      # id/priority/NAV_ROUTE/isVisibleFor + Content contract
+│   └── DashboardRegistry.kt  # dedupe-by-id registry, cardsFor(user)
+├── feature/attendance/src/main/java/com/college/feature/attendance/
+│   ├── AndroidManifest.xml                   # ALL BLE/location permissions; merged into :app by AGP
+│   ├── ble/{BleAdvertiser,BleScanner,BleConstants}.kt    # hardware engine (migrated Step 4A)
+│   ├── AttendanceScreen.kt                   # full attendance UI (migrated from old :app MainScreen), role-adaptive
+│   ├── AttendanceDashboardCard.kt            # home card (hidden for pure STAFF)
+│   ├── network/{AttendanceApiService,NetworkModels,AttendanceApiClient}.kt  # NO manual @Header auth
+│   ├── viewmodel/AttendanceViewModel.kt      # session-beacon engine; identity from SessionManager
+│   └── ui/theme/Color.kt                     # module-local palette (→ :core:ui later)
+└── feature/library/src/main/java/com/college/feature/library/
+    ├── model/{Book,LibraryTab}.kt            # Book (isAvailable); CATALOGUE/STAFF_INVENTORY/DEV_MAINTENANCE
+    ├── network/{LibraryApiService(+DTOs),LibraryApiClient}.kt    # /api/v1/library routes pending
+    ├── LibraryScreen.kt                      # 3-tier UI: Catalogue, Staff Inventory, Dev Maintenance
+    ├── LibraryDashboardCard.kt               # LIVE subtitle: "N books catalogued · M available"
+    ├── viewmodel/LibraryViewModel.kt         # role gates via SessionManager; LibraryCatalogStore object
+    └── ui/theme/Color.kt                     # module-local palette (→ :core:ui later)
 ```
 
 #### Detailed Component Responsibilities:
-1. **[`BleAdvertiser.kt`](file:///home/wink/Projects/ble_attendance/app/src/main/java/com/attendance/ble/ble/BleAdvertiser.kt):** Configures `AdvertiseSettings` with `setConnectable(false)` and injects `addServiceData(ParcelUuid(TEST_UUID), token)`. Omits `addServiceUuid` to stay within the strict 31-byte legacy BLE limit.
-2. **[`BleScanner.kt`](file:///home/wink/Projects/ble_attendance/app/src/main/java/com/attendance/ble/ble/BleScanner.kt):** Uses hardware `ScanFilter` for `TEST_UUID` in `SCAN_MODE_LOW_LATENCY`. Filters out null/empty service data (hardware leakage) and calculates packet transit latency in milliseconds.
-3. **[`AttendanceViewModel.kt`](file:///home/wink/Projects/ble_attendance/app/src/main/java/com/attendance/ble/viewmodel/AttendanceViewModel.kt):**
-   - **Strict Role Guard:** `isTeacherMode = (currentUserRole == "TEACHER" && authToken != null)`. Non-teachers cannot enter teacher mode. Logging out immediately resets `isTeacherMode = false`.
+1. **[`BleAdvertiser.kt`](file:///home/wink/Projects/ble_attendance/feature/attendance/src/main/java/com/college/feature/attendance/ble/BleAdvertiser.kt) / [`BleScanner.kt`](file:///home/wink/Projects/ble_attendance/feature/attendance/src/main/java/com/college/feature/attendance/ble/BleScanner.kt) (`:feature:attendance`):** Compact service-data advertiser (“omits redundant ServiceUuid”, 31-byte budget) and low-latency `ScanFilter` scanner with noise rejection and packet-latency measurement. Migrated into the feature module in Step 4A; ALL Bluetooth/location permissions ship with its `AndroidManifest.xml` and are merged into `:app` by AGP.
+2. **`AttendanceApiClient` + `AttendanceApiService` (`:feature:attendance/network`):** Feature-local Retrofit built on `:core:network` — every request automatically carries `Authorization: Bearer` via `AuthInterceptor(SessionManager.default)`. The service declares **zero** `@Header("Authorization")` params; guest students submit anonymously.
+3. **[`AttendanceViewModel.kt`](file:///home/wink/Projects/ble_attendance/feature/attendance/src/main/java/com/college/feature/attendance/viewmodel/AttendanceViewModel.kt) (`:feature:attendance`):**
+   - **Identity from the shared session (Step 4C):** `isTeacherMode = SessionManager.default.currentUser?.canTakeAttendance() == true`. There is NO local `authToken`/role-switcher state left in this class. `login()`/`logout()` write through to `SessionManager.default`; the prefs mirror matters only for app-restart hydration (`hydrateSessionFromPrefs`).
    - **Session Reset:** `resetSession()` cancels any active timer, stops advertising, clears `finalizedRecords`, and clears status messages to start a clean new session.
-   - **Teacher Engine:** Generates 4-char `sessionId` and 6-char `sessionSalt`. Conducts 60-second countdown timer and commands radio to transmit `S:<sessionId>:<sessionSalt>` at `ADVERTISE_TX_POWER_HIGH`.
-   - **Student Engine:** Generates 4-char `studentShortId`. When `S:` beacon packet is detected, transitions state to `PROBING_NEIGHBORS`, broadcasts `[SESSION][SELF]` at `ADVERTISE_TX_POWER_LOW` for 5.0s, records classmate RSSIs, and filters to `topDeskNeighbours` with median $\ge -85\text{ dBm}$. Automatically submits neighbor graph to FastAPI backend upon probe completion.
-4. **[`MainScreen.kt`](file:///home/wink/Projects/ble_attendance/app/src/main/java/com/attendance/ble/ui/screens/MainScreen.kt):**
-   - **Strict Role-Locking:** There is **NO manual tab switcher**. Interface is locked strictly based on JWT authentication (`role == "TEACHER"`):
-     - Teachers only see `TeacherSection`. Zero scanning buttons or options.
-     - Students/Guests only see `StudentSection`.
-   - **TopAppBar:** Shows live account privilege badge (`TEACHER` in purple, `STUDENT` in blue, `GUEST`), roll number/name, account settings dialog button, and Bluetooth permissions indicator.
-   - **Teacher Section (Two Distinct Responsive Modes):**
-     - *Setup/Broadcasting Mode (`finalizedRecords.isEmpty()`):* Course selector chips with "+ New Course" dialog, live broadcast hero card (pulsing dot, 60s countdown timer, monospace session token and in-room nonce), live BLE advertiser telemetry, cloud status sync banner, and tactile "Start 60s Session" / "End Session & Run Cloud Audit" button.
-     - *Audit Results Mode (`finalizedRecords.isNotEmpty()`):* Collapses top card into a compact summary dashboard (Session ID, Course Code, "SAVED TO CLOUD" badge), 3 key metric cards (**Verified Present** in green, **Peer Witnessed** in blue, **Flagged/Spoofers** in red), quick actions ("Export CSV" and "+ New Session"), filter chips (`All`, `Verified`, `Witnessed`, `Flagged`), and a full-height scrollable `LazyColumn` showing student cards (avatar initials, monospace roll number, verification tag, affinity percentage score, remarks).
-   - **Student Section:**
-     - Dynamic hero status card with state-specific color coding (`STANDBY`, `LISTENING_FOR_TEACHER` in warm amber, `PROBING_NEIGHBORS` with electric blue countdown, and `VERIFIED_PRESENT` / `DISCOVERY_COMPLETE` with emerald green checkmark card).
-     - Discovered desk neighbors telemetry list: RSSI signal meters (`📶 -64 dBm`, green for $\ge -75\text{ dBm}$, orange for $\ge -85\text{ dBm}$), packet counts, roll numbers.
-     - Bottom Action Button: "Listen for Teacher" / "Stop Listening".
-   - **Auth / Server Dialog (`AuthServerDialog`):** Full account settings, sign in, register (with Student vs Teacher role selection and faculty passcode), local roll number update, and custom backend URL config.
-5. **[`MainActivity.kt`](file:///home/wink/Projects/ble_attendance/app/src/main/java/com/attendance/ble/MainActivity.kt):** Checks runtime permissions (`BLUETOOTH_ADVERTISE`, `BLUETOOTH_SCAN`, `BLUETOOTH_CONNECT`), checks Bluetooth power state, wires `onResetSession`, and binds ViewModel callbacks to hardware radio methods.
+   - **Teacher Engine:** Generates 4-char `sessionId` and a **4-char `sessionSalt`** (required by `SessionCreateRequest`; legacy clients without it get 422), conducts a 60-second countdown and transmits `S:<sessionId>:<sessionSalt>` at `ADVERTISE_TX_POWER_HIGH`.
+   - **Student Engine:** `studentShortId` = uppercase last-4 of the roll number (seeded from the backend profile at login; BLE packets keep using roll numbers so backend matching stays consistent). `S:` beacon detection transitions `LISTENING_FOR_TEACHER → PROBING_NEIGHBORS`, broadcasts `[SESSION][SELF]` at `TX_POWER_LOW` for 7s, records classmate RSSIs, and submits the top-3 desk neighbors (median ≥ −90 dBm) with the detected salt. A **403 from the salt guard** drives the red student status message (server taunt "Nice try lil bro") instead of attendance.
+4. **[`AttendanceScreen.kt`](file:///home/wink/Projects/ble_attendance/feature/attendance/src/main/java/com/college/feature/attendance/AttendanceScreen.kt) (`:feature:attendance`):** The one real attendance UI (the old `:app` `MainScreen.kt` was fully migrated then deleted). Role-adaptive: the teacher console renders when `user.canTakeAttendance()`, the student radar when `user.hasRole(Role.STUDENT)`. Carries course selection, the event hero card, audit results (metric cards, filter chips, CSV), the Auth/Server dialog (login, register + faculty passcode, roll number, custom backend URL), and a back arrow. `AttendanceScreenCallbacks` is the ONLY `:app`-owned surface: permission gating, radio start/stop, CSV share, reset.
+5. **[`MainActivity.kt`](file:///home/wink/Projects/ble_attendance/app/src/main/java/com/attendance/ble/MainActivity.kt) (`:app`):** Owns the `RequestMultiplePermissions` launcher, the Bluetooth-enable prompt, and the hardware bridge (wires the ViewModel radio callbacks to `BleAdvertiser`/`BleScanner`), builds the `AttendanceScreenCallbacks`, renders `AppNavigation(viewModel, callbacks)`. No legacy shell remains — the dashboard's attendance card IS the real app.
+6. **[`LibraryViewModel.kt`](file:///home/wink/Projects/ble_attendance/feature/library/src/main/java/com/college/feature/library/viewmodel/LibraryViewModel.kt) + `LibraryCatalogStore` (`:feature:library`):** Role gates read `SessionManager.default`: everyone browses/searches/filters/reserves; **STAFF & DEVELOPER** get the Staff Inventory tab (`addBook`/`editBook`/`removeBook` gated on `canAccessStaffTools()`); **DEVELOPER only** gets Dev Maintenance (`seedSampleData`/`clearCatalogueCache` gated on `isDeveloper()`). Catalogue state lives in object-scoped `LibraryCatalogStore` (shared with the dashboard card for live counts). Mutations commit to the in-memory catalogue first — the backend `/api/v1/library` routes are not deployed yet, so a best-effort cloud sync runs in parallel and an offline-fallback notice surfaces on failure.
+7. **[`LibraryScreen.kt`](file:///home/wink/Projects/ble_attendance/feature/library/src/main/java/com/college/feature/library/LibraryScreen.kt) (`:feature:library`):** Three tiers over one catalogue: search + derived category chips + "Available Only" + reserve in **Catalogue**; intake/edit/delete with a floating "Add Book" in **Staff Inventory**; seed/clear + diagnostics in **Dev Maintenance** (purple `DEV` chip in the top bar plus a dev-only Tools dropdown), and a blue cloud-status banner.
 
 ---
 

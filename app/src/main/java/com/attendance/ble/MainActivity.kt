@@ -16,13 +16,19 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
-import com.attendance.ble.ble.BleAdvertiser
-import com.attendance.ble.ble.BleConstants
-import com.attendance.ble.ble.BleScanner
-import com.attendance.ble.network.ApiClient
-import com.attendance.ble.ui.screens.MainScreen
-import com.attendance.ble.viewmodel.AttendanceViewModel
+import com.attendance.ble.shell.AppNavigation
+import com.college.feature.attendance.AttendanceScreenCallbacks
+import com.college.feature.attendance.ble.BleAdvertiser
+import com.college.feature.attendance.ble.BleConstants
+import com.college.feature.attendance.ble.BleScanner
+import com.college.feature.attendance.viewmodel.AttendanceViewModel
 
+/**
+ * Thin host Activity. After the Step 4 migration the whole attendance engine
+ * lives in :feature:attendance; this class only wires what an Activity owns:
+ * runtime BLE permission gating, the hardware advertising/scanning bridge, and
+ * the CSV share intent — everything else is resolved through the modules.
+ */
 class MainActivity : ComponentActivity() {
 
     private val viewModel: AttendanceViewModel by viewModels()
@@ -44,7 +50,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Connect ViewModel hardware callbacks
+        // Connect the feature ViewModel's radio callbacks to the hardware bridge
         viewModel.onStartBroadcasting = { token, txPower ->
             bleAdvertiser.startBroadcasting(
                 selectedAdvMode = viewModel.teacherAdvMode,
@@ -98,75 +104,45 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            // :app-owned hooks handed to the feature screen (permission gating,
+            // BLE radio start/stop, CSV export). All other behavior is internal
+            // to :feature:attendance via the ViewModel + SessionManager.
+            val shellCallbacks = AttendanceScreenCallbacks(
+                onStartTeacherSession = {
+                    checkAndExecute {
+                        viewModel.startTeacherSession(durationSeconds = 60)
+                    }
+                },
+                onStopTeacherSession = {
+                    viewModel.finalizeSessionAndAudit()
+                },
+                onShareAttendance = {
+                    shareAttendanceCsv(viewModel.generateCsvReport(), viewModel.sessionId)
+                },
+                onResetSession = {
+                    viewModel.resetSession()
+                },
+                onStartStudentScanning = {
+                    checkAndExecute {
+                        viewModel.startStudentScanning()
+                    }
+                },
+                onStopStudentScanning = {
+                    viewModel.stopStudentScanning()
+                },
+                onUpdateRollNumber = { roll ->
+                    viewModel.updateRollNumber(roll)
+                },
+                onRequestPermissions = {
+                    permissionLauncher.launch(BleConstants.neededPermissions)
+                }
+            )
+
             Surface(
                 modifier = Modifier.fillMaxSize(),
                 color = Color.White
             ) {
-                MainScreen(
-                    // Teacher Props
-                    isSessionActive = viewModel.isSessionActive,
-                    sessionId = viewModel.sessionId,
-                    sessionSalt = viewModel.sessionSalt,
-                    remainingSeconds = viewModel.remainingSeconds,
-                    broadcastPayload = viewModel.currentBroadcastToken,
-                    finalizedRecords = viewModel.finalizedRecords,
-                    isCloudSyncing = viewModel.isCloudSyncing,
-                    cloudStatusMessage = viewModel.cloudStatusMessage,
-                    availableCourses = viewModel.availableCourses,
-                    selectedCourse = viewModel.selectedCourse,
-                    onSelectCourse = { course -> viewModel.selectedCourse = course },
-                    onCreateCourse = { code, name -> viewModel.createCourse(code, name) },
-                    onStartTeacherSession = {
-                        checkAndExecute {
-                            viewModel.startTeacherSession(durationSeconds = 60)
-                        }
-                    },
-                    onStopTeacherSession = {
-                        viewModel.finalizeSessionAndAudit()
-                    },
-                    onShareAttendance = {
-                        shareAttendanceCsv(viewModel.generateCsvReport(), viewModel.sessionId)
-                    },
-                    onResetSession = {
-                        viewModel.resetSession()
-                    },
-                    // Student Props
-                    studentId = viewModel.studentId,
-                    studentPhase = viewModel.studentPhase,
-                    detectedSessionId = viewModel.detectedSessionId,
-                    detectedSessionSalt = viewModel.detectedSessionSalt,
-                    deskNeighbours = viewModel.topDeskNeighbours,
-                    studentDiscoveryRemainingSeconds = viewModel.studentDiscoverySecondsRemaining,
-                    studentStatusMessage = viewModel.studentStatusMessage,
-                    onStartStudentScanning = {
-                        checkAndExecute {
-                            viewModel.startStudentScanning()
-                        }
-                    },
-                    onStopStudentScanning = {
-                        viewModel.stopStudentScanning()
-                    },
-                    onUpdateRollNumber = { roll ->
-                        viewModel.updateRollNumber(roll)
-                    },
-                    // Auth & Server Props
-                    isLoggedIn = viewModel.authToken != null,
-                    userName = viewModel.currentUserName,
-                    userRole = viewModel.currentUserRole,
-                    isAuthLoading = viewModel.isAuthLoading,
-                    authErrorText = viewModel.authErrorText,
-                    serverUrl = ApiClient.baseUrl,
-                    showAuthDialog = viewModel.showAuthDialog,
-                    onDismissAuthDialog = { viewModel.showAuthDialog = false },
-                    onOpenAuthDialog = { viewModel.showAuthDialog = true },
-                    onLogin = { email, pass -> viewModel.login(email, pass) },
-                    onRegister = { req -> viewModel.register(req) },
-                    onLogout = { viewModel.logout() },
-                    onUpdateServerUrl = { url -> viewModel.setServerUrl(url) },
-                    onRequestPermissions = {
-                        permissionLauncher.launch(BleConstants.neededPermissions)
-                    }
-                )
+                AppNavigation(viewModel = viewModel, callbacks = shellCallbacks)
             }
         }
     }

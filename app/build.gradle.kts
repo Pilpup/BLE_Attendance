@@ -9,6 +9,13 @@ android {
     kotlinOptions { jvmTarget = "17" }
 }
 dependencies {
+    // Multi-module graph: :app assembles everyone, features stay isolated from each other
+    implementation(project(":core:model"))
+    implementation(project(":core:network"))
+    implementation(project(":core:ui"))
+    implementation(project(":feature:attendance"))
+    implementation(project(":feature:library"))
+
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.activity:activity-compose:1.8.2")
     implementation("androidx.compose.ui:ui:1.6.0")

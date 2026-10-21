@@ -3,12 +3,13 @@
 /local.properties
 /.idea/
 .DS_Store
-/build
+build/
+**/build/
 /captures
 .externalNativeBuild
 .cxx
 local.properties
-app/build/
+*.hprof
 *__pycache__/
 __pycache__/
 *.py[cod]
