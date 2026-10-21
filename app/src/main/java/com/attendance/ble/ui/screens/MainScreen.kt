@@ -995,7 +995,7 @@ private fun StudentSection(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "DESK NEIGHBORS (RSSI >= -85 dBm)",
+                text = "DESK NEIGHBORS (RSSI >= -90 dBm)",
                 fontSize = 11.sp,
                 fontWeight = FontWeight.Bold,
                 color = textSecondary

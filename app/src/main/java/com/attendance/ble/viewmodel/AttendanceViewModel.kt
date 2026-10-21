@@ -99,10 +99,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var detectedSessionSalt by mutableStateOf("------")
     val discoveredPeers = mutableStateMapOf<String, PeerData>()
 
-    // Top 3 desk neighbours with median RSSI >= -85 dBm (calibrated for classroom RF attenuation)
+    // Top 3 desk neighbours with median RSSI >= -90 dBm (calibrated for classroom RF attenuation)
     val topDeskNeighbours: List<PeerData>
         get() = discoveredPeers.values
-            .filter { it.medianRssi >= -85 }
+            .filter { it.medianRssi >= -90 }
             .sortedByDescending { it.medianRssi }
             .take(3)
 
@@ -512,12 +512,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun startStudentDiscoveryWindow() {
-        studentDiscoverySecondsRemaining = 5
+        studentDiscoverySecondsRemaining = 7
         val probePayload = "$detectedSessionId$studentShortId"
         onStartBroadcasting?.invoke(probePayload, AdvertiseSettings.ADVERTISE_TX_POWER_LOW)
 
         studentTimer?.cancel()
-        studentTimer = object : CountDownTimer(5000L, 1000L) {
+        studentTimer = object : CountDownTimer(7000L, 1000L) {
             override fun onTick(millisUntilFinished: Long) {
                 studentDiscoverySecondsRemaining = (millisUntilFinished / 1000L).toInt()
             }
