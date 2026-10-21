@@ -139,3 +139,13 @@ async def require_student(current_user: User = Depends(get_current_user)) -> Use
             detail="Access restricted: Student authorization required",
         )
     return current_user
+
+
+# ensure authenticated user has STAFF or DEVELOPER role (library inventory RBAC)
+async def require_staff_or_dev(current_user: User = Depends(get_current_user)) -> User:
+    if current_user.role not in ("STAFF", "DEVELOPER"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions: Staff or Developer access required",
+        )
+    return current_user

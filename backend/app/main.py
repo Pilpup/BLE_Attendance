@@ -9,7 +9,8 @@ from sqlalchemy import text
 from app.config import settings
 from app.database import engine, is_postgres
 from app.models.attendance import Base
-from app.routers import attendance, auth
+from app.routers import attendance, auth, library
+from seed import seed_library_demo_books
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -73,6 +74,35 @@ BEGIN
         CONSTRAINT uq_session_submission_device UNIQUE (session_id, device_key)
     );
     CREATE INDEX IF NOT EXISTS ix_session_submissions_session_id ON session_submissions(session_id);
+
+    -- books (library catalogue — isolated from attendance; Phase 4)
+    CREATE TABLE IF NOT EXISTS books (
+        id UUID PRIMARY KEY,
+        title VARCHAR(255) NOT NULL,
+        author VARCHAR(255) NOT NULL,
+        isbn VARCHAR(32) NOT NULL UNIQUE,
+        category VARCHAR(50) NOT NULL,
+        total_copies INTEGER NOT NULL DEFAULT 1,
+        available_copies INTEGER NOT NULL DEFAULT 1,
+        shelf_location VARCHAR(100) NOT NULL DEFAULT 'Main Hall',
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        CONSTRAINT ck_books_copies CHECK (available_copies >= 0 AND available_copies <= total_copies)
+    );
+    CREATE INDEX IF NOT EXISTS ix_books_title ON books(title);
+    CREATE INDEX IF NOT EXISTS ix_books_author ON books(author);
+    CREATE INDEX IF NOT EXISTS ix_books_category ON books(category);
+
+    -- book_reservations (one user holding one copy; Phase 4)
+    CREATE TABLE IF NOT EXISTS book_reservations (
+        id UUID PRIMARY KEY,
+        book_id UUID NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE',
+        reserved_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        CONSTRAINT ck_book_reservations_status CHECK (status IN ('ACTIVE', 'FULFILLED', 'CANCELLED'))
+    );
+    CREATE INDEX IF NOT EXISTS ix_book_reservations_book_id ON book_reservations(book_id);
+    CREATE INDEX IF NOT EXISTS ix_book_reservations_user_id ON book_reservations(user_id);
 END $$;
 """
 
@@ -87,6 +117,16 @@ async def lifespan(app: FastAPI):
                 await conn.execute(text(POSTGRES_SCHEMA_SYNC_BLOCK))
     except Exception as e:
         logger.warning(f"Warning during DB table auto-creation / schema sync: {e}")
+
+    # Seed the demo library catalogue once (no-op whenever books already exist)
+    try:
+        if is_postgres:
+            from app.database import AsyncSessionLocal
+
+            async with AsyncSessionLocal() as seed_session:
+                await seed_library_demo_books(seed_session)
+    except Exception as e:
+        logger.warning(f"Library seed skipped: {e}")
     yield
     await engine.dispose()
 
@@ -126,6 +166,7 @@ app.add_middleware(
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(attendance.router, prefix=settings.API_V1_STR)
 app.include_router(auth.router, prefix=settings.API_V1_STR)
+app.include_router(library.router, prefix=settings.API_V1_STR)
 
 
 @app.get("/", tags=["System"])

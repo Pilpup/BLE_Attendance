@@ -12,6 +12,8 @@ import com.college.feature.library.network.BookCreateRequest
 import com.college.feature.library.network.BookUpdateRequest
 import com.college.feature.library.network.LibraryApiClient
 import com.college.feature.library.network.LibraryApiService
+import com.college.feature.library.network.BookDto
+import retrofit2.Response
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.util.UUID
@@ -118,6 +120,12 @@ object LibraryCatalogStore {
     fun clearCache() {
         books.clear()
     }
+
+    /** Replaces the store with server truth (called after a successful cloud fetch). */
+    fun replaceAll(remote: List<Book>) {
+        books.clear()
+        books.addAll(remote)
+    }
 }
 
 /**
@@ -133,6 +141,12 @@ object LibraryCatalogStore {
  *    LibraryApiClient; a notice surfaces when cloud is unreachable.
  */
 class LibraryViewModel : ViewModel() {
+
+    init {
+        // Live Neon hydration on module entry (Phase 4): real sign-ins pull the
+        // server catalogue; mock/guest sessions keep the local fallback sample.
+        refreshFromCloud()
+    }
 
     // ---- Search & filter state ------------------------------------------
     var searchQuery by mutableStateOf("")
@@ -277,17 +291,73 @@ class LibraryViewModel : ViewModel() {
 
     // ---- Cloud sync (best-effort; in-memory list is the fallback truth) ----
 
-    private fun syncAfterMutation(block: suspend (LibraryApiService) -> Unit) {
+    /**
+     * Every mutation has already committed locally; this reports the outcome
+     * of the matching cloud call and, on success, refetches the catalogue so
+     * the store converges to Neon truth (authoritative copy counters).
+     */
+    private fun syncAfterMutation(block: suspend (LibraryApiService) -> Response<*>) {
         val service = LibraryApiClient.service
         viewModelScope.launch(Dispatchers.IO) {
-            try {
-                block(service)
-                cloudStatusMessage = null
+            val failureCode: Int? = try {
+                block(service).takeUnless { it.isSuccessful }?.code()
             } catch (_: Exception) {
-                // The endpoint isn't deployed yet (or we're offline): the local
-                // mutation stands. Surface the fallback state to the user.
-                cloudStatusMessage = "Backend offline — changes kept in the in-memory catalogue"
+                -1 // transport failure (offline / DNS / timeout)
+            }
+            cloudStatusMessage = when {
+                failureCode == null -> null
+                failureCode == -1 ->
+                    "Could not reach the backend — changes kept in the in-memory catalogue"
+                failureCode == 401 ->
+                    "Live persistence needs a real backend sign-in — change kept locally for now"
+                failureCode == 403 ->
+                    "The backend rejected this role for cloud persistence — change kept locally for now"
+                else ->
+                    "Backend refused the change (HTTP $failureCode) — kept in the in-memory catalogue"
+            }
+            if (failureCode == null) {
+                refreshFromCloud()
             }
         }
     }
+
+    /**
+     * Hydrates the catalogue from the live backend (every authenticated role
+     * may GET). A successful fetch replaces the local store with server truth
+     * and clears the fallback banner; failures leave local data untouched.
+     */
+    fun refreshFromCloud() {
+        if (!SessionManager.default.isLoggedIn) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val response = LibraryApiClient.service.listBooks()
+                if (response.isSuccessful) {
+                    LibraryCatalogStore.replaceAll(
+                        (response.body() ?: emptyList()).map { dto -> dto.toDomain() }
+                    )
+                    cloudStatusMessage = null
+                } else if (response.code() == 401) {
+                    cloudStatusMessage =
+                        "Live catalogue needs a real backend sign-in — showing the local sample"
+                } else {
+                    cloudStatusMessage =
+                        "Backend unreachable (HTTP ${response.code()}) — showing the in-memory catalogue"
+                }
+            } catch (_: Exception) {
+                cloudStatusMessage = "Could not reach the backend — showing the in-memory catalogue"
+            }
+        }
+    }
+
+    /** Wire format → domain (server rows carry the authoritative copy counts). */
+    private fun BookDto.toDomain(): Book = Book(
+        id = id,
+        title = title,
+        author = author,
+        isbn = isbn,
+        category = category,
+        totalCopies = totalCopies,
+        availableCopies = availableCopies,
+        shelfLocation = shelfLocation ?: "Main Hall"
+    )
 }

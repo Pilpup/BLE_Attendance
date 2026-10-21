@@ -8,12 +8,16 @@ import okhttp3.Response
  *
  *  - Appends `Authorization: Bearer <token>` to every outbound call that is
  *    not an auth endpoint itself (login/register are anonymous by design).
- *  - On a 401 response for an endpoint where we DID attach a token, the session
- *    is considered invalid (expired/revoked) and cleared — every screen
- *    collecting SessionManager.state reacts by returning to the login flow.
+ *  - On a 401 response for an endpoint where we DID attach a real JWT, the
+ *    session is considered invalid (expired/revoked) and cleared — every
+ *    screen collecting SessionManager.state reacts by returning to the
+ *    login flow.
  *
- * A 401 only clears the session if we actually sent credentials, so anonymous
- * or failed login attempts (401 bad credentials) can't wipe an unrelated state.
+ * A 401 only clears the session if we actually sent **real** credentials:
+ * real JWTs are `header.payload.signature`; :app's development mock tokens
+ * contain no dots, are local-only identities the backend can neither
+ * validate nor judge, and must never evict a developer's mock session.
+ * Anonymous or failed login attempts can't wipe an unrelated state either.
  */
 class AuthInterceptor(
     private val sessionManager: SessionManager
@@ -32,9 +36,10 @@ class AuthInterceptor(
             }
         }.build()
 
+        val isRealJwt = token?.contains(".") == true
         val response = chain.proceed(authorized)
 
-        if (response.code == 401 && token != null && !isAuthEndpoint) {
+        if (response.code == 401 && isRealJwt && !isAuthEndpoint) {
             sessionManager.endSession()
         }
 

@@ -394,6 +394,35 @@ CREATE TABLE IF NOT EXISTS session_submissions (
     CONSTRAINT uq_session_submission_device UNIQUE (session_id, device_key)
 );
 CREATE INDEX IF NOT EXISTS ix_session_submissions_session_id ON session_submissions(session_id);
+
+-- 6. Library Books (isolated from attendance; Phase 4; seeded once on startup when empty)
+CREATE TABLE IF NOT EXISTS books (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title VARCHAR(255) NOT NULL,
+    author VARCHAR(255) NOT NULL,
+    isbn VARCHAR(32) UNIQUE NOT NULL,
+    category VARCHAR(50) NOT NULL,
+    total_copies INTEGER NOT NULL DEFAULT 1,
+    available_copies INTEGER NOT NULL DEFAULT 1,
+    shelf_location VARCHAR(100) NOT NULL DEFAULT 'Main Hall',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT ck_books_copies CHECK (available_copies >= 0 AND available_copies <= total_copies)
+);
+CREATE INDEX IF NOT EXISTS ix_books_title ON books(title);
+CREATE INDEX IF NOT EXISTS ix_books_author ON books(author);
+CREATE INDEX IF NOT EXISTS ix_books_category ON books(category);
+
+-- 7. Book Reservations (one user holding one copy; cascades on book/user delete)
+CREATE TABLE IF NOT EXISTS book_reservations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    book_id UUID NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE',  -- 'ACTIVE', 'FULFILLED', 'CANCELLED'
+    reserved_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CONSTRAINT ck_book_reservations_status CHECK (status IN ('ACTIVE', 'FULFILLED', 'CANCELLED'))
+);
+CREATE INDEX IF NOT EXISTS ix_book_reservations_book_id ON book_reservations(book_id);
+CREATE INDEX IF NOT EXISTS ix_book_reservations_user_id ON book_reservations(user_id);
 ```
 
 #### Social-Mesh Audit Algorithm (`graph_engine.py`):
@@ -490,8 +519,18 @@ def audit_classroom_mesh(reports: dict[str, list[str]]) -> list[dict]:
 | `POST` | `/api/v1/attendance/sessions/{id}/audit-and-finalize` | Teacher | Merge BLE + cloud reports, execute `graph_engine.py`, persist records, and mark `COMPLETED` |
 | `GET` | `/api/v1/attendance/sessions/{id}` | Authenticated | Get full session details and loaded attendance records |
 | `PATCH` | `/api/v1/attendance/records/{id}/override` | Teacher | **Teacher Manual Intervention:** Override status for isolated or edge students (`MANUAL_OVERRIDE`) |
+| `GET` | `/api/v1/library/books` | Authenticated | Library catalogue search by title/author/ISBN + case-insensitive category filter (Phase 4) |
+| `POST` | `/api/v1/library/books` | Staff / Developer | Add a catalogue title (409 on duplicate ISBN; intake starts with all copies on shelf) |
+| `PUT` | `/api/v1/library/books/{id}` | Staff / Developer | Update metadata or stock counts (422 when `available_copies` exceeds `total_copies`) |
+| `DELETE` | `/api/v1/library/books/{id}` | Staff / Developer | Remove a title (`204 No Content`; reservations cascade) |
+| `POST` | `/api/v1/library/books/{id}/reserve` | All Authenticated | Atomically decrements `available_copies` under a `FOR UPDATE` row lock; **409 Conflict** when 0 copies remain |
 | `GET` | `/health` | Public | Healthcheck and deployment environment indicator |
 | `GET` | `/debug-db` | Public | Run atomic schema sync and test connection to Neon database |
+
+#### Library Module Notes (Phase 4):
+- **RBAC:** self-registration never mints `STAFF`/`DEVELOPER` (only `STUDENT`/`TEACHER` + faculty passcode). Staff/developer identities are provisioned directly in the database; `require_staff_or_dev` (app/core/security.py) enforces the guard with HTTP 403 `Insufficient permissions: Staff or Developer access required`.
+- **Seeding:** `backend/seed.py` (`SAMPLE_LIBRARY_BOOKS`, 8 textbooks mirroring the Android in-memory sample) runs once from the app lifespan whenever `books` is empty — restarts never duplicate stock.
+- **Client convergence:** the Android `LibraryViewModel` now pulls `GET /books` on screen entry and refetches after every successful mutation, so the in-memory catalogue becomes a mirror of Neon instead of a parallel island. Mock sessions (non-JWT dev tokens) are never evicted by 401s — `AuthInterceptor` only ends sessions for real JWTs — but they stay on the local fallback sample until they sign in with a real account.
 
 
 ---
