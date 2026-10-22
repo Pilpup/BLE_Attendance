@@ -52,7 +52,11 @@ data class UserResponse(
     val name: String,
     val email: String,
     val role: String,
-    @SerializedName("roll_number") val rollNumber: String?
+    @SerializedName("roll_number") val rollNumber: String? = null,
+    val department: String? = null,
+    val program: String? = null,
+    val semester: Int? = null,
+    val section: String? = null
 )
 
 data class TokenResponse(

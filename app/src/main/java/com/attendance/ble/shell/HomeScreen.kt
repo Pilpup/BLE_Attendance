@@ -411,11 +411,14 @@ private fun UserDetailsDialog(
                     user.rollNumber?.let {
                         Text(text = "ID / Roll No: $it", fontSize = 13.sp, color = Color(0xFFCBD5E1))
                     }
+                    user.program?.let {
+                        Text(text = "Course: $it", fontSize = 13.sp, color = Color(0xFFCBD5E1))
+                    }
                     user.department?.let {
                         Text(text = "Branch: $it", fontSize = 13.sp, color = Color(0xFFCBD5E1))
                     }
-                    user.year?.let {
-                        Text(text = "Year: $it Year", fontSize = 13.sp, color = Color(0xFFCBD5E1))
+                    user.semester?.let {
+                        Text(text = "Semester: $it", fontSize = 13.sp, color = Color(0xFFCBD5E1))
                     }
                 }
             }
@@ -477,7 +480,7 @@ private fun UserAuthDialog(
     var rollNumberInput by remember { mutableStateOf("") }
     var courseInput by remember { mutableStateOf("") }
     var branchInput by remember { mutableStateOf("") }
-    var yearInput by remember { mutableStateOf("") }
+    var semesterInput by remember { mutableStateOf("") }
     var roleInput by remember { mutableStateOf("") }
     var secretTokenInput by remember { mutableStateOf("") }
 
@@ -697,19 +700,15 @@ private fun UserAuthDialog(
                                 )
                             }
 
-                            val availableYears = if (courseInput == "BCA") {
-                                listOf("1st Year", "2nd Year", "3rd Year")
-                            } else {
-                                listOf("1st Year", "2nd Year", "3rd Year", "4th Year")
-                            }
+                            val availableSemesters = (1..8).map { "Semester $it" }
                             AppDropdownField(
-                                label = "Year",
-                                selectedValue = if (yearInput.isNotBlank()) "$yearInput Year" else "",
-                                options = availableYears,
+                                label = "Semester",
+                                selectedValue = semesterInput,
+                                options = availableSemesters,
                                 onSelect = { selected ->
-                                    yearInput = selected.substringBefore(" Year")
+                                    semesterInput = selected
                                 },
-                                placeholder = "Select Year",
+                                placeholder = "Select Semester",
                                 modifier = Modifier.fillMaxWidth()
                             )
                         }
@@ -911,7 +910,11 @@ private fun UserAuthDialog(
                                                             name = u.name,
                                                             email = u.email,
                                                             roles = setOf(role),
-                                                            rollNumber = u.rollNumber
+                                                            rollNumber = u.rollNumber,
+                                                            department = u.department,
+                                                            program = u.program,
+                                                            semester = u.semester,
+                                                            section = u.section
                                                         )
                                                         SessionManager.default.startSession(authenticatedUser, tok)
                                                         onDismiss()
@@ -945,7 +948,7 @@ private fun UserAuthDialog(
                     val isAcademicValid = if (selectedRole == Role.STUDENT) {
                         courseInput.isNotBlank() &&
                         (if (courseInput == "BCA") true else branchInput.isNotBlank()) &&
-                        yearInput.isNotBlank()
+                        semesterInput.isNotBlank()
                     } else true
                     val isSecretValid = if (selectedRole == Role.TEACHER || selectedRole == Role.STAFF) {
                         secretTokenInput.isNotBlank()
@@ -962,13 +965,24 @@ private fun UserAuthDialog(
                         onClick = {
                             val activeRole = selectedRole ?: Role.STUDENT
                             val isStudent = activeRole == Role.STUDENT
+                            val semNumber = semesterInput.substringAfter("Semester ").trim().toIntOrNull()
+                            val rawEmail = emailInput.trim()
+                            val cleanEmail = if (rawEmail.endsWith("@mgail.com", ignoreCase = true)) {
+                                rawEmail.replace("@mgail.com", "@gmail.com", ignoreCase = true)
+                            } else if (rawEmail.endsWith("@gamil.com", ignoreCase = true)) {
+                                rawEmail.replace("@gamil.com", "@gmail.com", ignoreCase = true)
+                            } else rawEmail
+                            pendingEmail = cleanEmail
                             val req = RegisterRequest(
-                                email = emailInput.trim(),
+                                email = cleanEmail,
                                 password = passwordInput,
                                 name = nameInput.trim(),
                                 role = activeRole.name,
                                 rollNumber = rollNumberInput.trim(),
                                 department = if (isStudent) (if (courseInput == "BCA") "BCA" else branchInput) else "Faculty",
+                                program = if (isStudent) courseInput else null,
+                                semester = if (isStudent) semNumber else null,
+                                section = null,
                                 facultyCode = if (activeRole == Role.TEACHER || activeRole == Role.STAFF) secretTokenInput.trim() else null
                             )
                             isAuthLoading = true
@@ -1032,7 +1046,11 @@ private fun UserAuthDialog(
                                                 name = body.user.name,
                                                 email = body.user.email,
                                                 roles = setOf(role),
-                                                rollNumber = body.user.rollNumber
+                                                rollNumber = body.user.rollNumber,
+                                                department = body.user.department,
+                                                program = body.user.program,
+                                                semester = body.user.semester,
+                                                section = body.user.section
                                             )
                                             SessionManager.default.startSession(authenticatedUser, body.accessToken)
                                             onDismiss()

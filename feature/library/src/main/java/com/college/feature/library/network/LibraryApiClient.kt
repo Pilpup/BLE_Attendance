@@ -36,8 +36,9 @@ object LibraryApiClient {
                                 level = HttpLoggingInterceptor.Level.BODY
                             }
                         )
-                        .connectTimeout(10, TimeUnit.SECONDS)
-                        .readTimeout(10, TimeUnit.SECONDS)
+                        .connectTimeout(60, TimeUnit.SECONDS)
+                        .readTimeout(60, TimeUnit.SECONDS)
+                        .writeTimeout(60, TimeUnit.SECONDS)
                         .build()
                 )
                 .addConverterFactory(GsonConverterFactory.create())

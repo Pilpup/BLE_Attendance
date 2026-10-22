@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +42,7 @@ def ensure_utc(dt: datetime) -> datetime:
 )
 async def register_send_otp(
     payload: RegisterRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     normalized_role = payload.role.strip().upper()
@@ -58,6 +59,13 @@ async def register_send_otp(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Invalid faculty or staff registration passcode",
             )
+
+    email_clean = payload.email.strip().lower()
+    if "@mgail.com" in email_clean or "@gamil.com" in email_clean:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Did you mean @gmail.com? Please check your email address spelling.",
+        )
 
     # check if user with same email or roll number already exists
     existing = await db.execute(
@@ -110,8 +118,8 @@ async def register_send_otp(
     db.add(new_otp)
     await db.commit()
 
-    # dispatch email
-    await send_otp_email(payload.email.strip().lower(), otp_code, purpose="REGISTER")
+    # dispatch email in background
+    background_tasks.add_task(send_otp_email, payload.email.strip().lower(), otp_code, purpose="REGISTER")
 
     return OtpSentResponse(
         message=f"Verification code sent to {payload.email}",
@@ -214,6 +222,7 @@ async def register_verify_otp(
 @router.post("/login", response_model=LoginResponse)
 async def login(
     payload: LoginRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     email = payload.email.strip().lower()
@@ -251,8 +260,8 @@ async def login(
     db.add(new_otp)
     await db.commit()
 
-    # Send 2FA email
-    await send_otp_email(email, otp_code, purpose="LOGIN")
+    # Send 2FA email in background
+    background_tasks.add_task(send_otp_email, email, otp_code, purpose="LOGIN")
 
     return LoginResponse(
         requires_otp=True,
@@ -340,6 +349,7 @@ async def login_verify_otp(
 @router.post("/otp/resend", response_model=OtpSentResponse)
 async def resend_otp(
     payload: ResendOtpRequest,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     email = payload.email.strip().lower()
@@ -382,7 +392,7 @@ async def resend_otp(
         db.add(new_otp)
 
     await db.commit()
-    await send_otp_email(email, otp_code, purpose=purpose)
+    background_tasks.add_task(send_otp_email, email, otp_code, purpose=purpose)
 
     return OtpSentResponse(
         message=f"New verification code sent to {email}",

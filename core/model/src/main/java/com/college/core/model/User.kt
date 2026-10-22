@@ -13,7 +13,9 @@ data class User(
     val rollNumber: String? = null,
     val department: String? = null,
     val year: String? = null,
-    val program: String? = null
+    val program: String? = null,
+    val semester: Int? = null,
+    val section: String? = null
 ) {
     /** Highest-privilege role of the user (resolved via [Role.priority]). */
     val primaryRole: Role? get() = roles.maxByOrNull { it.priority }
