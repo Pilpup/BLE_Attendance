@@ -1,11 +1,12 @@
 import asyncio
+import json
 import logging
 import secrets
 import smtplib
+import urllib.error
+import urllib.request
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-
-import httpx
 
 from app.config import settings
 
@@ -15,6 +16,20 @@ logger = logging.getLogger("email_service")
 def generate_otp() -> str:
     """Generate a cryptographically secure 6-digit numeric OTP code."""
     return f"{secrets.randbelow(900000) + 100000}"
+
+
+def _post_https_json_sync(url: str, headers: dict, payload: dict) -> tuple[int, str]:
+    """Helper using Python standard library urllib to send HTTPS requests without external dependencies."""
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status, resp.read().decode("utf-8", errors="ignore")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="ignore") if e.fp else ""
+        return e.code, body
+    except Exception as e:
+        return 0, str(e)
 
 
 async def _send_brevo_email_async(to_email: str, subject: str, text_content: str, html_content: str) -> bool:
@@ -27,6 +42,7 @@ async def _send_brevo_email_async(to_email: str, subject: str, text_content: str
         "api-key": settings.BREVO_API_KEY.strip(),
         "Content-Type": "application/json",
         "Accept": "application/json",
+        "User-Agent": "CollegeHub/1.0",
     }
     payload = {
         "sender": {"name": settings.SMTP_FROM_NAME, "email": settings.SMTP_FROM_EMAIL},
@@ -35,17 +51,12 @@ async def _send_brevo_email_async(to_email: str, subject: str, text_content: str
         "textContent": text_content,
         "htmlContent": html_content,
     }
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            if resp.status_code in (200, 201, 202):
-                logger.info(f"Successfully dispatched OTP email via Brevo to {to_email}")
-                return True
-            logger.error(f"Failed to send email via Brevo API ({resp.status_code}): {resp.text}")
-            return False
-    except Exception as e:
-        logger.error(f"Error calling Brevo API for {to_email}: {e}")
-        return False
+    code, resp_text = await asyncio.to_thread(_post_https_json_sync, url, headers, payload)
+    if code in (200, 201, 202):
+        logger.info(f"Successfully dispatched OTP email via Brevo to {to_email}")
+        return True
+    logger.error(f"Failed to send email via Brevo API ({code}): {resp_text}")
+    return False
 
 
 async def _send_resend_email_async(to_email: str, subject: str, text_content: str, html_content: str) -> bool:
@@ -57,6 +68,7 @@ async def _send_resend_email_async(to_email: str, subject: str, text_content: st
     headers = {
         "Authorization": f"Bearer {settings.RESEND_API_KEY.strip()}",
         "Content-Type": "application/json",
+        "User-Agent": "CollegeHub/1.0",
     }
     payload = {
         "from": settings.RESEND_FROM_EMAIL.strip(),
@@ -65,17 +77,12 @@ async def _send_resend_email_async(to_email: str, subject: str, text_content: st
         "text": text_content,
         "html": html_content,
     }
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            if resp.status_code in (200, 201):
-                logger.info(f"Successfully dispatched OTP email via Resend to {to_email}")
-                return True
-            logger.error(f"Failed to send email via Resend API ({resp.status_code}): {resp.text}")
-            return False
-    except Exception as e:
-        logger.error(f"Error calling Resend API for {to_email}: {e}")
-        return False
+    code, resp_text = await asyncio.to_thread(_post_https_json_sync, url, headers, payload)
+    if code in (200, 201):
+        logger.info(f"Successfully dispatched OTP email via Resend to {to_email}")
+        return True
+    logger.error(f"Failed to send email via Resend API ({code}): {resp_text}")
+    return False
 
 
 def _send_smtp_email_sync(to_email: str, subject: str, text_content: str, html_content: str) -> bool:
