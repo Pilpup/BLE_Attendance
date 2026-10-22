@@ -5,6 +5,8 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
+import httpx
+
 from app.config import settings
 
 logger = logging.getLogger("email_service")
@@ -13,6 +15,67 @@ logger = logging.getLogger("email_service")
 def generate_otp() -> str:
     """Generate a cryptographically secure 6-digit numeric OTP code."""
     return f"{secrets.randbelow(900000) + 100000}"
+
+
+async def _send_brevo_email_async(to_email: str, subject: str, text_content: str, html_content: str) -> bool:
+    """Dispatch email via Brevo HTTPS API (Port 443). Works on Render Free Tier and allows sending from verified personal emails to anyone."""
+    if not settings.BREVO_API_KEY:
+        return False
+
+    url = "https://api.brevo.com/v3/smtp/email"
+    headers = {
+        "api-key": settings.BREVO_API_KEY.strip(),
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    payload = {
+        "sender": {"name": settings.SMTP_FROM_NAME, "email": settings.SMTP_FROM_EMAIL},
+        "to": [{"email": to_email.strip()}],
+        "subject": subject,
+        "textContent": text_content,
+        "htmlContent": html_content,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            if resp.status_code in (200, 201, 202):
+                logger.info(f"Successfully dispatched OTP email via Brevo to {to_email}")
+                return True
+            logger.error(f"Failed to send email via Brevo API ({resp.status_code}): {resp.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Error calling Brevo API for {to_email}: {e}")
+        return False
+
+
+async def _send_resend_email_async(to_email: str, subject: str, text_content: str, html_content: str) -> bool:
+    """Dispatch email via Resend HTTPS API (Port 443). Never blocked by cloud firewalls like Render Free Tier."""
+    if not settings.RESEND_API_KEY:
+        return False
+
+    url = "https://api.resend.com/emails"
+    headers = {
+        "Authorization": f"Bearer {settings.RESEND_API_KEY.strip()}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "from": settings.RESEND_FROM_EMAIL.strip(),
+        "to": [to_email.strip()],
+        "subject": subject,
+        "text": text_content,
+        "html": html_content,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            if resp.status_code in (200, 201):
+                logger.info(f"Successfully dispatched OTP email via Resend to {to_email}")
+                return True
+            logger.error(f"Failed to send email via Resend API ({resp.status_code}): {resp.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Error calling Resend API for {to_email}: {e}")
+        return False
 
 
 def _send_smtp_email_sync(to_email: str, subject: str, text_content: str, html_content: str) -> bool:
@@ -90,7 +153,16 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "LOGIN") -
     print(f">>> CODE: {otp_code} <<< (Expires in {settings.OTP_EXPIRE_MINUTES} min)")
     print(f"==================================================================\n")
 
-    # Send via SMTP in background worker if configured
+    # 1. Prefer HTTPS Email APIs (Port 443 - works on Render Free Tier where raw SMTP is blocked)
+    if settings.BREVO_API_KEY:
+        if await _send_brevo_email_async(to_email, subject, text_content, html_content):
+            return True
+
+    if settings.RESEND_API_KEY:
+        if await _send_resend_email_async(to_email, subject, text_content, html_content):
+            return True
+
+    # 2. Fall back to SMTP (works for local development or non-firewalled servers)
     if settings.SMTP_HOST:
         return await asyncio.to_thread(_send_smtp_email_sync, to_email, subject, text_content, html_content)
 

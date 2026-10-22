@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     SMTP_FROM_NAME: str = "College Hub"
     OTP_EXPIRE_MINUTES: int = 10
 
+    # HTTPS Email APIs (Works on Render Free Tier where raw SMTP ports 587/465 are blocked)
+    BREVO_API_KEY: str = ""
+    RESEND_API_KEY: str = ""
+    RESEND_FROM_EMAIL: str = "College Hub <onboarding@resend.dev>"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
