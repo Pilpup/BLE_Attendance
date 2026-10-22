@@ -1,5 +1,6 @@
 package com.attendance.ble.shell
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -14,6 +15,7 @@ import com.college.feature.attendance.AttendanceDashboardCard
 import com.college.feature.attendance.AttendanceScreen
 import com.college.feature.attendance.AttendanceScreenCallbacks
 import com.college.feature.attendance.viewmodel.AttendanceViewModel
+import com.college.feature.attendance.viewmodel.TeacherViewMode
 import com.college.feature.library.LibraryDashboardCard
 import com.college.feature.library.LibraryScreen
 
@@ -49,9 +51,18 @@ fun AppNavigation(
             HomeScreen(
                 user = user,
                 onNavigate = { route ->
-                    destination = when (route) {
-                        AttendanceDashboardCard.NAV_ROUTE -> Destination.ATTENDANCE
-                        LibraryDashboardCard.NAV_ROUTE -> Destination.LIBRARY
+                    destination = when {
+                        route.startsWith(AttendanceDashboardCard.NAV_ROUTE) -> {
+                            if (route.contains("older")) {
+                                viewModel.teacherViewMode = TeacherViewMode.OLDER_SESSIONS
+                            } else if (route.contains("take")) {
+                                viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
+                            } else {
+                                viewModel.teacherViewMode = TeacherViewMode.MENU
+                            }
+                            Destination.ATTENDANCE
+                        }
+                        route == LibraryDashboardCard.NAV_ROUTE -> Destination.LIBRARY
                         else -> Destination.HOME
                     }
                 },
@@ -59,11 +70,29 @@ fun AppNavigation(
         }
 
         Destination.ATTENDANCE -> if (user != null) {
+            val handleBack = {
+                if (user.canTakeAttendance() && !viewModel.isSessionActive && viewModel.finalizedRecords.isEmpty()) {
+                    if (viewModel.selectedSessionForDetails != null) {
+                        viewModel.selectedSessionForDetails = null
+                    } else if (viewModel.teacherViewMode != TeacherViewMode.MENU) {
+                        viewModel.teacherViewMode = TeacherViewMode.MENU
+                    } else {
+                        destination = Destination.HOME
+                    }
+                } else {
+                    destination = Destination.HOME
+                }
+            }
+
+            BackHandler(enabled = true) {
+                handleBack()
+            }
+
             AttendanceScreen(
                 user = user,
                 viewModel = viewModel,
                 callbacks = callbacks,
-                onBack = { destination = Destination.HOME }
+                onBack = handleBack
             )
         } else {
             SignInFallback()

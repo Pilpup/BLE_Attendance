@@ -57,6 +57,9 @@ interface AttendanceApiService {
         @Body body: SubmitNeighborsRequest
     ): Response<Unit>
 
+    @GET("api/v1/attendance/sessions/history")
+    suspend fun getSessionHistory(): Response<List<AttendanceSessionResponse>>
+
     @GET("api/v1/attendance/sessions/{sessionId}")
     suspend fun getSessionDetails(
         @Path("sessionId") sessionId: String

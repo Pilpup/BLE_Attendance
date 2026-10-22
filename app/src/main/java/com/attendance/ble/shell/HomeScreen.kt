@@ -25,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.FactCheck
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -126,30 +127,60 @@ fun HomeScreen(
                 color = ObsidianTextPrimary
             )
 
-            // User Profile Icon (Tapping opens user details / sign in)
-            Surface(
-                onClick = { showAccountDialog = true },
-                shape = CircleShape,
-                color = if (user != null) ObsidianAccent else ObsidianCard,
-                shadowElevation = 2.dp,
-                border = BorderStroke(1.5.dp, if (user != null) ObsidianAccentGlow else ObsidianBorderHighlight),
-                modifier = Modifier.size(42.dp)
+            // Right side: Role badge next to profile icon + User Profile Icon
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    if (user != null) {
+                if (user != null) {
+                    val activeRole = user.primaryRole ?: user.roles.firstOrNull() ?: Role.STUDENT
+                    val roleLabel = when (activeRole) {
+                        Role.TEACHER -> "Teacher"
+                        Role.STUDENT -> "Student"
+                        Role.STAFF -> "Staff"
+                        Role.DEVELOPER -> "Developer"
+                    }
+                    Surface(
+                        onClick = { showAccountDialog = true },
+                        shape = RoundedCornerShape(20.dp),
+                        color = roleBadgeBg(activeRole),
+                        border = BorderStroke(1.dp, roleBadgeColor(activeRole).copy(alpha = 0.5f))
+                    ) {
                         Text(
-                            text = user.name.take(1).uppercase(),
-                            color = Color.White,
+                            text = roleLabel,
+                            color = roleBadgeColor(activeRole),
+                            fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 17.sp
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                         )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Filled.Person,
-                            contentDescription = "User Profile / Sign In",
-                            tint = ObsidianTextSecondary,
-                            modifier = Modifier.size(22.dp)
-                        )
+                    }
+                }
+
+                // User Profile Icon (Tapping opens user details / sign in)
+                Surface(
+                    onClick = { showAccountDialog = true },
+                    shape = CircleShape,
+                    color = if (user != null) ObsidianAccent else ObsidianCard,
+                    shadowElevation = 2.dp,
+                    border = BorderStroke(1.5.dp, if (user != null) ObsidianAccentGlow else ObsidianBorderHighlight),
+                    modifier = Modifier.size(42.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        if (user != null) {
+                            Text(
+                                text = user.name.take(1).uppercase(),
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 17.sp
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Filled.Person,
+                                contentDescription = "User Profile / Sign In",
+                                tint = ObsidianTextSecondary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
                     }
                 }
             }

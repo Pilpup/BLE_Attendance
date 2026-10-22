@@ -59,7 +59,10 @@ data class AttendanceRecordItem(
     val status: String,
     @SerializedName("verification_method") val verificationMethod: String,
     @SerializedName("affinity_score") val affinityScore: Double,
-    val remarks: String?
+    val remarks: String?,
+    @SerializedName("roll_number") val rollNumber: String? = null,
+    @SerializedName("student_name") val studentName: String? = null,
+    @SerializedName("student_id") val studentId: String? = null
 )
 
 data class AttendanceSessionResponse(
@@ -69,7 +72,17 @@ data class AttendanceSessionResponse(
     val status: String,
     @SerializedName("total_verified") val totalVerified: Int,
     @SerializedName("total_spoofers") val totalSpoofers: Int,
-    val records: List<AttendanceRecordItem>? = null
+    @SerializedName("started_at") val startedAt: String? = null,
+    @SerializedName("ended_at") val endedAt: String? = null,
+    val records: List<AttendanceRecordItem>? = null,
+    @SerializedName("course_code") val courseCode: String? = null,
+    @SerializedName("course_name") val courseName: String? = null,
+    @SerializedName("class_type") val classType: String? = null,
+    @SerializedName("course_program") val courseProgram: String? = null,
+    @SerializedName("semester") val semester: String? = null,
+    @SerializedName("batch_type") val batchType: String? = null,
+    @SerializedName("unit") val unit: String? = null,
+    @SerializedName("topic_covered") val topicCovered: String? = null
 )
 
 // Payload when posting BLE mesh graph

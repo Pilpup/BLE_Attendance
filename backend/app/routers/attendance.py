@@ -100,9 +100,41 @@ async def _get_or_create_mock_context(db: AsyncSession):
 
 # Course Endpoints
 @router.get("/courses", response_model=List[CourseResponse])
-async def list_courses(db: AsyncSession = Depends(get_db)):
-    """List available courses. Use the returned UUID as course_id when creating a session."""
+async def list_courses(
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
+):
+    """List available courses for the logged-in teacher, or all courses if not authenticated."""
     await _get_or_create_mock_context(db)
+
+    if current_user and current_user.role == "TEACHER":
+        result = await db.execute(select(Course).where(Course.teacher_id == current_user.id))
+        courses = list(result.scalars().all())
+        if not courses:
+            default_subjects = [
+                ("CS401", "Distributed Systems & BLE Mesh"),
+                ("CS302", "Computer Networks & Protocols"),
+                ("CS205", "Operating Systems Architecture"),
+            ]
+            for code, name in default_subjects:
+                existing_c = (await db.execute(select(Course).where(Course.course_code == code))).scalars().first()
+                if existing_c:
+                    existing_c.teacher_id = current_user.id
+                    courses.append(existing_c)
+                else:
+                    new_c = Course(
+                        id=uuid.uuid4(),
+                        course_code=code,
+                        course_name=name,
+                        teacher_id=current_user.id,
+                    )
+                    db.add(new_c)
+                    courses.append(new_c)
+            await db.commit()
+            for c in courses:
+                await db.refresh(c)
+        return courses
+
     result = await db.execute(select(Course))
     return result.scalars().all()
 
@@ -149,6 +181,30 @@ async def list_course_sessions(
         .order_by(AttendanceSession.started_at.desc())
     )
     return result.scalars().all()
+
+
+@router.get("/sessions/history", response_model=List[AttendanceSessionResponse])
+async def list_teacher_sessions_history(
+    db: AsyncSession = Depends(get_db),
+    current_user: Optional[User] = Depends(get_optional_user),
+):
+    """Teacher lists all past attendance sessions."""
+    if current_user and current_user.role == "TEACHER":
+        result = await db.execute(
+            select(AttendanceSession)
+            .options(selectinload(AttendanceSession.records))
+            .where(AttendanceSession.teacher_id == current_user.id)
+            .order_by(AttendanceSession.started_at.desc())
+        )
+        return list(result.scalars().all())
+
+    result = await db.execute(
+        select(AttendanceSession)
+        .options(selectinload(AttendanceSession.records))
+        .order_by(AttendanceSession.started_at.desc())
+        .limit(20)
+    )
+    return list(result.scalars().all())
 
 
 # Session Lifecycle & Guardrails
