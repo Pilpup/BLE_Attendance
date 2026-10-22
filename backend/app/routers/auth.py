@@ -28,18 +28,18 @@ async def register(
     db: AsyncSession = Depends(get_db),
 ):
     normalized_role = payload.role.strip().upper()
-    if normalized_role not in ["STUDENT", "TEACHER"]:
+    if normalized_role not in ["STUDENT", "TEACHER", "STAFF"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Role must be either STUDENT or TEACHER",
+            detail="Role must be STUDENT, TEACHER, or STAFF",
         )
 
-    # enforce faculty secret passcode to prevent students from claiming teacher role
-    if normalized_role == "TEACHER":
+    # enforce faculty/staff secret passcode to prevent students from claiming privileged roles
+    if normalized_role in ["TEACHER", "STAFF"]:
         if payload.faculty_code != settings.FACULTY_SIGNUP_SECRET:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid faculty registration passcode",
+                detail="Invalid faculty or staff registration passcode",
             )
 
     # check if user with same email or roll number already exists

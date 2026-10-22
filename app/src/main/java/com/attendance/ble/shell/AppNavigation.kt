@@ -45,7 +45,7 @@ fun AppNavigation(
     val effectiveDestination = if (user != null) destination else Destination.HOME
 
     when (effectiveDestination) {
-        Destination.HOME -> if (user != null) {
+        Destination.HOME -> {
             HomeScreen(
                 user = user,
                 onNavigate = { route ->
@@ -56,8 +56,6 @@ fun AppNavigation(
                     }
                 },
             )
-        } else {
-            SignInFallback()
         }
 
         Destination.ATTENDANCE -> if (user != null) {

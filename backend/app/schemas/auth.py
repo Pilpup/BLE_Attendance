@@ -8,7 +8,7 @@ class RegisterRequest(BaseModel):
     name: str = Field(..., min_length=2, max_length=120)
     email: str = Field(..., min_length=3, max_length=255)
     password: str = Field(..., min_length=6)
-    role: str = Field(default="STUDENT", description="STUDENT or TEACHER")
+    role: str = Field(default="STUDENT", description="STUDENT, TEACHER, or STAFF")
     # roll number for students (e.g. '22BCSE104') or employee ID for teachers
     roll_number: str = Field(..., min_length=2, max_length=50)
     department: str = Field(..., description="Academic department (e.g. CSE, CIVIL)")

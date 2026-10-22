@@ -17,6 +17,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
 import com.attendance.ble.shell.AppNavigation
+import com.attendance.ble.ui.theme.P3VoidBlack
+import com.attendance.ble.ui.theme.PersonaTheme
+import androidx.core.view.WindowInsetsControllerCompat
 import com.college.feature.attendance.AttendanceScreenCallbacks
 import com.college.feature.attendance.ble.BleAdvertiser
 import com.college.feature.attendance.ble.BleConstants
@@ -49,6 +52,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Deep Midnight / Obsidian status & navigation bars
+        val obsidianDark = android.graphics.Color.parseColor("#0B0F17")
+        window.statusBarColor = obsidianDark
+        window.navigationBarColor = obsidianDark
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
 
         // Connect the feature ViewModel's radio callbacks to the hardware bridge
         viewModel.onStartBroadcasting = { token, txPower ->
