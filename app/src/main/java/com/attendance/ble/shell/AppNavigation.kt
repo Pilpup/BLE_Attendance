@@ -95,7 +95,7 @@ fun AppNavigation(
                 onBack = handleBack
             )
         } else {
-            SignInFallback()
+            destination = Destination.HOME
         }
 
         Destination.LIBRARY -> if (user != null) {
@@ -104,18 +104,9 @@ fun AppNavigation(
                 onBack = { destination = Destination.HOME }
             )
         } else {
-            SignInFallback()
+            destination = Destination.HOME
         }
     }
-}
-
-@Composable
-private fun SignInFallback() {
-    MockRoleSelector(
-        onSelect = { mock ->
-            SessionManager.default.startSession(mock, MockUsers.MOCK_DEV_TOKEN)
-        }
-    )
 }
 
 private enum class Destination { HOME, ATTENDANCE, LIBRARY }

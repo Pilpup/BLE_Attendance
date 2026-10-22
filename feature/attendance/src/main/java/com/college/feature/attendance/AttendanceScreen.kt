@@ -2142,21 +2142,30 @@ private data class SessionAcademicDetails(
 )
 
 private fun getSessionAcademicDetails(session: AttendanceSessionResponse): SessionAcademicDetails {
-    val courseProg = session.courseProgram ?: if (session.courseCode?.contains("BCA", ignoreCase = true) == true) "BCA" else "B-Tech"
-    val sem = session.semester ?: Regex("Semester\\s*\\d", RegexOption.IGNORE_CASE).find(session.courseCode ?: "")?.value ?: "Semester 1"
+    val courseProg = session.courseProgram
+        ?: if (session.courseCode?.contains("BCA", ignoreCase = true) == true) "BCA"
+        else if (session.courseCode?.contains("B-Tech", ignoreCase = true) == true || session.courseCode?.contains("BTECH", ignoreCase = true) == true) "B-Tech"
+        else session.courseCode?.takeIf { it.isNotBlank() } ?: "—"
+    val sem = session.semester
+        ?: Regex("Semester\\s*\\d", RegexOption.IGNORE_CASE).find(session.courseCode ?: "")?.value
+        ?: "—"
     val clsType = session.classType ?: when {
         session.courseName?.contains("Extra", ignoreCase = true) == true -> "Extra"
         session.courseName?.contains("Adjustment", ignoreCase = true) == true -> "Adjustment"
         else -> "Regular"
     }
     val batch = session.batchType ?: if (session.courseName?.contains("Lab", ignoreCase = true) == true) "Lab" else "Lecture"
-    val unit = session.unit ?: Regex("Unit\\s*\\d", RegexOption.IGNORE_CASE).find(session.courseName ?: "")?.value ?: "Unit 1"
+    val unit = session.unit
+        ?: Regex("Unit\\s*\\d", RegexOption.IGNORE_CASE).find(session.courseName ?: "")?.value
+        ?: "—"
     val topic = session.topicCovered ?: run {
         val raw = session.courseName ?: ""
         if (raw.contains("•")) {
             raw.substringAfter("•").substringBefore(")").trim()
+        } else if (raw.isNotBlank()) {
+            raw
         } else {
-            "Foundations & System Architecture"
+            "—"
         }
     }
     return SessionAcademicDetails(clsType, courseProg, sem, batch, unit, topic)

@@ -6,8 +6,24 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 
 from app.main import app
 from app.database import get_db
-from app.models.attendance import Base
+from app.models.attendance import Base, EmailOTP
 from app.config import settings
+from sqlalchemy import select
+
+
+async def _register_and_get_token(client: AsyncClient, session_factory, payload: dict) -> str:
+    res = await client.post("/api/v1/auth/register", json=payload)
+    assert res.status_code == 200, res.text
+    email = payload["email"]
+    async with session_factory() as s:
+        otp_rec = (await s.execute(select(EmailOTP).where(EmailOTP.email == email, EmailOTP.purpose == "REGISTER"))).scalars().first()
+        otp_code = otp_rec.otp_code
+    verify_res = await client.post(
+        "/api/v1/auth/register/verify-otp",
+        json={"email": email, "otp_code": otp_code}
+    )
+    assert verify_res.status_code == 201, verify_res.text
+    return verify_res.json()["access_token"]
 
 
 @pytest.mark.anyio
@@ -27,10 +43,11 @@ async def test_30_student_classroom_mesh_simulation():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # Phase 1: Teacher Registration & Login
-        teacher_reg = await client.post(
-            "/api/v1/auth/register",
-            json={
+        # Phase 1: Teacher Registration & Verification
+        teacher_token = await _register_and_get_token(
+            client,
+            test_session_factory,
+            {
                 "name": "Prof. Vikram Rao",
                 "email": "vikram.rao@univ.edu",
                 "password": "TeacherPassword123!",
@@ -40,14 +57,6 @@ async def test_30_student_classroom_mesh_simulation():
                 "faculty_code": settings.FACULTY_SIGNUP_SECRET,
             },
         )
-        assert teacher_reg.status_code == 201
-
-        teacher_login = await client.post(
-            "/api/v1/auth/login",
-            json={"email": "vikram.rao@univ.edu", "password": "TeacherPassword123!"},
-        )
-        assert teacher_login.status_code == 200
-        teacher_token = teacher_login.json()["access_token"]
         teacher_headers = {"Authorization": f"Bearer {teacher_token}"}
 
         # Phase 2: Register 25 Online Students + 1 Spoofer
@@ -55,9 +64,10 @@ async def test_30_student_classroom_mesh_simulation():
         student_tokens = {}
 
         for sid in online_student_ids:
-            res = await client.post(
-                "/api/v1/auth/register",
-                json={
+            student_tokens[sid] = await _register_and_get_token(
+                client,
+                test_session_factory,
+                {
                     "name": f"Student {sid}",
                     "email": f"{sid.lower()}@univ.edu",
                     "password": "Password123!",
@@ -69,20 +79,13 @@ async def test_30_student_classroom_mesh_simulation():
                     "section": "A",
                 },
             )
-            assert res.status_code == 201
-
-            login_res = await client.post(
-                "/api/v1/auth/login",
-                json={"email": f"{sid.lower()}@univ.edu", "password": "Password123!"},
-            )
-            assert login_res.status_code == 200
-            student_tokens[sid] = login_res.json()["access_token"]
 
         # Register Hallway Spoofer
         spoofer_id = "SPOF"
-        spoofer_reg = await client.post(
-            "/api/v1/auth/register",
-            json={
+        spoofer_token = await _register_and_get_token(
+            client,
+            test_session_factory,
+            {
                 "name": "Hallway Spoofer",
                 "email": "spoofer@univ.edu",
                 "password": "Password123!",
@@ -94,12 +97,6 @@ async def test_30_student_classroom_mesh_simulation():
                 "section": "A",
             },
         )
-        assert spoofer_reg.status_code == 201
-        spoofer_login = await client.post(
-            "/api/v1/auth/login",
-            json={"email": "spoofer@univ.edu", "password": "Password123!"},
-        )
-        spoofer_token = spoofer_login.json()["access_token"]
         spoofer_headers = {"Authorization": f"Bearer {spoofer_token}"}
 
         # Phase 3: Teacher starts Attendance Session (salt registered, then broadcast ONLY via BLE)

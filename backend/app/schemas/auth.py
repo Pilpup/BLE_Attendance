@@ -45,3 +45,34 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: UserResponse
+
+
+# OTP verification request
+class VerifyOtpRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=255)
+    otp_code: str = Field(..., min_length=4, max_length=10)
+
+
+# Resend OTP request
+class ResendOtpRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=255)
+    purpose: str = Field(default="LOGIN", description="LOGIN or REGISTER")
+
+
+# Generic response when OTP is dispatched
+class OtpSentResponse(BaseModel):
+    message: str
+    email: str
+    expires_in_seconds: int = 600
+    requires_otp: bool = True
+
+
+# Flexible login response: either requires 2FA OTP or returns token directly
+class LoginResponse(BaseModel):
+    requires_otp: bool = True
+    message: str = "Verification code sent to your email"
+    email: str
+    access_token: Optional[str] = None
+    token_type: Optional[str] = "bearer"
+    user: Optional[UserResponse] = None
+

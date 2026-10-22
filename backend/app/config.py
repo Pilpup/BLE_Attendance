@@ -10,6 +10,15 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 365
     FACULTY_SIGNUP_SECRET: str = "fff791e68ec68434901e256c293f0724"
 
+    # Email / SMTP configuration for OTP Verification & 2FA
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM_EMAIL: str = "noreply@college.edu"
+    SMTP_FROM_NAME: str = "College Hub"
+    OTP_EXPIRE_MINUTES: int = 10
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

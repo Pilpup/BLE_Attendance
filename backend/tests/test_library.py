@@ -18,14 +18,18 @@ from app.config import settings
 from app.core.security import hash_password
 from app.database import get_db
 from app.main import app
-from app.models.attendance import Base, User
+from app.models.attendance import Base, User, EmailOTP
 from app.models.library import Book, BookReservation
+from sqlalchemy import select
 
 LIBRARY_URL = "/api/v1/library/books"
+
+_current_session_factory = None
 
 
 async def _make_test_env():
     """Fresh per-test database + FastAPI dependency override."""
+    global _current_session_factory
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -36,6 +40,7 @@ async def _make_test_env():
             yield session
 
     app.dependency_overrides[get_db] = override_get_db
+    _current_session_factory = session_factory
     return session_factory
 
 
@@ -54,7 +59,12 @@ def _book_payload(isbn: str, title: str = "Computer Networks", copies: int = 3) 
 async def _login(client: AsyncClient, email: str, password: str = "Password123!") -> dict:
     login = await client.post("/api/v1/auth/login", json={"email": email, "password": password})
     assert login.status_code == 200, login.text
-    return {"Authorization": f"Bearer {login.json()['access_token']}"}
+    async with _current_session_factory() as s:
+        otp_rec = (await s.execute(select(EmailOTP).where(EmailOTP.email == email, EmailOTP.purpose == "LOGIN"))).scalars().first()
+        otp_code = otp_rec.otp_code
+    v = await client.post("/api/v1/auth/login/verify-otp", json={"email": email, "otp_code": otp_code})
+    assert v.status_code == 200, v.text
+    return {"Authorization": f"Bearer {v.json()['access_token']}"}
 
 
 async def _register_and_login(
@@ -71,8 +81,13 @@ async def _register_and_login(
     if role == "TEACHER":
         payload["faculty_code"] = settings.FACULTY_SIGNUP_SECRET
     reg = await client.post("/api/v1/auth/register", json=payload)
-    assert reg.status_code == 201, reg.text
-    return await _login(client, email)
+    assert reg.status_code == 200, reg.text
+    async with _current_session_factory() as s:
+        otp_rec = (await s.execute(select(EmailOTP).where(EmailOTP.email == email, EmailOTP.purpose == "REGISTER"))).scalars().first()
+        otp_code = otp_rec.otp_code
+    v = await client.post("/api/v1/auth/register/verify-otp", json={"email": email, "otp_code": otp_code})
+    assert v.status_code == 201, v.text
+    return {"Authorization": f"Bearer {v.json()['access_token']}"}
 
 
 async def _insert_role_user(session_factory, *, name: str, email: str, role: str, roll_number: str):

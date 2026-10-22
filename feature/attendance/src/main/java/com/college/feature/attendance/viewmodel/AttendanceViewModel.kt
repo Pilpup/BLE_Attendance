@@ -20,11 +20,15 @@ import com.college.feature.attendance.network.AttendanceSessionResponse
 import com.college.feature.attendance.network.CourseCreateRequest
 import com.college.feature.attendance.network.CourseResponse
 import com.college.feature.attendance.network.LoginRequest
+import com.college.feature.attendance.network.LoginResponse
 import com.college.feature.attendance.network.MeshAuditRunRequest
+import com.college.feature.attendance.network.OtpSentResponse
 import com.college.feature.attendance.network.RegisterRequest
+import com.college.feature.attendance.network.ResendOtpRequest
 import com.college.feature.attendance.network.SessionCreateRequest
 import com.college.feature.attendance.network.SubmitNeighborsRequest
 import com.college.feature.attendance.network.TokenResponse
+import com.college.feature.attendance.network.VerifyOtpRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -218,13 +222,50 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         prefs.edit().putString("server_url", AttendanceApiClient.baseUrl).apply()
     }
 
-    // Authenticate user against FastAPI backend
-    fun login(email: String, pass: String, onComplete: (Boolean) -> Unit = {}) {
+    // Authenticate user against FastAPI backend (Step 1: password -> triggers 2FA OTP)
+    fun login(email: String, pass: String, onOtpRequired: (String) -> Unit = {}, onComplete: (Boolean) -> Unit = {}) {
         isAuthLoading = true
         authErrorText = null
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val res = api.login(LoginRequest(email, pass))
+                withContext(Dispatchers.Main) {
+                    isAuthLoading = false
+                    if (res.isSuccessful && res.body() != null) {
+                        val body = res.body()!!
+                        if (body.requiresOtp) {
+                            onOtpRequired(body.email)
+                            onComplete(true)
+                        } else if (body.accessToken != null && body.user != null) {
+                            onAuthenticated(TokenResponse(body.accessToken, body.tokenType ?: "bearer", body.user))
+                            if (isTeacherMode) {
+                                loadCourses()
+                            }
+                            onComplete(true)
+                        }
+                    } else {
+                        val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
+                        authErrorText = "Login failed: HTTP ${res.code()}${if (!err.isNullOrBlank()) " - $err" else ""}"
+                        onComplete(false)
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    isAuthLoading = false
+                    authErrorText = "Network error: ${e.localizedMessage ?: "Cannot reach server"}"
+                    onComplete(false)
+                }
+            }
+        }
+    }
+
+    // Step 2: Verify login 2FA OTP
+    fun verifyLoginOtp(email: String, otpCode: String, onComplete: (Boolean) -> Unit = {}) {
+        isAuthLoading = true
+        authErrorText = null
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val res = api.verifyLoginOtp(VerifyOtpRequest(email, otpCode))
                 withContext(Dispatchers.Main) {
                     isAuthLoading = false
                     if (res.isSuccessful && res.body() != null) {
@@ -234,7 +275,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         }
                         onComplete(true)
                     } else {
-                        authErrorText = "Login failed: HTTP ${res.code()}"
+                        val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
+                        authErrorText = "Verification failed: HTTP ${res.code()}${if (!err.isNullOrBlank()) " - $err" else ""}"
                         onComplete(false)
                     }
                 }
@@ -274,8 +316,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             .apply()
     }
 
-    // Register user against FastAPI backend
-    fun register(req: RegisterRequest, onComplete: (Boolean) -> Unit = {}) {
+    // Register user against FastAPI backend (Step 1: details -> sends OTP)
+    fun register(req: RegisterRequest, onOtpRequired: (String) -> Unit = {}, onComplete: (Boolean) -> Unit = {}) {
         isAuthLoading = true
         authErrorText = null
         viewModelScope.launch(Dispatchers.IO) {
@@ -283,10 +325,70 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 val res = api.register(req)
                 withContext(Dispatchers.Main) {
                     isAuthLoading = false
+                    if (res.isSuccessful && res.body() != null) {
+                        onOtpRequired(res.body()!!.email)
+                        onComplete(true)
+                    } else {
+                        val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
+                        authErrorText = "Registration failed: HTTP ${res.code()}${if (!err.isNullOrBlank()) " - $err" else ""}"
+                        onComplete(false)
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    isAuthLoading = false
+                    authErrorText = "Network error: ${e.localizedMessage ?: "Cannot reach server"}"
+                    onComplete(false)
+                }
+            }
+        }
+    }
+
+    // Step 2: Verify registration OTP
+    fun verifyRegisterOtp(email: String, otpCode: String, onComplete: (Boolean) -> Unit = {}) {
+        isAuthLoading = true
+        authErrorText = null
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val res = api.verifyRegisterOtp(VerifyOtpRequest(email, otpCode))
+                withContext(Dispatchers.Main) {
+                    isAuthLoading = false
+                    if (res.isSuccessful && res.body() != null) {
+                        onAuthenticated(res.body()!!)
+                        if (isTeacherMode) {
+                            loadCourses()
+                        }
+                        onComplete(true)
+                    } else {
+                        val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
+                        authErrorText = "Verification failed: HTTP ${res.code()}${if (!err.isNullOrBlank()) " - $err" else ""}"
+                        onComplete(false)
+                    }
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    isAuthLoading = false
+                    authErrorText = "Network error: ${e.localizedMessage ?: "Cannot reach server"}"
+                    onComplete(false)
+                }
+            }
+        }
+    }
+
+    // Resend OTP
+    fun resendOtp(email: String, purpose: String = "LOGIN", onComplete: (Boolean) -> Unit = {}) {
+        isAuthLoading = true
+        authErrorText = null
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val res = api.resendOtp(ResendOtpRequest(email, purpose))
+                withContext(Dispatchers.Main) {
+                    isAuthLoading = false
                     if (res.isSuccessful) {
                         onComplete(true)
                     } else {
-                        authErrorText = "Registration failed: HTTP ${res.code()}"
+                        val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
+                        authErrorText = "Resend failed: ${err ?: "HTTP ${res.code()}"}"
                         onComplete(false)
                     }
                 }
@@ -340,20 +442,14 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 withContext(Dispatchers.Main) {
                     isLoadingCourses = false
                     if (res.code() == 401) {
-                        if (availableCourses.isEmpty()) {
-                            availableCourses = listOf(
-                                CourseResponse("default-cs401", "CS401", "Distributed Systems & BLE Mesh"),
-                                CourseResponse("default-cs302", "CS302", "Computer Networks & Protocols")
-                            )
-                            if (selectedCourse == null) {
-                                selectedCourse = availableCourses.firstOrNull()
-                            }
-                        }
+                        handleAuthExpired()
                     } else if (res.isSuccessful && res.body() != null) {
                         availableCourses = res.body()!!
                         if (selectedCourse == null && availableCourses.isNotEmpty()) {
                             selectedCourse = availableCourses.first()
                         }
+                    } else {
+                        availableCourses = emptyList()
                     }
                 }
             } catch (_: Exception) {
@@ -510,45 +606,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val sessId = backendSessionId ?: sessionId.takeIf { it != "----" }
 
         if (!SessionManager.default.isLoggedIn || sessId == null) {
-            finalizedRecords = listOf(
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-A401",
-                    status = "VERIFIED_PRESENT",
-                    verificationMethod = "DIRECT_BLE_AND_WITNESS",
-                    affinityScore = 0.98,
-                    remarks = "Verified by 3 neighbor peers",
-                    rollNumber = "251430101001",
-                    studentName = "Aarav Sharma"
-                ),
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-B812",
-                    status = "VERIFIED_PRESENT",
-                    verificationMethod = "DIRECT_BLE",
-                    affinityScore = 0.85,
-                    remarks = "Direct in-room beacon match",
-                    rollNumber = "251430101004",
-                    studentName = "Priya Patel"
-                ),
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-C309",
-                    status = "ISOLATED",
-                    verificationMethod = "NONE",
-                    affinityScore = 0.40,
-                    remarks = "Isolated node, unconfirmed",
-                    rollNumber = "251430101019",
-                    studentName = "Rohan Verma"
-                ),
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-E202",
-                    status = "SPOOFER_REJECTED",
-                    verificationMethod = "CLUSTER_ANOMALY",
-                    affinityScore = 0.0,
-                    remarks = "100% Spoofer detected",
-                    rollNumber = "251430101025",
-                    studentName = "Vikram Malhotra"
-                )
-            )
-            recordSessionToHistory(finalizedRecords)
+            finalizedRecords = emptyList()
+            cloudStatusMessage = "Cannot finalize: No active cloud session or not signed in."
             return
         }
 
@@ -561,15 +620,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 withContext(Dispatchers.Main) {
                     isCloudSyncing = false
                     if (res.code() == 401) {
-                        if (availableCourses.isEmpty()) {
-                            availableCourses = listOf(
-                                CourseResponse("default-cs401", "CS401", "Distributed Systems & BLE Mesh"),
-                                CourseResponse("default-cs302", "CS302", "Computer Networks & Protocols")
-                            )
-                            if (selectedCourse == null) {
-                                selectedCourse = availableCourses.firstOrNull()
-                            }
-                        }
+                        handleAuthExpired()
                     } else if (res.isSuccessful && res.body() != null) {
                         val body = res.body()!!
                         finalizedRecords = body.records ?: emptyList()
@@ -590,17 +641,18 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun recordSessionToHistory(records: List<AttendanceRecordItem>) {
+        val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
         val completedSession = AttendanceSessionResponse(
             id = backendSessionId ?: sessionId,
-            courseId = selectedCourse?.id ?: "academic-current",
+            courseId = selectedCourse?.id ?: "",
             sessionToken = sessionId,
             status = "COMPLETED",
             totalVerified = records.count { it.status == "VERIFIED_PRESENT" },
             totalSpoofers = records.count { it.status == "SPOOFER_REJECTED" },
-            startedAt = "Today, Just now",
+            startedAt = timestamp,
             records = records,
-            courseCode = selectedCourse?.courseCode ?: "B-Tech Semester 1",
-            courseName = selectedCourse?.courseName ?: "Regular Lecture (Unit 1 • Foundations & System Architecture)"
+            courseCode = selectedCourse?.courseCode ?: "",
+            courseName = selectedCourse?.courseName ?: ""
         )
         pastSessions = listOf(completedSession) + pastSessions.filter { it.id != completedSession.id }
     }
@@ -627,208 +679,20 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 val res = api.getSessionHistory()
                 withContext(Dispatchers.Main) {
                     isLoadingHistory = false
-                    if (res.isSuccessful && res.body() != null && res.body()!!.isNotEmpty()) {
+                    if (res.isSuccessful && res.body() != null) {
                         pastSessions = res.body()!!
-                    } else if (pastSessions.isEmpty()) {
-                        pastSessions = getMockPastSessions()
+                    } else {
+                        pastSessions = emptyList()
                     }
                 }
             } catch (_: Exception) {
                 withContext(Dispatchers.Main) {
                     isLoadingHistory = false
-                    if (pastSessions.isEmpty()) {
-                        pastSessions = getMockPastSessions()
-                    }
+                    pastSessions = emptyList()
                 }
             }
         }
     }
-
-    private fun getMockPastSessions(): List<AttendanceSessionResponse> = listOf(
-        AttendanceSessionResponse(
-            id = "sess-prev-001",
-            courseId = "CS401",
-            sessionToken = "A842",
-            status = "COMPLETED",
-            totalVerified = 6,
-            totalSpoofers = 0,
-            startedAt = "Today, 10:30 AM",
-            courseCode = "B-Tech Semester 4",
-            courseName = "Regular Lecture (Unit 3 • Peer Witnessing & Mesh Consensus)",
-            classType = "Regular",
-            courseProgram = "B-Tech",
-            semester = "Semester 4",
-            batchType = "Lecture",
-            unit = "Unit 3",
-            topicCovered = "Peer Witnessing & Mesh Consensus",
-            records = listOf(
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-A401",
-                    status = "VERIFIED_PRESENT",
-                    verificationMethod = "DIRECT_BLE_AND_WITNESS",
-                    affinityScore = 0.98,
-                    remarks = "Verified by 3 neighbor peers",
-                    rollNumber = "251430101001",
-                    studentName = "Aarav Sharma"
-                ),
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-A402",
-                    status = "VERIFIED_PRESENT",
-                    verificationMethod = "DIRECT_BLE_AND_WITNESS",
-                    affinityScore = 0.94,
-                    remarks = "Verified by 2 neighbor peers",
-                    rollNumber = "251430101002",
-                    studentName = "Diya Sen"
-                ),
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-B812",
-                    status = "VERIFIED_PRESENT",
-                    verificationMethod = "DIRECT_BLE",
-                    affinityScore = 0.85,
-                    remarks = "Direct in-room beacon match",
-                    rollNumber = "251430101004",
-                    studentName = "Priya Patel"
-                ),
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-D101",
-                    status = "VERIFIED_PRESENT",
-                    verificationMethod = "DIRECT_BLE_AND_WITNESS",
-                    affinityScore = 0.91,
-                    remarks = "Verified by neighbor peers",
-                    rollNumber = "251430101012",
-                    studentName = "Sneha Gupta"
-                ),
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-R190",
-                    status = "VERIFIED_PRESENT",
-                    verificationMethod = "DIRECT_BLE",
-                    affinityScore = 0.99,
-                    remarks = "Verified",
-                    rollNumber = "251430101019",
-                    studentName = "Rohan Verma"
-                ),
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-M250",
-                    status = "VERIFIED_PRESENT",
-                    verificationMethod = "MANUAL_OVERRIDE",
-                    affinityScore = 1.0,
-                    remarks = "Verified by teacher",
-                    rollNumber = "251430101025",
-                    studentName = "Vikram Malhotra"
-                )
-            )
-        ),
-        AttendanceSessionResponse(
-            id = "sess-prev-002",
-            courseId = "CS201",
-            sessionToken = "B319",
-            status = "COMPLETED",
-            totalVerified = 3,
-            totalSpoofers = 1,
-            startedAt = "Yesterday, 02:15 PM",
-            courseCode = "B-Tech Semester 2",
-            courseName = "Regular Lab (Unit 2 • BLE Advertising & Proximity Packets)",
-            classType = "Regular",
-            courseProgram = "B-Tech",
-            semester = "Semester 2",
-            batchType = "Lab",
-            unit = "Unit 2",
-            topicCovered = "BLE Advertising & Proximity Packets",
-            records = listOf(
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-A401",
-                    status = "VERIFIED_PRESENT",
-                    verificationMethod = "DIRECT_BLE",
-                    affinityScore = 0.92,
-                    remarks = "Direct in-room beacon match",
-                    rollNumber = "251430101001",
-                    studentName = "Aarav Sharma"
-                ),
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-B812",
-                    status = "VERIFIED_PRESENT",
-                    verificationMethod = "DIRECT_BLE",
-                    affinityScore = 0.88,
-                    remarks = "Direct in-room beacon match",
-                    rollNumber = "251430101004",
-                    studentName = "Priya Patel"
-                ),
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-R190",
-                    status = "VERIFIED_PRESENT",
-                    verificationMethod = "DIRECT_BLE",
-                    affinityScore = 0.95,
-                    remarks = "Direct in-room beacon match",
-                    rollNumber = "251430101019",
-                    studentName = "Rohan Verma"
-                ),
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-X999",
-                    status = "ISOLATED_NO_NEIGHBORS",
-                    verificationMethod = "NO_NEIGHBOR_DATA",
-                    affinityScore = 0.3,
-                    remarks = "Unverified",
-                    rollNumber = "251430101020",
-                    studentName = "Amit Kumar"
-                ),
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-E202",
-                    status = "SPOOFER_REJECTED",
-                    verificationMethod = "CLUSTER_ANOMALY",
-                    affinityScore = 0.0,
-                    remarks = "Flagged: distance anomaly",
-                    rollNumber = "251430101025",
-                    studentName = "Vikram Malhotra"
-                )
-            )
-        ),
-        AttendanceSessionResponse(
-            id = "sess-prev-003",
-            courseId = "BCA101",
-            sessionToken = "C704",
-            status = "COMPLETED",
-            startedAt = "20 Oct 2026, 11:00 AM",
-            courseCode = "BCA Semester 1",
-            courseName = "Extra Lecture (Unit 1 • Foundations & System Architecture)",
-            classType = "Extra",
-            courseProgram = "BCA",
-            semester = "Semester 1",
-            batchType = "Lecture",
-            unit = "Unit 1",
-            topicCovered = "Foundations & System Architecture",
-            totalVerified = 3,
-            totalSpoofers = 0,
-            records = listOf(
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-A401",
-                    status = "VERIFIED_PRESENT",
-                    verificationMethod = "DIRECT_BLE",
-                    affinityScore = 0.98,
-                    remarks = "Verified",
-                    rollNumber = "251430101001",
-                    studentName = "Aarav Sharma"
-                ),
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-D101",
-                    status = "VERIFIED_PRESENT",
-                    verificationMethod = "DIRECT_BLE",
-                    affinityScore = 0.91,
-                    remarks = "Verified",
-                    rollNumber = "251430101012",
-                    studentName = "Sneha Gupta"
-                ),
-                AttendanceRecordItem(
-                    bleDeviceId = "DEV-R190",
-                    status = "VERIFIED_PRESENT",
-                    verificationMethod = "DIRECT_BLE",
-                    affinityScore = 0.94,
-                    remarks = "Verified",
-                    rollNumber = "251430101019",
-                    studentName = "Rohan Verma"
-                )
-            )
-        )
-    )
 
     fun stopTeacherSession() {
         teacherTimer?.cancel()

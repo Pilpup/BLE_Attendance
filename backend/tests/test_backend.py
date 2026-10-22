@@ -200,7 +200,7 @@ async def test_session_auto_supersede():
     from httpx import AsyncClient, ASGITransport
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from app.database import get_db
-    from app.models.attendance import Base, AttendanceSession
+    from app.models.attendance import Base, AttendanceSession, EmailOTP
     from sqlalchemy import select
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -217,7 +217,7 @@ async def test_session_auto_supersede():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # Register and login teacher
+        # Register teacher (initiates OTP verification)
         t_reg = await client.post(
             "/api/v1/auth/register",
             json={
@@ -230,14 +230,19 @@ async def test_session_auto_supersede():
                 "faculty_code": settings.FACULTY_SIGNUP_SECRET,
             },
         )
-        assert t_reg.status_code == 201
+        assert t_reg.status_code == 200
 
-        t_login = await client.post(
-            "/api/v1/auth/login",
-            json={"email": "auto.supersede@univ.edu", "password": "Password123!"},
+        # Query OTP from db to verify registration
+        async with test_session_factory() as s:
+            otp_record = (await s.execute(select(EmailOTP).where(EmailOTP.email == "auto.supersede@univ.edu"))).scalars().first()
+            otp_code = otp_record.otp_code
+
+        verify_reg = await client.post(
+            "/api/v1/auth/register/verify-otp",
+            json={"email": "auto.supersede@univ.edu", "otp_code": otp_code},
         )
-        assert t_login.status_code == 200
-        token = t_login.json()["access_token"]
+        assert verify_reg.status_code == 201
+        token = verify_reg.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
         # Create session 1
@@ -278,7 +283,8 @@ async def test_submit_neighbors_salt_enforcement():
     from httpx import AsyncClient, ASGITransport
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from app.database import get_db
-    from app.models.attendance import Base
+    from app.models.attendance import Base, EmailOTP
+    from sqlalchemy import select
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with test_engine.begin() as conn:
@@ -294,7 +300,7 @@ async def test_submit_neighbors_salt_enforcement():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        # Register and login teacher
+        # Register and verify teacher
         t_reg = await client.post(
             "/api/v1/auth/register",
             json={
@@ -307,14 +313,18 @@ async def test_submit_neighbors_salt_enforcement():
                 "faculty_code": settings.FACULTY_SIGNUP_SECRET,
             },
         )
-        assert t_reg.status_code == 201
+        assert t_reg.status_code == 200
 
-        t_login = await client.post(
-            "/api/v1/auth/login",
-            json={"email": "salt.guard@univ.edu", "password": "Password123!"},
+        async with test_session_factory() as s:
+            otp_record = (await s.execute(select(EmailOTP).where(EmailOTP.email == "salt.guard@univ.edu"))).scalars().first()
+            otp_code = otp_record.otp_code
+
+        verify_reg = await client.post(
+            "/api/v1/auth/register/verify-otp",
+            json={"email": "salt.guard@univ.edu", "otp_code": otp_code},
         )
-        assert t_login.status_code == 200
-        headers = {"Authorization": f"Bearer {t_login.json()['access_token']}"}
+        assert verify_reg.status_code == 201
+        headers = {"Authorization": f"Bearer {verify_reg.json()['access_token']}"}
 
         # Teacher registers the salt at session creation (required)
         s_res = await client.post(

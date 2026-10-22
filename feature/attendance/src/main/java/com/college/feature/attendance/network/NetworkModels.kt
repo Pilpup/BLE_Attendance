@@ -8,6 +8,32 @@ data class LoginRequest(
     val password: String
 )
 
+data class LoginResponse(
+    @SerializedName("requires_otp") val requiresOtp: Boolean = true,
+    val message: String,
+    val email: String,
+    @SerializedName("access_token") val accessToken: String? = null,
+    @SerializedName("token_type") val tokenType: String? = "bearer",
+    val user: UserResponse? = null
+)
+
+data class VerifyOtpRequest(
+    val email: String,
+    @SerializedName("otp_code") val otpCode: String
+)
+
+data class ResendOtpRequest(
+    val email: String,
+    val purpose: String = "LOGIN"
+)
+
+data class OtpSentResponse(
+    val message: String,
+    val email: String,
+    @SerializedName("expires_in_seconds") val expiresInSeconds: Int = 600,
+    @SerializedName("requires_otp") val requiresOtp: Boolean = true
+)
+
 data class RegisterRequest(
     val name: String,
     val email: String,

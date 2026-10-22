@@ -21,6 +21,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.FactCheck
 import androidx.compose.material.icons.automirrored.filled.MenuBook
@@ -30,6 +31,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -41,8 +43,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,8 +57,12 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
@@ -68,7 +76,16 @@ import com.college.core.model.Role
 import com.college.core.model.User
 import com.college.core.network.SessionManager
 import com.college.feature.attendance.AttendanceDashboardCard
+import com.college.feature.attendance.network.AttendanceApiClient
+import com.college.feature.attendance.network.LoginRequest
+import com.college.feature.attendance.network.RegisterRequest
+import com.college.feature.attendance.network.ResendOtpRequest
+import com.college.feature.attendance.network.VerifyOtpRequest
 import com.college.feature.library.LibraryDashboardCard
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Highly optimized, lightweight Home Screen for all devices (including older/slower phones).
@@ -195,7 +212,13 @@ fun HomeScreen(
         ) {
             // Attendance
             Surface(
-                onClick = { onNavigate(AttendanceDashboardCard.NAV_ROUTE) },
+                onClick = {
+                    if (user != null) {
+                        onNavigate(AttendanceDashboardCard.NAV_ROUTE)
+                    } else {
+                        showAccountDialog = true
+                    }
+                },
                 shape = RoundedCornerShape(16.dp),
                 color = ObsidianCard,
                 border = BorderStroke(1.dp, ObsidianBorder),
@@ -233,7 +256,13 @@ fun HomeScreen(
 
             // Library
             Surface(
-                onClick = { onNavigate(LibraryDashboardCard.NAV_ROUTE) },
+                onClick = {
+                    if (user != null) {
+                        onNavigate(LibraryDashboardCard.NAV_ROUTE)
+                    } else {
+                        showAccountDialog = true
+                    }
+                },
                 shape = RoundedCornerShape(16.dp),
                 color = ObsidianCard,
                 border = BorderStroke(1.dp, ObsidianBorder),
@@ -389,40 +418,6 @@ private fun UserDetailsDialog(
                         Text(text = "Year: $it Year", fontSize = 13.sp, color = Color(0xFFCBD5E1))
                     }
                 }
-
-                HorizontalDivider(color = ObsidianBorder)
-
-                Text(
-                    text = "QUICK ACCOUNT SWITCH",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = ObsidianTextSecondary
-                )
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    MockUsers.all.forEach { mock ->
-                        val isCurrent = mock.id == user.id
-                        OutlinedButton(
-                            onClick = {
-                                SessionManager.default.startSession(mock, MockUsers.MOCK_DEV_TOKEN)
-                                onDismiss()
-                            },
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = if (isCurrent) ObsidianAccent else ObsidianCardAlt,
-                                contentColor = if (isCurrent) Color.White else ObsidianTextPrimary
-                            ),
-                            border = BorderStroke(1.dp, if (isCurrent) ObsidianAccentGlow else ObsidianBorderHighlight),
-                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                        ) {
-                            Text(text = mock.name, fontSize = 11.sp)
-                        }
-                    }
-                }
             }
         },
         confirmButton = {
@@ -447,11 +442,33 @@ private fun UserDetailsDialog(
 /**
  * Clean Auth Dialog in Obsidian Dark with dedicated Sign In and Register tabs.
  */
+private enum class AuthStep {
+    CREDENTIALS,
+    OTP_VERIFICATION
+}
+
 @Composable
 private fun UserAuthDialog(
     onDismiss: () -> Unit
 ) {
+    val scope = rememberCoroutineScope()
+    var currentStep by remember { mutableStateOf(AuthStep.CREDENTIALS) }
     var isRegisterMode by remember { mutableStateOf(false) }
+    var isAuthLoading by remember { mutableStateOf(false) }
+    var authErrorText by remember { mutableStateOf<String?>(null) }
+    var pendingEmail by remember { mutableStateOf("") }
+    var otpInput by remember { mutableStateOf("") }
+    var resendCooldown by remember { mutableIntStateOf(0) }
+
+    fun startCooldownTimer() {
+        resendCooldown = 45
+        scope.launch {
+            while (resendCooldown > 0) {
+                delay(1000L)
+                resendCooldown -= 1
+            }
+        }
+    }
 
     // Form inputs
     var nameInput by remember { mutableStateOf("") }
@@ -479,283 +496,571 @@ private fun UserAuthDialog(
         titleContentColor = ObsidianTextPrimary,
         textContentColor = ObsidianTextPrimary,
         title = {
-            // Clean Segmented Tabs: Sign In vs Register
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(ObsidianCardAlt, RoundedCornerShape(10.dp))
-                    .padding(4.dp)
-            ) {
-                Surface(
-                    onClick = { isRegisterMode = false },
-                    shape = RoundedCornerShape(8.dp),
-                    color = if (!isRegisterMode) ObsidianBorderHighlight else Color.Transparent,
-                    shadowElevation = if (!isRegisterMode) 1.dp else 0.dp,
-                    modifier = Modifier.weight(1f)
+            if (currentStep == AuthStep.CREDENTIALS) {
+                // Clean Segmented Tabs: Sign In vs Register
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(ObsidianCardAlt, RoundedCornerShape(10.dp))
+                        .padding(4.dp)
                 ) {
-                    Box(
-                        modifier = Modifier.padding(vertical = 8.dp),
-                        contentAlignment = Alignment.Center
+                    Surface(
+                        onClick = {
+                            isRegisterMode = false
+                            authErrorText = null
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (!isRegisterMode) ObsidianBorderHighlight else Color.Transparent,
+                        shadowElevation = if (!isRegisterMode) 1.dp else 0.dp,
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Text(
-                            text = "Sign In",
-                            fontWeight = if (!isRegisterMode) FontWeight.Bold else FontWeight.Medium,
-                            fontSize = 14.sp,
-                            color = if (!isRegisterMode) ObsidianTextPrimary else ObsidianTextSecondary
-                        )
+                        Box(
+                            modifier = Modifier.padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Sign In",
+                                fontWeight = if (!isRegisterMode) FontWeight.Bold else FontWeight.Medium,
+                                fontSize = 14.sp,
+                                color = if (!isRegisterMode) ObsidianTextPrimary else ObsidianTextSecondary
+                            )
+                        }
+                    }
+
+                    Surface(
+                        onClick = {
+                            isRegisterMode = true
+                            authErrorText = null
+                        },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (isRegisterMode) ObsidianBorderHighlight else Color.Transparent,
+                        shadowElevation = if (isRegisterMode) 1.dp else 0.dp,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Box(
+                            modifier = Modifier.padding(vertical = 8.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "Register",
+                                fontWeight = if (isRegisterMode) FontWeight.Bold else FontWeight.Medium,
+                                fontSize = 14.sp,
+                                color = if (isRegisterMode) ObsidianTextPrimary else ObsidianTextSecondary
+                            )
+                        }
                     }
                 }
-
-                Surface(
-                    onClick = { isRegisterMode = true },
-                    shape = RoundedCornerShape(8.dp),
-                    color = if (isRegisterMode) ObsidianBorderHighlight else Color.Transparent,
-                    shadowElevation = if (isRegisterMode) 1.dp else 0.dp,
-                    modifier = Modifier.weight(1f)
+            } else {
+                // OTP Step Title
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(
-                        modifier = Modifier.padding(vertical = 8.dp),
-                        contentAlignment = Alignment.Center
+                    Text(
+                        text = if (isRegisterMode) "Verify Email" else "Two-Factor Auth",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 18.sp,
+                        color = ObsidianTextPrimary
+                    )
+                    TextButton(
+                        onClick = {
+                            currentStep = AuthStep.CREDENTIALS
+                            authErrorText = null
+                            otpInput = ""
+                        }
                     ) {
-                        Text(
-                            text = "Register",
-                            fontWeight = if (isRegisterMode) FontWeight.Bold else FontWeight.Medium,
-                            fontSize = 14.sp,
-                            color = if (isRegisterMode) ObsidianTextPrimary else ObsidianTextSecondary
-                        )
+                        Text("Edit", color = ObsidianAccentGlow, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
         },
         text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                if (!isRegisterMode) {
-                    // ---- Sign In Form -------------------------------------
-                    OutlinedTextField(
-                        value = emailInput,
-                        onValueChange = { emailInput = it },
-                        label = { Text("Email") },
-                        singleLine = true,
-                        colors = fieldColors,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    OutlinedTextField(
-                        value = passwordInput,
-                        onValueChange = { passwordInput = it },
-                        label = { Text("Password") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        singleLine = true,
-                        colors = fieldColors,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                } else {
-                    // ---- Full Registration Form ---------------------------
-                    OutlinedTextField(
-                        value = nameInput,
-                        onValueChange = { nameInput = it },
-                        label = { Text("Full Name") },
-                        singleLine = true,
-                        colors = fieldColors,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    OutlinedTextField(
-                        value = emailInput,
-                        onValueChange = { emailInput = it },
-                        label = { Text("Email") },
-                        singleLine = true,
-                        colors = fieldColors,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    OutlinedTextField(
-                        value = passwordInput,
-                        onValueChange = { passwordInput = it },
-                        label = { Text("Password") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        singleLine = true,
-                        colors = fieldColors,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    OutlinedTextField(
-                        value = rollNumberInput,
-                        onValueChange = { rollNumberInput = it },
-                        label = { Text("Roll Number / Employee ID") },
-                        singleLine = true,
-                        colors = fieldColors,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    // Role Dropdown (Student, Teacher, Staff) immediately after Employee ID / Roll Number
-                    AppDropdownField(
-                        label = "Role",
-                        selectedValue = roleInput,
-                        options = listOf("Student", "Teacher", "Staff"),
-                        onSelect = { selectedName ->
-                            roleInput = selectedName
-                        },
-                        placeholder = "Select Role",
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    // Academic details (Course, Branch, Year) only appear for Students
-                    if (selectedRole == Role.STUDENT) {
-                        // Course Selection (B.Tech or BCA) with tightened gap between title and chips
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(
-                                text = "Course",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = ObsidianTextSecondary
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                listOf("B.Tech", "BCA").forEach { c ->
-                                    val selected = courseInput == c
-                                    Surface(
-                                        onClick = {
-                                            // Tapping active chip deselects it (empty option)
-                                            courseInput = if (selected) "" else c
-                                            if (c == "BCA" && yearInput == "4th") {
-                                                yearInput = ""
-                                            }
-                                        },
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = if (selected) ObsidianAccent else ObsidianCardAlt,
-                                        border = BorderStroke(1.dp, if (selected) ObsidianAccentGlow else ObsidianBorderHighlight),
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Box(
-                                            modifier = Modifier.padding(vertical = 8.dp),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text(
-                                                text = c,
-                                                fontSize = 13.sp,
-                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                                color = if (selected) Color.White else ObsidianTextSecondary
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Branch Dropdown (Hidden when BCA is selected)
-                        if (courseInput != "BCA") {
-                            AppDropdownField(
-                                label = "Branch",
-                                selectedValue = branchInput,
-                                options = listOf("CSE", "ECE", "ME", "CIVIL", "IT"),
-                                onSelect = { branchInput = it },
-                                placeholder = "Select Branch",
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-
-                        // Year Dropdown (Year 4 disappears when BCA is selected)
-                        val availableYears = if (courseInput == "BCA") {
-                            listOf("1st Year", "2nd Year", "3rd Year")
-                        } else {
-                            listOf("1st Year", "2nd Year", "3rd Year", "4th Year")
-                        }
-
-                        AppDropdownField(
-                            label = "Year",
-                            selectedValue = if (yearInput.isNotBlank()) "$yearInput Year" else "",
-                            options = availableYears,
-                            onSelect = { selected ->
-                                yearInput = selected.substringBefore(" Year")
-                            },
-                            placeholder = "Select Year",
+            if (currentStep == AuthStep.CREDENTIALS) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (!isRegisterMode) {
+                        // Sign In Fields: Email & Password
+                        OutlinedTextField(
+                            value = emailInput,
+                            onValueChange = { emailInput = it },
+                            label = { Text("Email Address") },
+                            placeholder = { Text("e.g. name@college.edu") },
+                            singleLine = true,
+                            colors = fieldColors,
                             modifier = Modifier.fillMaxWidth()
                         )
-                    }
 
-                    // Secret token required for Teacher and Staff
-                    if (selectedRole == Role.TEACHER || selectedRole == Role.STAFF) {
                         OutlinedTextField(
-                            value = secretTokenInput,
-                            onValueChange = { secretTokenInput = it },
-                            label = { Text("Secret Token / Passcode") },
-                            placeholder = { Text("Enter faculty / staff passcode") },
+                            value = passwordInput,
+                            onValueChange = { passwordInput = it },
+                            label = { Text("Password") },
+                            placeholder = { Text("Enter your password") },
                             visualTransformation = PasswordVisualTransformation(),
                             singleLine = true,
                             colors = fieldColors,
                             modifier = Modifier.fillMaxWidth()
                         )
+                    } else {
+                        // Register Fields
+                        OutlinedTextField(
+                            value = nameInput,
+                            onValueChange = { nameInput = it },
+                            label = { Text("Full Name") },
+                            placeholder = { Text("e.g. Rahul Sharma") },
+                            singleLine = true,
+                            colors = fieldColors,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        OutlinedTextField(
+                            value = emailInput,
+                            onValueChange = { emailInput = it },
+                            label = { Text("Email Address") },
+                            placeholder = { Text("e.g. name@college.edu") },
+                            singleLine = true,
+                            colors = fieldColors,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        OutlinedTextField(
+                            value = passwordInput,
+                            onValueChange = { passwordInput = it },
+                            label = { Text("Password") },
+                            placeholder = { Text("Min. 6 characters") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            colors = fieldColors,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        val rollLabel = when (selectedRole) {
+                            Role.TEACHER -> "Employee ID"
+                            Role.STAFF -> "Staff ID"
+                            else -> "Roll Number"
+                        }
+                        val rollPlaceholder = when (selectedRole) {
+                            Role.TEACHER -> "e.g. EMP-1042"
+                            Role.STAFF -> "e.g. STF-801"
+                            else -> "e.g. 251430101019"
+                        }
+                        OutlinedTextField(
+                            value = rollNumberInput,
+                            onValueChange = { rollNumberInput = it },
+                            label = { Text(rollLabel) },
+                            placeholder = { Text(rollPlaceholder) },
+                            singleLine = true,
+                            colors = fieldColors,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        AppDropdownField(
+                            label = "Role",
+                            selectedValue = roleInput,
+                            options = listOf("Student", "Teacher", "Staff"),
+                            onSelect = { selectedName ->
+                                roleInput = selectedName
+                            },
+                            placeholder = "Select Role",
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        if (selectedRole == Role.STUDENT) {
+                            AppDropdownField(
+                                label = "Course",
+                                selectedValue = courseInput,
+                                options = listOf("B-Tech", "BCA"),
+                                onSelect = { selectedCourse ->
+                                    courseInput = selectedCourse
+                                    if (selectedCourse == "BCA") {
+                                        branchInput = ""
+                                    }
+                                },
+                                placeholder = "Select Course",
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            if (courseInput == "B-Tech") {
+                                AppDropdownField(
+                                    label = "Branch",
+                                    selectedValue = branchInput,
+                                    options = listOf("CSE", "IT", "ECE", "ME", "CE", "EE"),
+                                    onSelect = { selectedBranch ->
+                                        branchInput = selectedBranch
+                                    },
+                                    placeholder = "Select Branch",
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+
+                            val availableYears = if (courseInput == "BCA") {
+                                listOf("1st Year", "2nd Year", "3rd Year")
+                            } else {
+                                listOf("1st Year", "2nd Year", "3rd Year", "4th Year")
+                            }
+                            AppDropdownField(
+                                label = "Year",
+                                selectedValue = if (yearInput.isNotBlank()) "$yearInput Year" else "",
+                                options = availableYears,
+                                onSelect = { selected ->
+                                    yearInput = selected.substringBefore(" Year")
+                                },
+                                placeholder = "Select Year",
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+
+                        if (selectedRole == Role.TEACHER || selectedRole == Role.STAFF) {
+                            OutlinedTextField(
+                                value = secretTokenInput,
+                                onValueChange = { secretTokenInput = it },
+                                label = { Text("Secret Token / Passcode") },
+                                placeholder = { Text("Enter faculty / staff passcode") },
+                                visualTransformation = PasswordVisualTransformation(),
+                                singleLine = true,
+                                colors = fieldColors,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+
+                    if (authErrorText != null) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFFEF4444).copy(alpha = 0.15f),
+                            border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.4f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = authErrorText!!,
+                                color = Color(0xFFFCA5A5),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
+                    }
+                }
+            } else {
+                // OTP Step Content
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "We sent a 6-digit verification code to:",
+                        fontSize = 13.sp,
+                        color = ObsidianTextSecondary,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = ObsidianCardAlt,
+                        border = BorderStroke(1.dp, ObsidianBorderHighlight)
+                    ) {
+                        Text(
+                            text = pendingEmail,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = ObsidianAccentGlow,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+
+                    OutlinedTextField(
+                        value = otpInput,
+                        onValueChange = {
+                            if (it.length <= 6 && it.all { ch -> ch.isDigit() }) {
+                                otpInput = it
+                            }
+                        },
+                        placeholder = {
+                            Text(
+                                "• • • • • •",
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth(),
+                                fontSize = 22.sp,
+                                letterSpacing = 6.sp,
+                                color = ObsidianTextSecondary.copy(alpha = 0.5f)
+                            )
+                        },
+                        singleLine = true,
+                        textStyle = TextStyle(
+                            fontSize = 24.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            textAlign = TextAlign.Center,
+                            letterSpacing = 6.sp,
+                            color = ObsidianTextPrimary
+                        ),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        colors = fieldColors,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (resendCooldown > 0) {
+                            Text(
+                                text = "Resend code in ${resendCooldown}s",
+                                fontSize = 12.sp,
+                                color = ObsidianTextSecondary
+                            )
+                        } else {
+                            TextButton(
+                                onClick = {
+                                    isAuthLoading = true
+                                    authErrorText = null
+                                    scope.launch(Dispatchers.IO) {
+                                        try {
+                                            val res = AttendanceApiClient.service.resendOtp(
+                                                ResendOtpRequest(
+                                                    email = pendingEmail,
+                                                    purpose = if (isRegisterMode) "REGISTER" else "LOGIN"
+                                                )
+                                            )
+                                            withContext(Dispatchers.Main) {
+                                                isAuthLoading = false
+                                                if (res.isSuccessful) {
+                                                    startCooldownTimer()
+                                                } else {
+                                                    val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
+                                                    authErrorText = "Resend failed: ${err ?: "HTTP ${res.code()}"}"
+                                                }
+                                            }
+                                        } catch (e: Exception) {
+                                            withContext(Dispatchers.Main) {
+                                                isAuthLoading = false
+                                                authErrorText = "Network error: ${e.localizedMessage ?: "Cannot reach server"}"
+                                            }
+                                        }
+                                    }
+                                }
+                            ) {
+                                Text(
+                                    text = "Resend code",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = ObsidianAccentGlow
+                                )
+                            }
+                        }
+                    }
+
+                    if (authErrorText != null) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xFFEF4444).copy(alpha = 0.15f),
+                            border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.4f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = authErrorText!!,
+                                color = Color(0xFFFCA5A5),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                            )
+                        }
                     }
                 }
             }
         },
         confirmButton = {
-            if (!isRegisterMode) {
-                Button(
-                    onClick = {
-                        if (emailInput.isNotBlank()) {
-                            val newUser = User(
-                                id = "user-" + System.currentTimeMillis(),
-                                name = emailInput.substringBefore("@").replace(".", " ").capitalizeWords(),
-                                email = emailInput.trim(),
-                                roles = setOf(Role.STUDENT)
-                            )
-                            SessionManager.default.startSession(newUser, MockUsers.MOCK_DEV_TOKEN)
-                            onDismiss()
+            if (currentStep == AuthStep.CREDENTIALS) {
+                if (!isRegisterMode) {
+                    Button(
+                        onClick = {
+                            val email = emailInput.trim()
+                            val password = passwordInput
+                            if (email.isNotBlank() && password.isNotBlank()) {
+                                isAuthLoading = true
+                                authErrorText = null
+                                scope.launch(Dispatchers.IO) {
+                                    try {
+                                        val res = AttendanceApiClient.service.login(LoginRequest(email, password))
+                                        withContext(Dispatchers.Main) {
+                                            isAuthLoading = false
+                                            if (res.isSuccessful && res.body() != null) {
+                                                val body = res.body()!!
+                                                if (body.requiresOtp) {
+                                                    pendingEmail = body.email
+                                                    currentStep = AuthStep.OTP_VERIFICATION
+                                                    otpInput = ""
+                                                    authErrorText = null
+                                                    startCooldownTimer()
+                                                } else {
+                                                    val u = body.user
+                                                    val tok = body.accessToken
+                                                    if (tok != null && u != null) {
+                                                        val role = Role.fromBackendName(u.role) ?: Role.STUDENT
+                                                        val authenticatedUser = User(
+                                                            id = u.id,
+                                                            name = u.name,
+                                                            email = u.email,
+                                                            roles = setOf(role),
+                                                            rollNumber = u.rollNumber
+                                                        )
+                                                        SessionManager.default.startSession(authenticatedUser, tok)
+                                                        onDismiss()
+                                                    }
+                                                }
+                                            } else {
+                                                val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
+                                                authErrorText = "Sign In failed: HTTP ${res.code()}${if (!err.isNullOrBlank()) " - $err" else ""}"
+                                            }
+                                        }
+                                    } catch (e: Exception) {
+                                        withContext(Dispatchers.Main) {
+                                            isAuthLoading = false
+                                            authErrorText = "Network error: ${e.localizedMessage ?: "Cannot reach server"}"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        enabled = !isAuthLoading && emailInput.isNotBlank() && passwordInput.isNotBlank(),
+                        colors = ButtonDefaults.buttonColors(containerColor = ObsidianAccent)
+                    ) {
+                        if (isAuthLoading) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                        } else {
+                            Text("Sign In", color = Color.White)
                         }
-                    },
-                    enabled = emailInput.isNotBlank() && passwordInput.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(containerColor = ObsidianAccent)
-                ) {
-                    Text("Sign In", color = Color.White)
+                    }
+                } else {
+                    val isRoleValid = selectedRole != null
+                    val isAcademicValid = if (selectedRole == Role.STUDENT) {
+                        courseInput.isNotBlank() &&
+                        (if (courseInput == "BCA") true else branchInput.isNotBlank()) &&
+                        yearInput.isNotBlank()
+                    } else true
+                    val isSecretValid = if (selectedRole == Role.TEACHER || selectedRole == Role.STAFF) {
+                        secretTokenInput.isNotBlank()
+                    } else true
+                    val canRegister = nameInput.isNotBlank() &&
+                            emailInput.isNotBlank() &&
+                            passwordInput.isNotBlank() &&
+                            rollNumberInput.isNotBlank() &&
+                            isRoleValid &&
+                            isAcademicValid &&
+                            isSecretValid
+
+                    Button(
+                        onClick = {
+                            val activeRole = selectedRole ?: Role.STUDENT
+                            val isStudent = activeRole == Role.STUDENT
+                            val req = RegisterRequest(
+                                email = emailInput.trim(),
+                                password = passwordInput,
+                                name = nameInput.trim(),
+                                role = activeRole.name,
+                                rollNumber = rollNumberInput.trim(),
+                                department = if (isStudent) (if (courseInput == "BCA") "BCA" else branchInput) else "Faculty",
+                                facultyCode = if (activeRole == Role.TEACHER || activeRole == Role.STAFF) secretTokenInput.trim() else null
+                            )
+                            isAuthLoading = true
+                            authErrorText = null
+                            scope.launch(Dispatchers.IO) {
+                                try {
+                                    val res = AttendanceApiClient.service.register(req)
+                                    withContext(Dispatchers.Main) {
+                                        isAuthLoading = false
+                                        if (res.isSuccessful && res.body() != null) {
+                                            pendingEmail = res.body()!!.email
+                                            currentStep = AuthStep.OTP_VERIFICATION
+                                            otpInput = ""
+                                            authErrorText = null
+                                            startCooldownTimer()
+                                        } else {
+                                            val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
+                                            authErrorText = "Registration failed: HTTP ${res.code()}${if (!err.isNullOrBlank()) " - $err" else ""}"
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    withContext(Dispatchers.Main) {
+                                        isAuthLoading = false
+                                        authErrorText = "Network error: ${e.localizedMessage ?: "Cannot reach server"}"
+                                    }
+                                }
+                            }
+                        },
+                        enabled = !isAuthLoading && canRegister,
+                        colors = ButtonDefaults.buttonColors(containerColor = ObsidianAccent)
+                    ) {
+                        if (isAuthLoading) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                        } else {
+                            Text("Continue", color = Color.White)
+                        }
+                    }
                 }
             } else {
-                val isRoleValid = selectedRole != null
-                val isAcademicValid = if (selectedRole == Role.STUDENT) {
-                    courseInput.isNotBlank() &&
-                    (if (courseInput == "BCA") true else branchInput.isNotBlank()) &&
-                    yearInput.isNotBlank()
-                } else true
-                val isSecretValid = if (selectedRole == Role.TEACHER || selectedRole == Role.STAFF) {
-                    secretTokenInput.isNotBlank()
-                } else true
-                val canRegister = nameInput.isNotBlank() &&
-                        emailInput.isNotBlank() &&
-                        passwordInput.isNotBlank() &&
-                        rollNumberInput.isNotBlank() &&
-                        isRoleValid &&
-                        isAcademicValid &&
-                        isSecretValid
-
+                // Verify OTP Button
                 Button(
                     onClick = {
-                        val activeRole = selectedRole ?: Role.STUDENT
-                        val isStudent = activeRole == Role.STUDENT
-                        val newUser = User(
-                            id = "user-" + System.currentTimeMillis(),
-                            name = nameInput.trim(),
-                            email = emailInput.trim(),
-                            roles = setOf(activeRole),
-                            rollNumber = rollNumberInput.trim(),
-                            department = if (isStudent) (if (courseInput == "BCA") "BCA" else branchInput) else null,
-                            year = if (isStudent) yearInput else null,
-                            program = if (isStudent) courseInput else null
-                        )
-                        SessionManager.default.startSession(newUser, MockUsers.MOCK_DEV_TOKEN)
-                        onDismiss()
+                        val code = otpInput.trim()
+                        if (code.length == 6) {
+                            isAuthLoading = true
+                            authErrorText = null
+                            scope.launch(Dispatchers.IO) {
+                                try {
+                                    val res = if (isRegisterMode) {
+                                        AttendanceApiClient.service.verifyRegisterOtp(VerifyOtpRequest(pendingEmail, code))
+                                    } else {
+                                        AttendanceApiClient.service.verifyLoginOtp(VerifyOtpRequest(pendingEmail, code))
+                                    }
+                                    withContext(Dispatchers.Main) {
+                                        isAuthLoading = false
+                                        if (res.isSuccessful && res.body() != null) {
+                                            val body = res.body()!!
+                                            val role = Role.fromBackendName(body.user.role) ?: Role.STUDENT
+                                            val authenticatedUser = User(
+                                                id = body.user.id,
+                                                name = body.user.name,
+                                                email = body.user.email,
+                                                roles = setOf(role),
+                                                rollNumber = body.user.rollNumber
+                                            )
+                                            SessionManager.default.startSession(authenticatedUser, body.accessToken)
+                                            onDismiss()
+                                        } else {
+                                            val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
+                                            authErrorText = "Verification failed: HTTP ${res.code()}${if (!err.isNullOrBlank()) " - $err" else ""}"
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    withContext(Dispatchers.Main) {
+                                        isAuthLoading = false
+                                        authErrorText = "Network error: ${e.localizedMessage ?: "Cannot reach server"}"
+                                    }
+                                }
+                            }
+                        }
                     },
-                    enabled = canRegister,
+                    enabled = !isAuthLoading && otpInput.length == 6,
                     colors = ButtonDefaults.buttonColors(containerColor = ObsidianAccent)
                 ) {
-                    Text("Register", color = Color.White)
+                    if (isAuthLoading) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                    } else {
+                        Text(
+                            text = if (isRegisterMode) "Verify & Register" else "Verify & Sign In",
+                            color = Color.White
+                        )
+                    }
                 }
             }
         },
@@ -767,9 +1072,6 @@ private fun UserAuthDialog(
     )
 }
 
-/**
- * Lightweight, accessible dropdown selector that strictly opens downwards in Obsidian Dark.
- */
 @Composable
 private fun AppDropdownField(
     label: String,
@@ -910,13 +1212,4 @@ private fun roleBadgeBg(role: Role): Color = when (role) {
     Role.STUDENT -> Color(0xFF143823)
     Role.STAFF -> Color(0xFF38280B)
     Role.DEVELOPER -> Color(0xFF2E1B4E)
-}
-
-@Composable
-internal fun MockRoleSelector(onSelect: (User) -> Unit) {
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(ObsidianBg)
-    )
 }
