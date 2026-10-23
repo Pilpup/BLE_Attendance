@@ -48,6 +48,8 @@ class BLEAuditRecordItem(BaseModel):
         default_factory=list, description="Top-3 observed peer IDs from BLE discovery"
     )
     remarks: Optional[str] = Field(None, description="Human-readable audit note")
+    roll_number: Optional[str] = None
+    student_name: Optional[str] = None
 
 
 class AttendanceRecordResponse(BLEAuditRecordItem):

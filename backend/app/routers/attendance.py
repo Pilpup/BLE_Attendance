@@ -49,16 +49,17 @@ async def _resolve_session(session_id: str, db: AsyncSession) -> Optional[Attend
     except ValueError:
         pass
 
+    load_opts = selectinload(AttendanceSession.records)
     if target_uuid:
         query = (
             select(AttendanceSession)
-            .options(selectinload(AttendanceSession.records))
+            .options(load_opts)
             .where(or_(AttendanceSession.id == target_uuid, AttendanceSession.session_token == session_id))
         )
     else:
         query = (
             select(AttendanceSession)
-            .options(selectinload(AttendanceSession.records))
+            .options(load_opts)
             .where(AttendanceSession.session_token == session_id)
         )
     result = await db.execute(query)
@@ -188,23 +189,46 @@ async def list_teacher_sessions_history(
     db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_user),
 ):
-    """Teacher lists all past attendance sessions."""
-    if current_user and current_user.role == "TEACHER":
-        result = await db.execute(
-            select(AttendanceSession)
-            .options(selectinload(AttendanceSession.records))
-            .where(AttendanceSession.teacher_id == current_user.id)
-            .order_by(AttendanceSession.started_at.desc())
-        )
-        return list(result.scalars().all())
-
-    result = await db.execute(
+    """Teacher lists all past attendance sessions with full academic details."""
+    query = (
         select(AttendanceSession)
         .options(selectinload(AttendanceSession.records))
         .order_by(AttendanceSession.started_at.desc())
-        .limit(20)
     )
-    return list(result.scalars().all())
+    user_role = (current_user.role or "").upper() if current_user else ""
+    if current_user and user_role in ("TEACHER", "DEVELOPER", "STAFF", "FACULTY", "ADMIN"):
+        query = query.where(AttendanceSession.teacher_id == current_user.id)
+    else:
+        query = query.limit(20)
+
+    result = await db.execute(query)
+    sessions = list(result.scalars().all())
+
+    # Populate course details on each session
+    course_ids = [s.course_id for s in sessions if s.course_id]
+    if course_ids:
+        c_res = await db.execute(select(Course).where(Course.id.in_(course_ids)))
+        course_map = {c.id: c for c in c_res.scalars().all()}
+        for s in sessions:
+            c = course_map.get(s.course_id)
+            if c:
+                s.course_code = c.course_code
+                s.course_name = c.course_name
+
+    # Populate student details on records
+    student_ids = [r.student_id for s in sessions if s.records for r in s.records if r.student_id]
+    if student_ids:
+        u_res = await db.execute(select(User).where(User.id.in_(student_ids)))
+        user_map = {u.id: u for u in u_res.scalars().all()}
+        for s in sessions:
+            if s.records:
+                for r in s.records:
+                    if r.student_id in user_map:
+                        u = user_map[r.student_id]
+                        r.roll_number = u.roll_number
+                        r.student_name = u.full_name
+
+    return sessions
 
 
 # Session Lifecycle & Guardrails
@@ -476,19 +500,11 @@ async def submit_student_neighbors(
         )
 
     target_session_id = session_obj.id
-    if current_user:
-        # Normalize student key to match 4-character BLE short ID
-        if current_user.roll_number and len(current_user.roll_number) >= 4:
-            student_key = current_user.roll_number[-4:].upper()
-        elif current_user.roll_number:
-            student_key = current_user.roll_number.upper()
-        else:
-            student_key = str(current_user.id).replace("-", "")[:4].upper()
-        user_id = current_user.id
-    else:
-        raw_id = payload.student_id or "STUD"
-        student_key = raw_id[-4:].upper() if len(raw_id) >= 4 else raw_id.upper()
-        user_id = None
+    user_id = current_user.id if current_user else None
+
+    # Always use the BLE ID actually transmitted over the radio (payload.student_id)
+    raw_key = payload.student_id or (current_user.roll_number if current_user else None) or "STUD"
+    student_key = raw_key[-4:].upper() if len(raw_key) >= 4 else raw_key.upper()
 
     normalized_neighbors = [n[-4:].upper() if len(n) >= 4 else n.upper() for n in payload.neighbors]
 
@@ -655,6 +671,24 @@ async def get_session_details(
     session_obj = await _resolve_session(session_id, db)
     if not session_obj:
         raise HTTPException(status_code=404, detail="Attendance session not found")
+
+    c_res = await db.execute(select(Course).where(Course.id == session_obj.course_id))
+    course_obj = c_res.scalars().first()
+    if course_obj:
+        session_obj.course_code = course_obj.course_code
+        session_obj.course_name = course_obj.course_name
+
+    if session_obj.records:
+        rec_user_ids = [r.student_id for r in session_obj.records if r.student_id]
+        if rec_user_ids:
+            u_res = await db.execute(select(User).where(User.id.in_(rec_user_ids)))
+            u_map = {u.id: u for u in u_res.scalars().all()}
+            for r in session_obj.records:
+                if r.student_id in u_map:
+                    u = u_map[r.student_id]
+                    r.roll_number = u.roll_number
+                    r.student_name = u.full_name
+
     return session_obj
 
 

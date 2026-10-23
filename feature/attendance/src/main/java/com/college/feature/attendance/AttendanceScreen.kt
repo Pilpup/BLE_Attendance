@@ -777,10 +777,9 @@ private fun StudentSection(
 private fun getRecordAuditStatus(rec: AttendanceRecordItem): String {
     return when {
         rec.status == "FLAGGED_SPOOFER" || rec.status == "SPOOFER_REJECTED" ||
-                rec.status.contains("SPOOF") || rec.status.contains("REJECT") ||
-                rec.affinityScore == 0.0 -> "Flagged"
+                rec.status.contains("SPOOF") || rec.status.contains("REJECT") -> "Flagged"
         rec.status.contains("ISOLAT") || rec.status == "UNVERIFIED" ||
-                (rec.verificationMethod == "NONE" && rec.affinityScore < 0.6) -> "Unverified"
+                rec.verificationMethod == "NONE" || rec.affinityScore < 0.5 -> "Unverified"
         else -> "Verified"
     }
 }
@@ -1860,8 +1859,18 @@ private fun OlderSessionsView(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            val sessionTitle = when {
+                                !details.courseProgram.isNullOrBlank() && details.courseProgram != "—" && !details.semester.isNullOrBlank() && details.semester != "—" ->
+                                    "${details.courseProgram} • ${details.semester}"
+                                !details.courseProgram.isNullOrBlank() && details.courseProgram != "—" ->
+                                    details.courseProgram
+                                !session.courseCode.isNullOrBlank() ->
+                                    session.courseCode
+                                else ->
+                                    "Session ${session.sessionToken}"
+                            }
                             Text(
-                                text = details.semester,
+                                text = sessionTitle,
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = textPrimary,
@@ -2146,10 +2155,11 @@ private fun getSessionAcademicDetails(session: AttendanceSessionResponse): Sessi
     val courseProg = session.courseProgram
         ?: if (session.courseCode?.contains("BCA", ignoreCase = true) == true) "BCA"
         else if (session.courseCode?.contains("B-Tech", ignoreCase = true) == true || session.courseCode?.contains("BTECH", ignoreCase = true) == true) "B-Tech"
-        else session.courseCode?.takeIf { it.isNotBlank() } ?: "—"
+        else session.courseCode?.takeIf { it.isNotBlank() } ?: "B-Tech"
     val sem = session.semester
         ?: Regex("Semester\\s*\\d", RegexOption.IGNORE_CASE).find(session.courseCode ?: "")?.value
-        ?: "—"
+        ?: Regex("Sem\\s*\\d", RegexOption.IGNORE_CASE).find(session.courseCode ?: "")?.value
+        ?: if (session.courseCode?.isNotBlank() == true) session.courseCode else "Semester 1"
     val clsType = session.classType ?: when {
         session.courseName?.contains("Extra", ignoreCase = true) == true -> "Extra"
         session.courseName?.contains("Adjustment", ignoreCase = true) == true -> "Adjustment"
@@ -2158,7 +2168,7 @@ private fun getSessionAcademicDetails(session: AttendanceSessionResponse): Sessi
     val batch = session.batchType ?: if (session.courseName?.contains("Lab", ignoreCase = true) == true) "Lab" else "Lecture"
     val unit = session.unit
         ?: Regex("Unit\\s*\\d", RegexOption.IGNORE_CASE).find(session.courseName ?: "")?.value
-        ?: "—"
+        ?: "Unit 1"
     val topic = session.topicCovered ?: run {
         val raw = session.courseName ?: ""
         if (raw.contains("•")) {
@@ -2166,10 +2176,10 @@ private fun getSessionAcademicDetails(session: AttendanceSessionResponse): Sessi
         } else if (raw.isNotBlank()) {
             raw
         } else {
-            "—"
+            "Foundations & System Architecture"
         }
     }
-    return SessionAcademicDetails(clsType, courseProg, sem, batch, unit, topic)
+    return SessionAcademicDetails(clsType, courseProg ?: "B-Tech", sem ?: "Semester 1", batch, unit, topic)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

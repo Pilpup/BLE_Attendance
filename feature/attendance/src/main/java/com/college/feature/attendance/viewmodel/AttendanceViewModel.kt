@@ -736,12 +736,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun startStudentDiscoveryWindow() {
-        studentDiscoverySecondsRemaining = 7
+        studentDiscoverySecondsRemaining = 20
         val probePayload = "$detectedSessionId$studentShortId"
         onStartBroadcasting?.invoke(probePayload, AdvertiseSettings.ADVERTISE_TX_POWER_LOW)
 
         studentTimer?.cancel()
-        studentTimer = object : CountDownTimer(7000L, 1000L) {
+        studentTimer = object : CountDownTimer(20000L, 1000L) {
             override fun onTick(millisUntilFinished: Long) {
                 studentDiscoverySecondsRemaining = (millisUntilFinished / 1000L).toInt()
             }
