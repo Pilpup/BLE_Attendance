@@ -73,9 +73,11 @@ class RecordOverrideRequest(BaseModel):
 # Session
 # ─────────────────────────────────────────────
 class SessionCreateRequest(BaseModel):
-    course_id: Optional[UUID] = Field(
-        None, description="Leave null to use the default demo course"
+    course_id: Optional[str] = Field(
+        None, description="Course UUID or synthetic code. Leave null to use the default demo course"
     )
+    course_code: Optional[str] = Field(None, max_length=50)
+    course_name: Optional[str] = Field(None, max_length=200)
     session_token: str = Field(..., max_length=32, description="Ephemeral token for this class")
     session_salt: str = Field(
         ...,
@@ -94,7 +96,7 @@ class SessionFinalizeRequest(BaseModel):
 
 class MeshAuditRunRequest(BaseModel):
     reports: dict[str, List[str]] = Field(
-        ...,
+        default_factory=dict,
         description="Classroom BLE discovery dictionary: {student_ble_id: [top_3_neighbor_ids]}"
     )
 
@@ -131,5 +133,7 @@ class AttendanceSessionResponse(BaseModel):
     total_verified: int
     total_spoofers: int
     records: Optional[List[AttendanceRecordResponse]] = None
+    course_code: Optional[str] = None
+    course_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)

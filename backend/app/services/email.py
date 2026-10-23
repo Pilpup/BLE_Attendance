@@ -33,7 +33,7 @@ def _post_https_json_sync(url: str, headers: dict, payload: dict) -> tuple[int, 
 
 
 async def _send_brevo_email_async(to_email: str, subject: str, text_content: str, html_content: str) -> bool:
-    """Dispatch email via Brevo HTTPS API (Port 443). Works on Render Free Tier and allows sending from verified personal emails to anyone."""
+    """Dispatch email via Brevo HTTPS API (Port 443). Works on Render Free Tier and sends to any recipient."""
     if not settings.BREVO_API_KEY:
         return False
 
@@ -56,32 +56,6 @@ async def _send_brevo_email_async(to_email: str, subject: str, text_content: str
         logger.info(f"Successfully dispatched OTP email via Brevo to {to_email}")
         return True
     logger.error(f"Failed to send email via Brevo API ({code}): {resp_text}")
-    return False
-
-
-async def _send_resend_email_async(to_email: str, subject: str, text_content: str, html_content: str) -> bool:
-    """Dispatch email via Resend HTTPS API (Port 443). Never blocked by cloud firewalls like Render Free Tier."""
-    if not settings.RESEND_API_KEY:
-        return False
-
-    url = "https://api.resend.com/emails"
-    headers = {
-        "Authorization": f"Bearer {settings.RESEND_API_KEY.strip()}",
-        "Content-Type": "application/json",
-        "User-Agent": "CollegeHub/1.0",
-    }
-    payload = {
-        "from": settings.RESEND_FROM_EMAIL.strip(),
-        "to": [to_email.strip()],
-        "subject": subject,
-        "text": text_content,
-        "html": html_content,
-    }
-    code, resp_text = await asyncio.to_thread(_post_https_json_sync, url, headers, payload)
-    if code in (200, 201):
-        logger.info(f"Successfully dispatched OTP email via Resend to {to_email}")
-        return True
-    logger.error(f"Failed to send email via Resend API ({code}): {resp_text}")
     return False
 
 
@@ -160,13 +134,9 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "LOGIN") -
     print(f">>> CODE: {otp_code} <<< (Expires in {settings.OTP_EXPIRE_MINUTES} min)")
     print(f"==================================================================\n")
 
-    # 1. Prefer HTTPS Email APIs (Port 443 - works on Render Free Tier where raw SMTP is blocked)
+    # 1. Prefer Brevo HTTPS API (Port 443 - works on Render Free Tier where raw SMTP 587 is blocked)
     if settings.BREVO_API_KEY:
         if await _send_brevo_email_async(to_email, subject, text_content, html_content):
-            return True
-
-    if settings.RESEND_API_KEY:
-        if await _send_resend_email_async(to_email, subject, text_content, html_content):
             return True
 
     # 2. Fall back to SMTP (works for local development or non-firewalled servers)

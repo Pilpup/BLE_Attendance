@@ -167,6 +167,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         if (isTeacherMode) {
             loadCourses()
         }
+        viewModelScope.launch {
+            SessionManager.default.state.collect { state ->
+                if (state is com.college.core.model.SessionState.Authenticated && isTeacherMode) {
+                    loadCourses()
+                }
+            }
+        }
     }
 
     /**
@@ -542,6 +549,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     // Start teacher session and initialize backend record
     fun startTeacherSession(durationSeconds: Int = 60, courseId: String? = null) {
         val targetCourseId = courseId ?: selectedCourse?.id
+        backendSessionId = null
         sessionId = UUID.randomUUID().toString().replace("-", "").take(4).uppercase()
         sessionSalt = UUID.randomUUID().toString().replace("-", "").take(4).uppercase()
         finalizedRecords = emptyList()
@@ -560,7 +568,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     val req = SessionCreateRequest(
                         courseId = targetCourseId,
                         sessionToken = sessionId,
-                        sessionSalt = sessionSalt
+                        sessionSalt = sessionSalt,
+                        courseCode = selectedCourse?.courseCode,
+                        courseName = selectedCourse?.courseName
                     )
                     val res = api.createSession(req)
                     withContext(Dispatchers.Main) {
@@ -569,13 +579,16 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             backendSessionId = res.body()!!.id
                             cloudStatusMessage = "Cloud session active: $sessionId"
                         } else {
-                            cloudStatusMessage = "Local session active (code: $sessionId)"
+                            val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
+                            cloudStatusMessage = "Cloud sync warning (HTTP ${res.code()}): running locally ($sessionId)"
+                            android.util.Log.e("AttendanceViewModel", "Session create failed: HTTP ${res.code()} - $err")
                         }
                     }
                 } catch (e: Exception) {
                     withContext(Dispatchers.Main) {
                         isCloudSyncing = false
-                        cloudStatusMessage = "Local session active (code: $sessionId)"
+                        cloudStatusMessage = "Cloud sync error: ${e.localizedMessage ?: "Offline"}"
+                        android.util.Log.e("AttendanceViewModel", "Session create exception", e)
                     }
                 }
             }

@@ -10,7 +10,8 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 365
     FACULTY_SIGNUP_SECRET: str = "fff791e68ec68434901e256c293f0724"
 
-    # Email / SMTP configuration for OTP Verification & 2FA
+    # Email configuration for OTP Verification & 2FA
+    BREVO_API_KEY: str = ""
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587
     SMTP_USER: str = ""
@@ -19,11 +20,6 @@ class Settings(BaseSettings):
     SMTP_FROM_NAME: str = "College Hub"
     OTP_EXPIRE_MINUTES: int = 5
     OTP_CLEANUP_INTERVAL_SECONDS: int = 300  # 5 minutes
-
-    # HTTPS Email APIs (Works on Render Free Tier where raw SMTP ports 587/465 are blocked)
-    BREVO_API_KEY: str = ""
-    RESEND_API_KEY: str = ""
-    RESEND_FROM_EMAIL: str = "College Hub <onboarding@resend.dev>"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
