@@ -156,7 +156,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     private var studentTimer: CountDownTimer? = null
 
     init {
-        currentRollNumber = prefs.getString("roll_number", defaultLocalId) ?: defaultLocalId
+        SessionManager.default.init(application.applicationContext)
+        currentRollNumber = SessionManager.default.currentUser?.rollNumber
+            ?: prefs.getString("roll_number", defaultLocalId)
+            ?: defaultLocalId
         val savedUrl = prefs.getString("server_url", null)
         if (!savedUrl.isNullOrBlank() && !savedUrl.contains("10.0.2.2")) {
             AttendanceApiClient.baseUrl = savedUrl
@@ -178,13 +181,15 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     /**
-     * SessionManager is in-memory by design (see :core:network). Until :app
-     * gets its own persistence layer, this pref-backed mirror restores the
-     * last login across process restarts. Runs only when no session is
-     * active, so mock shells / account switching are never overwritten.
+     * SessionManager is now backed by persistent SharedPreferences.
+     * This fallback ensures legacy pref entries are migrated if SessionManager
+     * has not yet been initialized with an active session.
      */
     private fun hydrateSessionFromPrefs() {
-        if (SessionManager.default.isLoggedIn) return
+        if (SessionManager.default.isLoggedIn) {
+            SessionManager.default.currentUser?.rollNumber?.let { currentRollNumber = it }
+            return
+        }
         val token = prefs.getString("auth_token", null) ?: return
         val role = Role.fromBackendName(prefs.getString("user_role", null)) ?: Role.STUDENT
         val roll = prefs.getString("roll_number", null)
@@ -193,7 +198,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 id = roll ?: "legacy-user",
                 name = prefs.getString("user_name", "User") ?: "User",
                 email = "",
-                roles = setOf(role)
+                roles = setOf(role),
+                rollNumber = roll
             ),
             token = token
         )
@@ -306,13 +312,19 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
      */
     private fun onAuthenticated(body: TokenResponse) {
         val role = Role.fromBackendName(body.user.role) ?: Role.STUDENT
+        val authenticatedUser = User(
+            id = body.user.id,
+            name = body.user.name,
+            email = body.user.email,
+            roles = setOf(role),
+            rollNumber = body.user.rollNumber,
+            department = body.user.department,
+            program = body.user.program,
+            semester = body.user.semester,
+            section = body.user.section
+        )
         SessionManager.default.startSession(
-            user = User(
-                id = body.user.id,
-                name = body.user.name,
-                email = body.user.email,
-                roles = setOf(role)
-            ),
+            user = authenticatedUser,
             token = body.accessToken
         )
         body.user.rollNumber?.let { currentRollNumber = it }
