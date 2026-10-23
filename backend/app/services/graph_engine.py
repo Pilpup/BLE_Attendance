@@ -55,6 +55,13 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
             bridge = None
             remarks = "Zero desk neighbors detected (isolated seat)"
 
+        elif len(verified_set) == 0 and any(n in reports for n in claimed_neighbors):
+            status = "ISOLATED_FLAGGED"
+            method = "NONE"
+            affinity = 0.00
+            bridge = None
+            remarks = f"In-room neighbor link to [{', '.join(claimed_neighbors)}] (Pending reciprocation - Teacher manual override recommended)"
+
         else:
             status = "SPOOFER_REJECTED"
             method = "NONE"

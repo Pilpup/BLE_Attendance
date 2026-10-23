@@ -504,7 +504,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     // Upload student's own top neighbors over Wi-Fi / cellular
-    fun submitMyNeighborsToCloud() {
+    fun submitMyNeighborsToCloud(keepRadioActive: Boolean = false) {
         val sessId = detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: return
         val neighborIds = topDeskNeighbours.map { it.peerId }
         viewModelScope.launch(Dispatchers.IO) {
@@ -520,7 +520,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 withContext(Dispatchers.Main) {
                     if (res.isSuccessful) {
                         studentPhase = StudentPhase.VERIFIED_PRESENT
-                        onStopScanning?.invoke()
+                        if (!keepRadioActive) {
+                            onStopScanning?.invoke()
+                            onStopBroadcasting?.invoke()
+                        }
                     } else if (res.code() == 403) {
                         // Server rejected this check-in: beacon salt mismatch (remote submission attempt) — show the banter
                         val detail = try { res.errorBody()?.string() } catch (_: Exception) { null }
@@ -528,19 +531,28 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         studentStatusMessage = extracted ?: "Nice try lil bro"
                         studentPhase = StudentPhase.STANDBY
                         onStopScanning?.invoke()
+                        onStopBroadcasting?.invoke()
                     } else {
                         // Offline or non-200: fallback to local discovery complete
                         // Student is verified via pure in-degree graph witnessing from online classmates
                         studentPhase = StudentPhase.DISCOVERY_COMPLETE
-                        onStopScanning?.invoke()
+                        if (!keepRadioActive) {
+                            onStopScanning?.invoke()
+                            onStopBroadcasting?.invoke()
+                        }
                     }
+                    Unit
                 }
             } catch (_: Exception) {
                 withContext(Dispatchers.Main) {
                     // Offline fallback: BLE discovery was complete, near-field whisper was emitted.
                     // Student will be verified via pure in-degree graph witnessing from online desk neighbors.
                     studentPhase = StudentPhase.DISCOVERY_COMPLETE
-                    onStopScanning?.invoke()
+                    if (!keepRadioActive) {
+                        onStopScanning?.invoke()
+                        onStopBroadcasting?.invoke()
+                    }
+                    Unit
                 }
             }
         }
@@ -736,24 +748,27 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun startStudentDiscoveryWindow() {
-        studentDiscoverySecondsRemaining = 20
+        studentDiscoverySecondsRemaining = 60
         val probePayload = "$detectedSessionId$studentShortId"
         onStartBroadcasting?.invoke(probePayload, AdvertiseSettings.ADVERTISE_TX_POWER_LOW)
 
         studentTimer?.cancel()
-        studentTimer = object : CountDownTimer(20000L, 1000L) {
+        studentTimer = object : CountDownTimer(60000L, 1000L) {
             override fun onTick(millisUntilFinished: Long) {
                 studentDiscoverySecondsRemaining = (millisUntilFinished / 1000L).toInt()
+                val elapsed = 60 - studentDiscoverySecondsRemaining
+                // Initial quick cloud check-in after 3 seconds so the server records this student in the session
+                if (elapsed == 3) {
+                    submitMyNeighborsToCloud(keepRadioActive = true)
+                } else if (elapsed > 3 && elapsed % 5 == 0 && topDeskNeighbours.isNotEmpty()) {
+                    submitMyNeighborsToCloud(keepRadioActive = true)
+                }
             }
 
             override fun onFinish() {
                 studentDiscoverySecondsRemaining = 0
-                // Stop advertising probe
-                onStopBroadcasting?.invoke()
-                studentPhase = StudentPhase.DISCOVERY_COMPLETE
-
-                // Upload discovered desk neighbors to server over Wi-Fi / cellular
-                submitMyNeighborsToCloud()
+                // Final upload of all discovered neighbors
+                submitMyNeighborsToCloud(keepRadioActive = false)
             }
         }.start()
     }
@@ -779,10 +794,16 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         // Student hearing peer probe (8 bytes: [SessionID (4)][PeerID (4)])
-        if (cleanMsg.length == 8 && studentPhase == StudentPhase.PROBING_NEIGHBORS) {
+        val isPeerProbe = (cleanMsg.length == 8 || (cleanMsg.length > 8 && cleanMsg.startsWith(detectedSessionId)))
+                && !cleanMsg.startsWith("S:") && !cleanMsg.startsWith("SESSION:")
+        val canReceiveProbe = studentPhase == StudentPhase.PROBING_NEIGHBORS ||
+                studentPhase == StudentPhase.VERIFIED_PRESENT ||
+                studentPhase == StudentPhase.DISCOVERY_COMPLETE
+
+        if (isPeerProbe && canReceiveProbe && detectedSessionId != "----") {
             // Drop packet if it came from another classroom
             if (cleanMsg.startsWith(detectedSessionId)) {
-                val peerId = cleanMsg.substring(4)
+                val peerId = cleanMsg.substring(4, 8)
                 if (peerId != studentShortId) {
                     val existing = discoveredPeers[peerId]
                     if (existing != null) {
@@ -792,6 +813,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         val newPeer = PeerData(peerId)
                         newPeer.rssiSamples.add(rssi)
                         discoveredPeers[peerId] = newPeer
+                        // Immediately sync updated neighbor list to cloud
+                        submitMyNeighborsToCloud(keepRadioActive = true)
                     }
                 }
             }
