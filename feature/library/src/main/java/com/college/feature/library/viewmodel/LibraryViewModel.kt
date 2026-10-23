@@ -16,6 +16,7 @@ import com.college.feature.library.network.BookDto
 import retrofit2.Response
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 
 /**
@@ -191,15 +192,42 @@ class LibraryViewModel : ViewModel() {
 
     // ---- Ordinary member actions ----------------------------------------
 
+    /** Active in-flight book reservations, to prevent duplicate clicks and show loading feedback. */
+    val inFlightReservations = mutableStateListOf<String>()
+
+    fun isReserving(bookId: String): Boolean = inFlightReservations.contains(bookId)
+
     /** Any signed-in member can reserve an available copy. */
     fun reserveBook(bookId: String) {
+        if (inFlightReservations.contains(bookId)) return
         val index = LibraryCatalogStore.books.indexOfFirst { it.id == bookId }
         if (index == -1) return
         val book = LibraryCatalogStore.books[index]
         if (!book.isAvailable) return
 
+        inFlightReservations.add(bookId)
+        // Optimistic local decrement
         LibraryCatalogStore.books[index] = book.copy(availableCopies = book.availableCopies - 1)
-        syncAfterMutation { it.reserveBook(bookId) }
+
+        syncAfterMutation(
+            onFailure = { failureCode ->
+                // On any HTTP failure (e.g. 409 Conflict, 400, etc.), rollback the optimistic decrement
+                if (failureCode != -1) {
+                    val idx = LibraryCatalogStore.books.indexOfFirst { it.id == bookId }
+                    if (idx != -1) {
+                        val curr = LibraryCatalogStore.books[idx]
+                        LibraryCatalogStore.books[idx] = curr.copy(
+                            availableCopies = (curr.availableCopies + 1).coerceAtMost(curr.totalCopies)
+                        )
+                    }
+                }
+            },
+            onComplete = {
+                inFlightReservations.remove(bookId)
+            }
+        ) {
+            it.reserveBook(bookId)
+        }
     }
 
     // ---- Staff / developer inventory actions ------------------------------
@@ -293,29 +321,45 @@ class LibraryViewModel : ViewModel() {
 
     /**
      * Every mutation has already committed locally; this reports the outcome
-     * of the matching cloud call and, on success, refetches the catalogue so
-     * the store converges to Neon truth (authoritative copy counters).
+     * of the matching cloud call and, on success (or on 409 conflict), refetches
+     * the catalogue so the store converges to Neon truth (authoritative copy counters).
      */
-    private fun syncAfterMutation(block: suspend (LibraryApiService) -> Response<*>) {
+    private fun syncAfterMutation(
+        onFailure: (suspend (failureCode: Int) -> Unit)? = null,
+        onComplete: (suspend () -> Unit)? = null,
+        block: suspend (LibraryApiService) -> Response<*>
+    ) {
         val service = LibraryApiClient.service
         viewModelScope.launch(Dispatchers.IO) {
             val failureCode: Int? = try {
-                block(service).takeUnless { it.isSuccessful }?.code()
+                val res = block(service)
+                if (res.isSuccessful) null else res.code()
             } catch (_: Exception) {
                 -1 // transport failure (offline / DNS / timeout)
             }
-            cloudStatusMessage = when {
-                failureCode == null -> null
-                failureCode == -1 ->
-                    "Could not reach the backend — changes kept in the in-memory catalogue"
-                failureCode == 401 ->
-                    "Live persistence needs a real backend sign-in — change kept locally for now"
-                failureCode == 403 ->
-                    "The backend rejected this role for cloud persistence — change kept locally for now"
-                else ->
-                    "Backend refused the change (HTTP $failureCode) — kept in the in-memory catalogue"
+
+            withContext(Dispatchers.Main) {
+                if (failureCode != null) {
+                    onFailure?.invoke(failureCode)
+                }
+                onComplete?.invoke()
+
+                cloudStatusMessage = when {
+                    failureCode == null -> null
+                    failureCode == -1 ->
+                        "Could not reach the backend — changes kept in the in-memory catalogue"
+                    failureCode == 401 ->
+                        "Live persistence needs a real backend sign-in — change kept locally for now"
+                    failureCode == 403 ->
+                        "The backend rejected this role for cloud persistence — change kept locally for now"
+                    failureCode == 409 ->
+                        "This book was just taken by another reader — catalogue updated"
+                    else ->
+                        "Backend refused the change (HTTP $failureCode) — kept in the in-memory catalogue"
+                }
             }
-            if (failureCode == null) {
+
+            if (failureCode == null || failureCode == 409) {
                 refreshFromCloud()
             }
         }
@@ -332,19 +376,29 @@ class LibraryViewModel : ViewModel() {
             try {
                 val response = LibraryApiClient.service.listBooks()
                 if (response.isSuccessful) {
-                    LibraryCatalogStore.replaceAll(
-                        (response.body() ?: emptyList()).map { dto -> dto.toDomain() }
-                    )
-                    cloudStatusMessage = null
+                    val remoteBooks = (response.body() ?: emptyList()).map { dto -> dto.toDomain() }
+                    withContext(Dispatchers.Main) {
+                        LibraryCatalogStore.replaceAll(remoteBooks)
+                        // Do not clear the 409 notice if we just alerted the user about a concurrency race
+                        if (cloudStatusMessage?.contains("just taken") != true) {
+                            cloudStatusMessage = null
+                        }
+                    }
                 } else if (response.code() == 401) {
-                    cloudStatusMessage =
-                        "Live catalogue needs a real backend sign-in — showing the local sample"
+                    withContext(Dispatchers.Main) {
+                        cloudStatusMessage =
+                            "Live catalogue needs a real backend sign-in — showing the local sample"
+                    }
                 } else {
-                    cloudStatusMessage =
-                        "Backend unreachable (HTTP ${response.code()}) — showing the in-memory catalogue"
+                    withContext(Dispatchers.Main) {
+                        cloudStatusMessage =
+                            "Backend unreachable (HTTP ${response.code()}) — showing the in-memory catalogue"
+                    }
                 }
             } catch (_: Exception) {
-                cloudStatusMessage = "Could not reach the backend — showing the in-memory catalogue"
+                withContext(Dispatchers.Main) {
+                    cloudStatusMessage = "Could not reach the backend — showing the in-memory catalogue"
+                }
             }
         }
     }

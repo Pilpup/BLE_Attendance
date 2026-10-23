@@ -1,5 +1,6 @@
 package com.college.feature.library
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,7 +13,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocalLibrary
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -24,6 +24,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.college.core.model.User
 import com.college.core.ui.DashboardCard
+import com.college.feature.library.ui.theme.cardBg
+import com.college.feature.library.ui.theme.cardBorder
+import com.college.feature.library.ui.theme.childPurple
+import com.college.feature.library.ui.theme.childPurpleBg
+import com.college.feature.library.ui.theme.libraryMint
+import com.college.feature.library.ui.theme.libraryMintBg
+import com.college.feature.library.ui.theme.textPrimary
+import com.college.feature.library.ui.theme.textSecondary
 import com.college.feature.library.viewmodel.LibraryCatalogStore
 
 /**
@@ -53,8 +61,8 @@ object LibraryDashboardCard : DashboardCard {
         Surface(
             onClick = { onNavigate(NAV_ROUTE) },
             shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 1.dp,
+            color = cardBg,
+            border = BorderStroke(1.dp, cardBorder),
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
@@ -64,13 +72,13 @@ object LibraryDashboardCard : DashboardCard {
                 Box(
                     modifier = Modifier
                         .size(48.dp)
-                        .background(MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f), CircleShape),
+                        .background(libraryMintBg, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         Icons.Filled.LocalLibrary,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.tertiary
+                        tint = libraryMint
                     )
                 }
                 Column(modifier = Modifier.padding(start = 14.dp).weight(1f)) {
@@ -78,24 +86,25 @@ object LibraryDashboardCard : DashboardCard {
                         text = "Library Catalogue",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = textPrimary
                     )
                     Text(
                         text = subtitle,
                         fontSize = 13.sp,
-                        color = Color(0xFF64748B)
+                        color = textSecondary
                     )
                     if (user.canAccessStaffTools()) {
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = MaterialTheme.colorScheme.tertiaryContainer,
+                            color = childPurpleBg,
+                            border = BorderStroke(0.5.dp, childPurple.copy(alpha = 0.5f)),
                             modifier = Modifier.padding(top = 6.dp)
                         ) {
                             Text(
                                 text = "Staff Inventory Access",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                color = childPurple,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                             )
                         }
