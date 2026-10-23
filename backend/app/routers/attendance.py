@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
+
+logger = logging.getLogger("uvicorn.error")
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete, func, or_, select
@@ -318,6 +321,7 @@ async def create_attendance_session(
         session.course_code = course_obj.course_code
         session.course_name = course_obj.course_name
 
+    logger.info(f"[Session Created] ID: {session.id}, Token: {session.session_token}, Salt: {session.session_salt}, Course: {session.course_code}")
     return session
 
 
@@ -362,6 +366,7 @@ async def cancel_attendance_session(
         session_obj.course_code = course_obj.course_code
         session_obj.course_name = course_obj.course_name
 
+    logger.info(f"[Audit Finalized] Session: {session_obj.id}, Verified: {session_obj.total_verified}, Spoofers: {session_obj.total_spoofers}, Total Records: {len(audit_results)}")
     return session_obj
 
 
@@ -430,6 +435,7 @@ async def finalize_attendance_session(
         session_obj.course_code = course_obj.course_code
         session_obj.course_name = course_obj.course_name
 
+    logger.info(f"[Audit Finalized] Session: {session_obj.id}, Verified: {session_obj.total_verified}, Spoofers: {session_obj.total_spoofers}, Total Records: {len(audit_results)}")
     return session_obj
 
 
@@ -552,6 +558,7 @@ async def submit_student_neighbors(
 
     await db.commit()
 
+    logger.info(f"[Check-In] Student: {student_key} submitted {len(normalized_neighbors)} neighbors: {normalized_neighbors} for session: {target_session_id}")
     return {
         "status": "success",
         "student": student_key,
@@ -659,6 +666,7 @@ async def audit_and_finalize_session(
         session_obj.course_code = course_obj.course_code
         session_obj.course_name = course_obj.course_name
 
+    logger.info(f"[Audit Finalized] Session: {session_obj.id}, Verified: {session_obj.total_verified}, Spoofers: {session_obj.total_spoofers}, Total Records: {len(audit_results)}")
     return session_obj
 
 
