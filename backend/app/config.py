@@ -17,7 +17,8 @@ class Settings(BaseSettings):
     SMTP_PASSWORD: str = ""
     SMTP_FROM_EMAIL: str = "noreply@college.edu"
     SMTP_FROM_NAME: str = "College Hub"
-    OTP_EXPIRE_MINUTES: int = 10
+    OTP_EXPIRE_MINUTES: int = 5
+    OTP_CLEANUP_INTERVAL_SECONDS: int = 300  # 5 minutes
 
     # HTTPS Email APIs (Works on Render Free Tier where raw SMTP ports 587/465 are blocked)
     BREVO_API_KEY: str = ""

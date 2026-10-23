@@ -1,14 +1,16 @@
+import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 import logging
 import traceback
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from sqlalchemy import text
+from sqlalchemy import delete, text
 from app.config import settings
-from app.database import engine, is_postgres
-from app.models.attendance import Base
+from app.database import AsyncSessionLocal, engine, is_postgres
+from app.models.attendance import Base, EmailOTP
 from app.routers import attendance, auth, library
 from seed import seed_library_demo_books
 
@@ -103,8 +105,36 @@ BEGIN
     );
     CREATE INDEX IF NOT EXISTS ix_book_reservations_book_id ON book_reservations(book_id);
     CREATE INDEX IF NOT EXISTS ix_book_reservations_user_id ON book_reservations(user_id);
+
+    -- email_otps index on expires_at for fast periodic purging
+    CREATE INDEX IF NOT EXISTS ix_email_otps_expires_at ON email_otps(expires_at);
 END $$;
 """
+
+
+async def purge_expired_otps_worker():
+    """
+    Background worker that runs periodically to purge expired OTP records
+    from the database, preventing orphaned registration/login records.
+    """
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            async with AsyncSessionLocal() as session:
+                stmt = delete(EmailOTP).where(EmailOTP.expires_at < now)
+                result = await session.execute(stmt)
+                await session.commit()
+                if result.rowcount and result.rowcount > 0:
+                    logger.info(f"[OTP Cleanup] Purged {result.rowcount} expired OTP records from database")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"[OTP Cleanup] Error purging expired OTPs: {e}")
+
+        try:
+            await asyncio.sleep(settings.OTP_CLEANUP_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            break
 
 
 @asynccontextmanager
@@ -121,13 +151,23 @@ async def lifespan(app: FastAPI):
     # Seed the demo library catalogue once (no-op whenever books already exist)
     try:
         if is_postgres:
-            from app.database import AsyncSessionLocal
-
             async with AsyncSessionLocal() as seed_session:
                 await seed_library_demo_books(seed_session)
     except Exception as e:
         logger.warning(f"Library seed skipped: {e}")
+
+    # Launch periodic background cleaner for expired email OTPs
+    cleanup_task = asyncio.create_task(purge_expired_otps_worker())
+
     yield
+
+    # Clean shutdown of background worker
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
+
     await engine.dispose()
 
 

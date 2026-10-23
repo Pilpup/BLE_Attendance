@@ -398,3 +398,96 @@ async def test_submit_neighbors_salt_enforcement():
         assert record_map["5678"]["status"] == "VERIFIED_PRESENT"
 
 
+@pytest.mark.anyio
+async def test_expired_otp_purging_and_cleanup():
+    """
+    Verify expired OTP cleanup behavior:
+    1. Expired OTP records are deleted while active OTP records are preserved.
+    2. Submitting an expired OTP rejects with HTTP 400 and purges the record immediately.
+    """
+    import uuid
+    from datetime import datetime, timezone, timedelta
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from sqlalchemy import select, delete
+    from app.database import get_db
+    from app.models.attendance import Base, EmailOTP
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with test_session_factory() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    now = datetime.now(timezone.utc)
+
+    # 1. Insert an expired OTP (expired 10 mins ago) and an active OTP
+    async with test_session_factory() as s:
+        expired_otp = EmailOTP(
+            id=uuid.uuid4(),
+            email="expired.student@univ.edu",
+            otp_code="111111",
+            purpose="REGISTER",
+            attempts=0,
+            expires_at=now - timedelta(minutes=10),
+        )
+        active_otp = EmailOTP(
+            id=uuid.uuid4(),
+            email="active.student@univ.edu",
+            otp_code="222222",
+            purpose="REGISTER",
+            attempts=0,
+            expires_at=now + timedelta(minutes=5),
+        )
+        s.add_all([expired_otp, active_otp])
+        await s.commit()
+
+    # 2. Run the sweeper query (same logic as purge_expired_otps_worker)
+    async with test_session_factory() as s:
+        del_stmt = delete(EmailOTP).where(EmailOTP.expires_at < now)
+        res = await s.execute(del_stmt)
+        await s.commit()
+        assert res.rowcount == 1
+
+        # Check remaining records
+        all_otps = (await s.execute(select(EmailOTP))).scalars().all()
+        assert len(all_otps) == 1
+        assert all_otps[0].email == "active.student@univ.edu"
+
+    # 3. Test verification attempt with an expired OTP deletes it on attempt
+    async with test_session_factory() as s:
+        stale_otp = EmailOTP(
+            id=uuid.uuid4(),
+            email="stale.verify@univ.edu",
+            otp_code="333333",
+            purpose="LOGIN",
+            attempts=0,
+            expires_at=now - timedelta(minutes=1),
+        )
+        s.add(stale_otp)
+        await s.commit()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        verify_res = await client.post(
+            "/api/v1/auth/login/verify-otp",
+            json={"email": "stale.verify@univ.edu", "otp_code": "333333"}
+        )
+        assert verify_res.status_code == 400
+        assert "expired" in verify_res.json()["detail"].lower()
+
+        # The expired record must have been deleted
+        async with test_session_factory() as s:
+            rec = (await s.execute(
+                select(EmailOTP).where(EmailOTP.email == "stale.verify@univ.edu")
+            )).scalars().first()
+            assert rec is None
+
+
+

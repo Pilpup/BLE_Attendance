@@ -150,6 +150,9 @@ async def register_verify_otp(
     otp_record = result.scalars().first()
 
     if not otp_record or now > ensure_utc(otp_record.expires_at):
+        if otp_record:
+            await db.delete(otp_record)
+            await db.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Verification code is invalid or has expired. Please request a new code.",
@@ -287,6 +290,9 @@ async def login_verify_otp(
     otp_record = result.scalars().first()
 
     if not otp_record or now > ensure_utc(otp_record.expires_at):
+        if otp_record:
+            await db.delete(otp_record)
+            await db.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Verification code is invalid or has expired. Please request a new code.",
