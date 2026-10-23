@@ -203,6 +203,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    method = request.method
+    path = request.url.path
+    if path not in ("/health", "/"):
+        logger.info(f"==> Incoming {method} {path}")
+    response = await call_next(request)
+    if path not in ("/health", "/"):
+        logger.info(f"<== Finished {method} {path} - Status {response.status_code}")
+    return response
+
 # ── Routers ───────────────────────────────────────────────────────────────────
 app.include_router(attendance.router, prefix=settings.API_V1_STR)
 app.include_router(auth.router, prefix=settings.API_V1_STR)
