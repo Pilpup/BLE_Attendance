@@ -152,7 +152,7 @@ class MainActivity : ComponentActivity() {
 
             Surface(
                 modifier = Modifier.fillMaxSize(),
-                color = Color.White
+                color = Color(0xFF0B0F17)
             ) {
                 AppNavigation(viewModel = viewModel, callbacks = shellCallbacks)
             }

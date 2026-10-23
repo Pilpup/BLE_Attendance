@@ -2,6 +2,7 @@ package com.college.feature.library
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,7 +15,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,11 +30,12 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
@@ -146,7 +147,8 @@ fun LibraryScreen(
                         Text(
                             text = "Library Explorer",
                             fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp
+                            fontSize = 18.sp,
+                            color = textPrimary
                         )
                         Text(
                             text = "${user.name} · ${user.primaryRole?.name ?: "GUEST"}",
@@ -180,17 +182,18 @@ fun LibraryScreen(
                         }
                         DropdownMenu(
                             expanded = toolsMenuExpanded,
-                            onDismissRequest = { toolsMenuExpanded = false }
+                            onDismissRequest = { toolsMenuExpanded = false },
+                            modifier = Modifier.background(cardBg)
                         ) {
                             DropdownMenuItem(
-                                text = { Text("Seed Sample Books") },
+                                text = { Text("Seed Sample Books", color = textPrimary) },
                                 onClick = {
                                     viewModel.seedSampleData()
                                     toolsMenuExpanded = false
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("Clear Catalogue Cache") },
+                                text = { Text("Clear Catalogue Cache", color = alertRed) },
                                 onClick = {
                                     viewModel.clearCatalogueCache()
                                     toolsMenuExpanded = false
@@ -200,7 +203,7 @@ fun LibraryScreen(
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = cardBg,
+                    containerColor = appBg,
                     titleContentColor = textPrimary
                 )
             )
@@ -227,17 +230,18 @@ fun LibraryScreen(
         ) {
             // Cloud / offline fallback notice (library cloud sync is best-effort)
             viewModel.cloudStatusMessage?.let { notice ->
+                val isWarning = notice.contains("taken") || notice.contains("refused") || notice.contains("rejected")
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(10.dp),
-                    color = primaryBlueBg,
-                    border = BorderStroke(1.dp, primaryBlue)
+                    color = if (isWarning) warningOrangeBg else primaryBlueBg,
+                    border = BorderStroke(1.dp, if (isWarning) warningOrange.copy(alpha = 0.5f) else primaryBlue)
                 ) {
                     Text(
                         text = notice,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium,
-                        color = primaryBlue,
+                        color = if (isWarning) warningOrange else primaryBlue,
                         modifier = Modifier.padding(12.dp)
                     )
                 }
@@ -246,11 +250,14 @@ fun LibraryScreen(
             if (tabsEnabled.size > 1) {
                 TabRow(
                     selectedTabIndex = tabsEnabled.indexOf(activeTab),
-                    containerColor = cardBg
+                    containerColor = cardBg,
+                    contentColor = primaryBlue,
+                    divider = { HorizontalDivider(color = cardBorder) }
                 ) {
                     tabsEnabled.forEach { tab ->
+                        val isSelected = activeTab == tab
                         Tab(
-                            selected = activeTab == tab,
+                            selected = isSelected,
                             onClick = { currentTab = tab },
                             text = {
                                 Text(
@@ -260,7 +267,8 @@ fun LibraryScreen(
                                         LibraryTab.DEV_MAINTENANCE -> "Dev Maintenance"
                                     },
                                     fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                                    color = if (isSelected) primaryBlue else textSecondary
                                 )
                             }
                         )
@@ -294,45 +302,20 @@ private fun CatalogueTabContent(viewModel: LibraryViewModel) {
             value = viewModel.searchQuery,
             onValueChange = { viewModel.searchQuery = it },
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null, tint = textMuted) },
-            placeholder = { Text("Search title, author or ISBN…", fontSize = 13.sp) },
+            placeholder = { Text("Search title, author or ISBN…", fontSize = 13.sp, color = textMuted) },
             singleLine = true,
             shape = RoundedCornerShape(10.dp),
             modifier = Modifier.fillMaxWidth(),
             colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = textPrimary,
+                unfocusedTextColor = textPrimary,
                 focusedBorderColor = primaryBlue,
                 unfocusedBorderColor = cardBorder,
                 focusedContainerColor = cardBg,
-                unfocusedContainerColor = cardBg
+                unfocusedContainerColor = cardBg,
+                cursorColor = primaryBlue
             )
         )
-
-        // Category filter chips (derived from what is actually catalogued)
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            item {
-                FilterChip(
-                    selected = viewModel.selectedCategory == null,
-                    onClick = { viewModel.selectedCategory = null },
-                    label = { Text("All", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
-                )
-            }
-            items(viewModel.categories) { category ->
-                FilterChip(
-                    selected = viewModel.selectedCategory == category,
-                    onClick = {
-                        viewModel.selectedCategory =
-                            if (viewModel.selectedCategory == category) null else category
-                    },
-                    label = { Text(category, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
-                )
-            }
-            item {
-                FilterChip(
-                    selected = viewModel.onlyAvailable,
-                    onClick = { viewModel.onlyAvailable = !viewModel.onlyAvailable },
-                    label = { Text("Available Only", fontSize = 12.sp, fontWeight = FontWeight.Bold) }
-                )
-            }
-        }
 
         // Book list
         val books = viewModel.filteredBooks
@@ -341,15 +324,16 @@ private fun CatalogueTabContent(viewModel: LibraryViewModel) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .background(cardBg, RoundedCornerShape(12.dp)),
+                    .background(cardBg, RoundedCornerShape(12.dp))
+                    .border(1.dp, cardBorder, RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = if (viewModel.searchQuery.isBlank() && viewModel.selectedCategory == null)
+                        text = if (viewModel.searchQuery.isBlank())
                             "The catalogue is empty."
                         else
-                            "No books match your filters.",
+                            "No books match your search.",
                         fontSize = 14.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = textSecondary
@@ -375,6 +359,7 @@ private fun CatalogueTabContent(viewModel: LibraryViewModel) {
                     BookRow(
                         book = book,
                         staffControls = false,
+                        isReserving = viewModel.isReserving(book.id),
                         onReserve = { viewModel.reserveBook(book.id) }
                     )
                 }
@@ -432,7 +417,8 @@ private fun StaffInventoryTabContent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .background(cardBg, RoundedCornerShape(12.dp)),
+                    .background(cardBg, RoundedCornerShape(12.dp))
+                    .border(1.dp, cardBorder, RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
@@ -452,6 +438,7 @@ private fun StaffInventoryTabContent(
                     BookRow(
                         book = book,
                         staffControls = true,
+                        isReserving = viewModel.isReserving(book.id),
                         onReserve = { viewModel.reserveBook(book.id) },
                         onEdit = onEdit,
                         onDelete = { viewModel.removeBook(book.id) }
@@ -505,14 +492,18 @@ private fun DevMaintenanceTabContent(viewModel: LibraryViewModel) {
                         onClick = { viewModel.seedSampleData() },
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = primaryBlue)
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = primaryBlue,
+                            contentColor = Color.White
+                        )
                     ) {
                         Text("Seed Sample Books", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                     OutlinedButton(
                         onClick = { viewModel.clearCatalogueCache() },
                         modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(10.dp)
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, alertRed.copy(alpha = 0.6f))
                     ) {
                         Text(
                             "Clear Cache",
@@ -586,6 +577,7 @@ private fun DiagnosticRow(label: String, value: String) {
 private fun BookRow(
     book: Book,
     staffControls: Boolean = false,
+    isReserving: Boolean = false,
     onReserve: () -> Unit,
     onEdit: (Book) -> Unit = {},
     onDelete: (Book) -> Unit = {}
@@ -607,7 +599,8 @@ private fun BookRow(
                 modifier = Modifier
                     .size(44.dp)
                     .clip(RoundedCornerShape(10.dp))
-                    .background(primaryBlueBg),
+                    .background(primaryBlueBg)
+                    .border(1.dp, primaryBlue.copy(alpha = 0.3f), RoundedCornerShape(10.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
@@ -638,7 +631,11 @@ private fun BookRow(
                     overflow = TextOverflow.Ellipsis
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Surface(shape = RoundedCornerShape(6.dp), color = logBg) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = logBg,
+                        border = BorderStroke(1.dp, cardBorder)
+                    ) {
                         Text(
                             text = book.shelfLocation,
                             fontSize = 10.sp,
@@ -647,7 +644,11 @@ private fun BookRow(
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                         )
                     }
-                    Surface(shape = RoundedCornerShape(6.dp), color = primaryBlueBg) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = primaryBlueBg,
+                        border = BorderStroke(1.dp, primaryBlue.copy(alpha = 0.3f))
+                    ) {
                         Text(
                             text = book.category,
                             fontSize = 10.sp,
@@ -688,10 +689,22 @@ private fun BookRow(
                 if (book.isAvailable) {
                     OutlinedButton(
                         onClick = onReserve,
+                        enabled = !isReserving,
                         shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)
+                        border = BorderStroke(1.dp, if (isReserving) cardBorder else primaryBlue.copy(alpha = 0.6f)),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 2.dp)
                     ) {
-                        Text("Reserve", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = primaryBlue)
+                        if (isReserving) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(12.dp),
+                                strokeWidth = 2.dp,
+                                color = textSecondary
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Reserving…", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textSecondary)
+                        } else {
+                            Text("Reserve", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = primaryBlue)
+                        }
                     }
                 }
 
@@ -746,11 +759,15 @@ private fun AddEditBookDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        containerColor = cardBg,
+        titleContentColor = textPrimary,
+        textContentColor = textSecondary,
         title = {
             Text(
                 text = if (isEdit) "Edit Book Details" else "Add Book to Catalogue",
                 fontWeight = FontWeight.Bold,
-                fontSize = 18.sp
+                fontSize = 18.sp,
+                color = textPrimary
             )
         },
         text = {
@@ -760,11 +777,24 @@ private fun AddEditBookDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
+                val textFieldColors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = primaryBlue,
+                    unfocusedBorderColor = cardBorder,
+                    focusedTextColor = textPrimary,
+                    unfocusedTextColor = textPrimary,
+                    focusedLabelColor = primaryBlue,
+                    unfocusedLabelColor = textSecondary,
+                    focusedContainerColor = logBg,
+                    unfocusedContainerColor = logBg,
+                    cursorColor = primaryBlue
+                )
+
                 OutlinedTextField(
                     value = title,
                     onValueChange = { title = it },
                     label = { Text("Title") },
                     singleLine = true,
+                    colors = textFieldColors,
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
@@ -772,6 +802,7 @@ private fun AddEditBookDialog(
                     onValueChange = { author = it },
                     label = { Text("Author") },
                     singleLine = true,
+                    colors = textFieldColors,
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
@@ -779,6 +810,7 @@ private fun AddEditBookDialog(
                     onValueChange = { isbn = it },
                     label = { Text("ISBN") },
                     singleLine = true,
+                    colors = textFieldColors,
                     modifier = Modifier.fillMaxWidth()
                 )
                 OutlinedTextField(
@@ -786,6 +818,7 @@ private fun AddEditBookDialog(
                     onValueChange = { category = it },
                     label = { Text("Category (e.g. CS, MATH, PHYSICS, BIO)") },
                     singleLine = true,
+                    colors = textFieldColors,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -794,6 +827,7 @@ private fun AddEditBookDialog(
                         onValueChange = { copiesText = it.filter { c -> c.isDigit() } },
                         label = { Text(if (isEdit) "Total Copies" else "Copies") },
                         singleLine = true,
+                        colors = textFieldColors,
                         modifier = Modifier.weight(1f)
                     )
                     if (isEdit) {
@@ -802,6 +836,7 @@ private fun AddEditBookDialog(
                             onValueChange = { availableText = it.filter { c -> c.isDigit() } },
                             label = { Text("Available") },
                             singleLine = true,
+                            colors = textFieldColors,
                             modifier = Modifier.weight(1f)
                         )
                     }
@@ -812,6 +847,7 @@ private fun AddEditBookDialog(
                         onValueChange = { shelfText = it },
                         label = { Text("Shelf Location (e.g. Shelf 3-B)") },
                         singleLine = true,
+                        colors = textFieldColors,
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
@@ -830,14 +866,19 @@ private fun AddEditBookDialog(
                         shelfText
                     )
                 },
-                enabled = inputsValid
+                enabled = inputsValid,
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = primaryBlue,
+                    contentColor = Color.White
+                )
             ) {
-                Text(if (isEdit) "Save" else "Add")
+                Text(if (isEdit) "Save" else "Add", fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text("Cancel", color = textSecondary)
             }
         }
     )
