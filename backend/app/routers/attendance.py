@@ -220,37 +220,43 @@ async def create_attendance_session(
 ):
     """
     Teacher initiates an attendance session before starting BLE conductor ticks.
-    [Guardrail]: Rejects creation if an ACTIVE session is already running for this course.
+    Auto-resolves or creates the course so attendance is NEVER blocked.
     """
+    target_course_id = None
+    target_uuid = None
+
     if payload.course_id:
-        course_res = await db.execute(select(Course).where(Course.id == payload.course_id))
+        try:
+            target_uuid = uuid.UUID(payload.course_id)
+        except (ValueError, AttributeError):
+            target_uuid = None
+
+    if target_uuid:
+        course_res = await db.execute(select(Course).where(Course.id == target_uuid))
         course = course_res.scalars().first()
-        if not course:
-            raise HTTPException(status_code=404, detail="Course not found")
-        # Allow if it's the demo course CS401 or belongs to current teacher
-        if course.teacher_id != current_user.id and course.course_code != "CS401":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You are not authorized to start attendance for this course",
-            )
-        target_course_id = course.id
-    else:
-        # Check if this teacher already has a course, otherwise fallback to default
-        c_res = await db.execute(select(Course).where(Course.teacher_id == current_user.id))
-        teacher_course = c_res.scalars().first()
-        if teacher_course:
-            target_course_id = teacher_course.id
+        if course:
+            target_course_id = course.id
+
+    if not target_course_id:
+        # Determine code and name
+        raw_code = payload.course_code or (payload.course_id if not target_uuid else None) or "CS101"
+        code_to_check = raw_code.strip()[:30].upper()
+        c_res = await db.execute(select(Course).where(func.upper(Course.course_code) == code_to_check))
+        existing_c = c_res.scalars().first()
+        if existing_c:
+            target_course_id = existing_c.id
         else:
-            default_c = Course(
-                id=uuid.uuid4(),
-                course_code="CS101",
-                course_name="General Lecture & BLE Attendance",
+            new_course_id = target_uuid or uuid.uuid4()
+            new_c = Course(
+                id=new_course_id,
+                course_code=code_to_check,
+                course_name=(payload.course_name or "General Lecture & Attendance")[:200],
                 teacher_id=current_user.id,
             )
-            db.add(default_c)
+            db.add(new_c)
             await db.commit()
-            await db.refresh(default_c)
-            target_course_id = default_c.id
+            await db.refresh(new_c)
+            target_course_id = new_c.id
 
     # Auto-supersede and expire any lingering ACTIVE sessions for this course
     active_check = await db.execute(
@@ -282,6 +288,12 @@ async def create_attendance_session(
     await db.commit()
     await db.refresh(session)
     session.records = []
+
+    course_obj = (await db.execute(select(Course).where(Course.id == target_course_id))).scalars().first()
+    if course_obj:
+        session.course_code = course_obj.course_code
+        session.course_name = course_obj.course_name
+
     return session
 
 
@@ -320,6 +332,12 @@ async def cancel_attendance_session(
     )
     await db.commit()
     await db.refresh(session_obj)
+
+    course_obj = (await db.execute(select(Course).where(Course.id == session_obj.course_id))).scalars().first()
+    if course_obj:
+        session_obj.course_code = course_obj.course_code
+        session_obj.course_name = course_obj.course_name
+
     return session_obj
 
 
@@ -337,7 +355,8 @@ async def finalize_attendance_session(
 
     if not session_obj:
         raise HTTPException(status_code=404, detail="Attendance session not found")
-    if session_obj.teacher_id != current_user.id:
+    user_role = (current_user.role or "").upper()
+    if session_obj.teacher_id != current_user.id and user_role not in ("DEVELOPER", "ADMIN"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only finalize your own attendance sessions",
@@ -381,6 +400,12 @@ async def finalize_attendance_session(
 
     await db.commit()
     await db.refresh(session_obj)
+
+    course_obj = (await db.execute(select(Course).where(Course.id == session_obj.course_id))).scalars().first()
+    if course_obj:
+        session_obj.course_code = course_obj.course_code
+        session_obj.course_name = course_obj.course_name
+
     return session_obj
 
 
@@ -532,7 +557,8 @@ async def audit_and_finalize_session(
 
     if not session_obj:
         raise HTTPException(status_code=404, detail="Attendance session not found")
-    if session_obj.teacher_id != current_user.id:
+    user_role = (current_user.role or "").upper()
+    if session_obj.teacher_id != current_user.id and user_role not in ("DEVELOPER", "ADMIN"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only finalize your own attendance sessions",
@@ -611,6 +637,12 @@ async def audit_and_finalize_session(
 
     await db.commit()
     await db.refresh(session_obj)
+
+    course_obj = (await db.execute(select(Course).where(Course.id == session_obj.course_id))).scalars().first()
+    if course_obj:
+        session_obj.course_code = course_obj.course_code
+        session_obj.course_name = course_obj.course_name
+
     return session_obj
 
 

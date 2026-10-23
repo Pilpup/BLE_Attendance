@@ -146,7 +146,8 @@ async def get_optional_user(
 
 # ensure authenticated user has TEACHER role
 async def require_teacher(current_user: User = Depends(get_current_user)) -> User:
-    if current_user.role != "TEACHER":
+    user_role = (current_user.role or "").upper()
+    if user_role not in ("TEACHER", "DEVELOPER", "ADMIN", "STAFF", "FACULTY"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access restricted: Teacher authorization required",

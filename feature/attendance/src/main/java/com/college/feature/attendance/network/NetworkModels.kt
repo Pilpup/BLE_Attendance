@@ -81,7 +81,9 @@ data class SessionCreateRequest(
     @SerializedName("course_id") val courseId: String? = null,
     @SerializedName("session_token") val sessionToken: String,
     @SerializedName("session_salt") val sessionSalt: String? = null,
-    @SerializedName("total_enrolled") val totalEnrolled: Int = 0
+    @SerializedName("total_enrolled") val totalEnrolled: Int = 0,
+    @SerializedName("course_code") val courseCode: String? = null,
+    @SerializedName("course_name") val courseName: String? = null
 )
 
 data class AttendanceRecordItem(

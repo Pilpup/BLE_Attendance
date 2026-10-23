@@ -1638,9 +1638,10 @@ private fun TakeAttendanceSelectionView(
         val topicSuffix = if (topicCovered.isNotBlank()) " • $topicCovered" else ""
         val code = "$courseProgram $semester"
         val name = "$classType $batchType ($selectedUnit$topicSuffix)"
+        val stableCourseId = java.util.UUID.nameUUIDFromBytes("academic-${courseProgram.lowercase()}-${semester.replace(" ", "").lowercase()}".toByteArray()).toString()
         onSelectCourse(
             CourseResponse(
-                id = "academic-${courseProgram.lowercase()}-${semester.replace(" ", "").lowercase()}",
+                id = stableCourseId,
                 courseCode = code,
                 courseName = name
             )
