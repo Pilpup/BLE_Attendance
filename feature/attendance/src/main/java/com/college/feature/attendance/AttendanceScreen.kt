@@ -302,8 +302,8 @@ private fun StudentSection(
 ) {
     val isScanning = studentPhase == StudentPhase.LISTENING_FOR_TEACHER ||
             studentPhase == StudentPhase.PROBING_NEIGHBORS
-    val isVerified = studentPhase == StudentPhase.VERIFIED_PRESENT ||
-            studentPhase == StudentPhase.DISCOVERY_COMPLETE
+    val isVerified = studentPhase == StudentPhase.VERIFIED_PRESENT
+    val isUnverified = studentPhase == StudentPhase.UNVERIFIED_FLAGGED
 
     // 360-degree rotating precision radar sweep beam
     val infiniteTransition = rememberInfiniteTransition(label = "RadarSweep")
@@ -351,6 +351,7 @@ private fun StudentSection(
                 shape = RoundedCornerShape(20.dp),
                 color = when {
                     isVerified -> Color(0x2800F5A0)
+                    isUnverified -> Color(0x28F59E0B)
                     isScanning -> Color(0x2000F5A0)
                     else -> logBg
                 },
@@ -358,6 +359,7 @@ private fun StudentSection(
                     1.dp,
                     when {
                         isVerified -> Color(0xFF00F5A0)
+                        isUnverified -> Color(0xFFF59E0B)
                         isScanning -> Color(0xFF00F5A0)
                         else -> cardBorder
                     }
@@ -375,6 +377,7 @@ private fun StudentSection(
                             .background(
                                 when {
                                     isVerified -> Color(0xFF00F5A0)
+                                    isUnverified -> Color(0xFFF59E0B)
                                     isScanning -> Color(0xFF00F5A0)
                                     else -> textMuted
                                 }
@@ -382,15 +385,18 @@ private fun StudentSection(
                     )
                     Text(
                         text = when (studentPhase) {
-                            StudentPhase.VERIFIED_PRESENT, StudentPhase.DISCOVERY_COMPLETE -> "MARKED PRESENT ✓"
-                            StudentPhase.PROBING_NEIGHBORS -> "CONFIRMING... (${studentDiscoveryRemainingSeconds}s)"
-                            StudentPhase.LISTENING_FOR_TEACHER -> "CHECKING IN..."
-                            StudentPhase.STANDBY -> "READY"
+                            StudentPhase.VERIFIED_PRESENT -> "MARKED PRESENT ✓"
+                            StudentPhase.UNVERIFIED_FLAGGED -> "UNVERIFIED (ISOLATED)"
+                            StudentPhase.PROBING_NEIGHBORS -> "PROBING PEERS (${studentDiscoveryRemainingSeconds}s)"
+                            StudentPhase.LISTENING_FOR_TEACHER -> "LOCKING BEACON..."
+                            StudentPhase.DISCOVERY_COMPLETE -> "PROBES COMPLETE"
+                            StudentPhase.STANDBY -> "READY TO SCAN"
                         },
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = when {
                             isVerified -> Color(0xFF00F5A0)
+                            isUnverified -> Color(0xFFF59E0B)
                             isScanning -> Color(0xFF00F5A0)
                             else -> textMuted
                         }
@@ -399,7 +405,7 @@ private fun StudentSection(
             }
 
             // Clean Class Session Pill (non-technical)
-            if (detectedSessionId.isNotEmpty() && detectedSessionId != "None") {
+            if (detectedSessionId.isNotEmpty() && detectedSessionId != "None" && detectedSessionId != "----") {
                 Surface(
                     shape = RoundedCornerShape(12.dp),
                     color = cardBg,
@@ -411,6 +417,87 @@ private fun StudentSection(
                         fontWeight = FontWeight.Bold,
                         color = textPrimary,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
+            }
+        }
+
+        // Live Scanning Progress Bar (Discovery window active)
+        if (studentPhase == StudentPhase.PROBING_NEIGHBORS) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = Color(0xFF081C14),
+                border = BorderStroke(1.dp, Color(0x5500F5A0)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Sensors,
+                                contentDescription = null,
+                                tint = Color(0xFF00F5A0),
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = "EXCHANGING DESK PROBES",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 0.5.sp,
+                                color = Color(0xFF00F5A0)
+                            )
+                        }
+                        Text(
+                            text = "${studentDiscoveryRemainingSeconds}s remaining",
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF00F5A0)
+                        )
+                    }
+                    LinearProgressIndicator(
+                        progress = { (studentDiscoveryRemainingSeconds / 15f).coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp)),
+                        color = Color(0xFF00F5A0),
+                        trackColor = Color(0x2200F5A0)
+                    )
+                }
+            }
+        } else if (studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = cardBg,
+                border = BorderStroke(1.dp, cardBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Radar,
+                        contentDescription = null,
+                        tint = Color(0xFF00F5A0),
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = "Listening for teacher's in-room Bluetooth beacon...",
+                        fontSize = 12.sp,
+                        color = textMuted
                     )
                 }
             }
@@ -704,33 +791,174 @@ private fun StudentSection(
             }
         }
 
-        // Bottom Classmate Counter / Summary
-        if (isVerified || deskNeighbours.isNotEmpty()) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Default.People,
-                    contentDescription = null,
-                    tint = Color(0xFF00F5A0),
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    text = if (isVerified) "Attendance recorded successfully" else "${deskNeighbours.size} classmate${if (deskNeighbours.size > 1) "s" else ""} nearby",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = textPrimary
-                )
+        // ─────────────────────────────────────────────────────────────────────
+        // STUDENT STATUS & PEER WITNESS SUMMARY CARD
+        // ─────────────────────────────────────────────────────────────────────
+        when {
+            isVerified -> {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color(0xFF062016),
+                    border = BorderStroke(1.dp, Color(0xFF00F5A0).copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = Color(0xFF00F5A0),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = "ATTENDANCE VERIFIED PRESENT",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 0.5.sp,
+                                color = Color(0xFF00F5A0)
+                            )
+                        }
+                        Text(
+                            text = if (deskNeighbours.isNotEmpty()) {
+                                "Mutual BLE mesh validated with ${deskNeighbours.size} desk peer${if (deskNeighbours.size > 1) "s" else ""}:"
+                            } else {
+                                "In-room beacon verified. Attendance recorded successfully."
+                            },
+                            fontSize = 12.sp,
+                            color = textPrimary
+                        )
+                        if (deskNeighbours.isNotEmpty()) {
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                items(deskNeighbours) { peer ->
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = Color(0xFF09291D),
+                                        border = BorderStroke(1.dp, Color(0x6600F5A0))
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null,
+                                                tint = Color(0xFF00F5A0),
+                                                modifier = Modifier.size(12.dp)
+                                            )
+                                            Text(
+                                                text = "Roll ${peer.peerId.takeLast(3)} (${peer.medianRssi} dBm)",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = Color(0xFF00F5A0)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            isUnverified -> {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = Color(0xFF261904),
+                    border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.6f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = Color(0xFFF59E0B),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = "ATTENDANCE UNVERIFIED (ISOLATED)",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 0.5.sp,
+                                color = Color(0xFFF59E0B)
+                            )
+                        }
+                        Text(
+                            text = "0 desk neighbors were detected nearby. Your check-in was registered, but flagged as unverified for instructor manual review.",
+                            fontSize = 12.sp,
+                            color = textPrimary
+                        )
+                        Text(
+                            text = "• Move closer to classmates or tap 'Re-Scan Desk'\n• Or request your teacher to tap 'Verify' on their screen",
+                            fontSize = 11.sp,
+                            lineHeight = 16.sp,
+                            color = textMuted
+                        )
+                    }
+                }
+            }
+            isScanning -> {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = cardBg,
+                    border = BorderStroke(1.dp, cardBorder),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.People,
+                            contentDescription = null,
+                            tint = Color(0xFF00F5A0),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Column {
+                            Text(
+                                text = if (deskNeighbours.isNotEmpty()) {
+                                    "${deskNeighbours.size} classmate${if (deskNeighbours.size > 1) "s" else ""} in Bluetooth range"
+                                } else {
+                                    "Scanning for nearby desk neighbors..."
+                                },
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = textPrimary
+                            )
+                            Text(
+                                text = "Keep Bluetooth & screen active during discovery",
+                                fontSize = 10.sp,
+                                color = textMuted
+                            )
+                        }
+                    }
+                }
             }
         }
 
         // Student Bottom Action Button
         Button(
             onClick = {
-                if (studentPhase != StudentPhase.STANDBY) onStopScanning() else onStartScanning()
+                if (isScanning) onStopScanning() else onStartScanning()
             },
             modifier = Modifier
                 .fillMaxWidth()
@@ -738,7 +966,8 @@ private fun StudentSection(
             shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = when {
-                    studentPhase != StudentPhase.STANDBY -> alertRed
+                    isScanning -> alertRed
+                    isUnverified -> Color(0xFFD97706)
                     isVerified -> Color(0xFF059669)
                     else -> Color(0xFF059669)
                 }
@@ -750,7 +979,8 @@ private fun StudentSection(
             ) {
                 Icon(
                     imageVector = when {
-                        studentPhase != StudentPhase.STANDBY -> Icons.Default.Sensors
+                        isScanning -> Icons.Default.Close
+                        isUnverified -> Icons.Default.Radar
                         isVerified -> Icons.Default.Check
                         else -> Icons.Default.Radar
                     },
@@ -759,7 +989,8 @@ private fun StudentSection(
                 )
                 Text(
                     text = when {
-                        studentPhase != StudentPhase.STANDBY -> "Cancel"
+                        isScanning -> "Cancel Scan"
+                        isUnverified -> "Re-Scan Desk"
                         isVerified -> "Check In Again"
                         else -> "Check In"
                     },
@@ -786,15 +1017,21 @@ private fun getRecordAuditStatus(rec: AttendanceRecordItem): String {
 
 private fun getDisplayRollNo(rec: AttendanceRecordItem): String {
     if (!rec.rollNumber.isNullOrBlank()) {
-        val r = rec.rollNumber.trim()
-        if (r.length <= 3 && r.all { it.isDigit() }) {
-            return "2514301010" + String.format("%02d", r.toInt())
-        }
-        return r
+        return rec.rollNumber.trim()
     }
-    val digits = rec.bleDeviceId.filter { it.isDigit() }
-    val lastNum = digits.takeLast(2).toIntOrNull() ?: 19
-    return "2514301010${String.format("%02d", lastNum)}"
+    return rec.bleDeviceId.trim().uppercase()
+}
+
+private fun compareRollNumbers(a: String, b: String): Int {
+    val aDigits = a.filter { it.isDigit() }
+    val bDigits = b.filter { it.isDigit() }
+    val aNum = aDigits.toLongOrNull()
+    val bNum = bDigits.toLongOrNull()
+    return if (aNum != null && bNum != null && aNum != bNum) {
+        aNum.compareTo(bNum)
+    } else {
+        a.compareTo(b, ignoreCase = true)
+    }
 }
 
 private fun getDisplayStudentName(rec: AttendanceRecordItem): String {
@@ -989,14 +1226,10 @@ private fun TeacherSection(
                 }
             }
 
-            // Sorted Attendance List: Unverified & Flagged at the top, Verified at the bottom; sorted by roll number
-            val sortedList = finalizedRecords.sortedWith(
-                compareBy<AttendanceRecordItem> { rec ->
-                    if (getRecordAuditStatus(rec) == "Verified") 1 else 0
-                }.thenBy { rec ->
-                    getDisplayRollNo(rec)
-                }
-            )
+            // Attendance list strictly sorted in ascending order by student roll number
+            val sortedList = finalizedRecords.sortedWith { r1, r2 ->
+                compareRollNumbers(getDisplayRollNo(r1), getDisplayRollNo(r2))
+            }
 
             if (sortedList.isEmpty()) {
                 Box(
@@ -1905,7 +2138,9 @@ private fun SessionDetailScreen(
     val details = getSessionAcademicDetails(session)
     val records = session.records ?: emptyList()
     val sortedRecords = remember(records) {
-        records.sortedBy { getDisplayRollNo(it) }
+        records.sortedWith { r1, r2 ->
+            compareRollNumbers(getDisplayRollNo(r1), getDisplayRollNo(r2))
+        }
     }
     val verifiedCount = sortedRecords.count { getRecordAuditStatus(it) == "Verified" }
     val unverifiedCount = sortedRecords.count { getRecordAuditStatus(it) == "Unverified" }
