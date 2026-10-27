@@ -15,6 +15,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -65,6 +66,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -92,6 +94,11 @@ import com.college.feature.attendance.network.AttendanceSessionResponse
 import com.college.feature.attendance.network.CourseResponse
 import com.college.feature.attendance.network.RegisterRequest
 import com.college.feature.attendance.ui.theme.*
+import com.college.feature.attendance.telemetry.BehavioralTelemetryEngine
+import com.college.feature.attendance.telemetry.CognitiveFocusReport
+import com.college.feature.attendance.telemetry.ExpiredTargetEvent
+import com.college.feature.attendance.telemetry.FocusClassification
+import com.college.feature.attendance.telemetry.TapEvent
 import com.college.feature.attendance.viewmodel.AttendanceViewModel
 import com.college.feature.attendance.viewmodel.PeerData
 import com.college.feature.attendance.viewmodel.StudentPhase
@@ -100,6 +107,7 @@ import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.pow
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 /**
  * Callbacks required by the attendance screen from the host activity.
@@ -282,7 +290,9 @@ fun AttendanceScreen(
                     studentStatusMessage = studentStatusMessage,
                     challengeScore = viewModel.challengeScore,
                     challengeTotalTargets = viewModel.challengeTotalTargets,
+                    lastFocusReport = viewModel.lastFocusReport,
                     onChallengeResult = { hit, total -> viewModel.recordChallengeResult(hit, total) },
+                    onBehavioralReport = { report -> viewModel.recordBehavioralReport(report) },
                     onStartScanning = callbacks.onStartStudentScanning,
                     onStopScanning = callbacks.onStopStudentScanning,
                     onNext = { viewModel.proceedStudentToNext() }
@@ -459,7 +469,9 @@ private fun StudentSection(
     studentStatusMessage: String? = null,
     challengeScore: Int = 0,
     challengeTotalTargets: Int = 0,
+    lastFocusReport: CognitiveFocusReport? = null,
     onChallengeResult: (hit: Int, total: Int) -> Unit = { _, _ -> },
+    onBehavioralReport: (CognitiveFocusReport) -> Unit = {},
     onStartScanning: () -> Unit,
     onStopScanning: () -> Unit,
     onNext: () -> Unit = {}
@@ -477,6 +489,9 @@ private fun StudentSection(
     var currentTimeMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var isGameOver by remember { mutableStateOf(false) }
     var hasProceededToNext by remember { mutableStateOf(false) }
+
+    val recordedTaps = remember { mutableStateListOf<TapEvent>() }
+    val recordedExpired = remember { mutableStateListOf<ExpiredTargetEvent>() }
 
     val targetsGoal = 18
 
@@ -503,6 +518,8 @@ private fun StudentSection(
             targetsHit = 0
             isGameOver = false
             hasProceededToNext = false
+            recordedTaps.clear()
+            recordedExpired.clear()
 
             // Initial 6 orbs spawn with gentle staggered bloom
             val initial = mutableListOf<ReflexTarget>()
@@ -518,6 +535,23 @@ private fun StudentSection(
             while (!isGameOver && studentPhase == StudentPhase.PROBING_NEIGHBORS) {
                 val nowTime = System.currentTimeMillis()
                 currentTimeMillis = nowTime
+
+                // Track orbs that expired without being tapped
+                val newlyExpired = activeTargets.filter { target ->
+                    !target.isTapped && (nowTime - target.spawnTimeMillis >= target.lifetimeMillis) &&
+                    recordedExpired.none { it.targetId == target.id }
+                }
+                for (e in newlyExpired) {
+                    recordedExpired.add(
+                        ExpiredTargetEvent(
+                            targetId = e.id,
+                            spawnTimeMillis = e.spawnTimeMillis,
+                            expiredTimeMillis = nowTime,
+                            targetRelX = e.relX,
+                            targetRelY = e.relY
+                        )
+                    )
+                }
 
                 // Count active orbs that are not tapped and haven't expired
                 val livingCount = activeTargets.count { target ->
@@ -552,6 +586,12 @@ private fun StudentSection(
                 if (totalTargetsSpawned >= targetsGoal && livingCount == 0) {
                     activeTargets = emptyList()
                     isGameOver = true
+                    val report = BehavioralTelemetryEngine.analyze(
+                        taps = recordedTaps.toList(),
+                        expired = recordedExpired.toList(),
+                        totalTargetsGoal = targetsGoal
+                    )
+                    onBehavioralReport(report)
                     onChallengeResult(targetsHit, totalTargetsSpawned)
                 }
 
@@ -772,43 +812,69 @@ private fun StudentSection(
                                         modifier = Modifier
                                             .offset(x = xDp, y = yDp)
                                             .size(targetSize)
-                                            .clickable(
-                                                interactionSource = remember { MutableInteractionSource() },
-                                                indication = null
-                                            ) {
-                                                // Mark tapped orb immediately
-                                                activeTargets = activeTargets.map {
-                                                    if (it.id == target.id) it.copy(isTapped = true) else it
-                                                }
-                                                targetsHit++
-                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                onChallengeResult(targetsHit, totalTargetsSpawned)
+                                            .pointerInput(target.id) {
+                                                detectTapGestures { offset ->
+                                                    if (target.isTapped) return@detectTapGestures
+                                                    val nowTapTime = System.currentTimeMillis()
+                                                    if (nowTapTime - target.spawnTimeMillis >= target.lifetimeMillis) return@detectTapGestures
 
-                                                // Check if active orbs fall below 3, keep spawning until 6
-                                                val nowTime = System.currentTimeMillis()
-                                                val livingCount = activeTargets.count { t ->
-                                                    !t.isTapped && (nowTime - t.spawnTimeMillis < t.lifetimeMillis)
-                                                }
-                                                if (livingCount < 3 && totalTargetsSpawned < targetsGoal) {
-                                                    val needed = (6 - livingCount).coerceAtMost(targetsGoal - totalTargetsSpawned)
-                                                    if (needed > 0) {
-                                                        val living = activeTargets.filter { t ->
-                                                            !t.isTapped && (nowTime - t.spawnTimeMillis < t.lifetimeMillis)
-                                                        }.toMutableList()
-                                                        val newOrbs = mutableListOf<ReflexTarget>()
-                                                        for (k in 0 until needed) {
-                                                            val newOrb = generateNewTarget(
-                                                                id = totalTargetsSpawned + k,
-                                                                existingTargets = living + newOrbs
-                                                            ).copy(
-                                                                spawnTimeMillis = nowTime + (k * 80L),
-                                                                lifetimeMillis = 1200L
-                                                            )
-                                                            newOrbs.add(newOrb)
+                                                    val targetSizePx = size.width.toFloat()
+                                                    val centerX = targetSizePx / 2f
+                                                    val centerY = targetSizePx / 2f
+                                                    val dx = offset.x - centerX
+                                                    val dy = offset.y - centerY
+                                                    val radius = (targetSizePx / 2f).coerceAtLeast(1f)
+                                                    val dist = sqrt(dx * dx + dy * dy)
+                                                    val normalizedRadial = (dist / radius).coerceIn(0f, 1f)
+                                                    val latency = (nowTapTime - target.spawnTimeMillis).coerceAtLeast(0L)
+
+                                                    recordedTaps.add(
+                                                        TapEvent(
+                                                            targetId = target.id,
+                                                            tapTimeMillis = nowTapTime,
+                                                            spawnTimeMillis = target.spawnTimeMillis,
+                                                            latencyMs = latency,
+                                                            targetRelX = target.relX,
+                                                            targetRelY = target.relY,
+                                                            touchOffsetX = dx,
+                                                            touchOffsetY = dy,
+                                                            normalizedRadialOffset = normalizedRadial
+                                                        )
+                                                    )
+
+                                                    // Mark tapped orb immediately
+                                                    activeTargets = activeTargets.map {
+                                                        if (it.id == target.id) it.copy(isTapped = true) else it
+                                                    }
+                                                    targetsHit++
+                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                    onChallengeResult(targetsHit, totalTargetsSpawned)
+
+                                                    // Check if active orbs fall below 3, keep spawning until 6
+                                                    val livingCount = activeTargets.count { t ->
+                                                        !t.isTapped && (nowTapTime - t.spawnTimeMillis < t.lifetimeMillis)
+                                                    }
+                                                    if (livingCount < 3 && totalTargetsSpawned < targetsGoal) {
+                                                        val needed = (6 - livingCount).coerceAtMost(targetsGoal - totalTargetsSpawned)
+                                                        if (needed > 0) {
+                                                            val living = activeTargets.filter { t ->
+                                                                !t.isTapped && (nowTapTime - t.spawnTimeMillis < t.lifetimeMillis)
+                                                            }.toMutableList()
+                                                            val newOrbs = mutableListOf<ReflexTarget>()
+                                                            for (k in 0 until needed) {
+                                                                val newOrb = generateNewTarget(
+                                                                    id = totalTargetsSpawned + k,
+                                                                    existingTargets = living + newOrbs
+                                                                ).copy(
+                                                                    spawnTimeMillis = nowTapTime + (k * 80L),
+                                                                    lifetimeMillis = 1200L
+                                                                )
+                                                                newOrbs.add(newOrb)
+                                                            }
+                                                            activeTargets = activeTargets + newOrbs
+                                                            totalTargetsSpawned += newOrbs.size
+                                                            onChallengeResult(targetsHit, totalTargetsSpawned)
                                                         }
-                                                        activeTargets = activeTargets + newOrbs
-                                                        totalTargetsSpawned += newOrbs.size
-                                                        onChallengeResult(targetsHit, totalTargetsSpawned)
                                                     }
                                                 }
                                             },
@@ -855,40 +921,161 @@ private fun StudentSection(
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(24.dp),
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 20.dp, vertical = 16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
                         Surface(
-                            shape = RoundedCornerShape(24.dp),
+                            shape = RoundedCornerShape(20.dp),
                             color = ratingColor.copy(alpha = 0.12f),
                             border = BorderStroke(1.5.dp, ratingColor)
                         ) {
                             Text(
                                 text = rating,
-                                fontSize = 26.sp,
+                                fontSize = 22.sp,
                                 fontWeight = FontWeight.Black,
                                 letterSpacing = 2.sp,
                                 color = ratingColor,
-                                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
+                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
                             )
                         }
-                        Spacer(modifier = Modifier.height(20.dp))
+                        Spacer(modifier = Modifier.height(10.dp))
                         Text(
                             text = "$targetsHit / $totalTargetsSpawned",
-                            fontSize = 36.sp,
+                            fontSize = 32.sp,
                             fontWeight = FontWeight.Black,
                             fontFamily = FontFamily.Monospace,
                             color = textPrimary
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             text = "ACCURACY ($accuracy%)",
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 1.sp,
                             color = textMuted
                         )
+
+                        // Behavioral Anti-Proxy Verification Card
+                        if (lastFocusReport != null) {
+                            Spacer(modifier = Modifier.height(14.dp))
+                            val isProxy = lastFocusReport.classification == FocusClassification.DIVIDED_ATTENTION_PROXY
+                            val isBot = lastFocusReport.classification == FocusClassification.AUTOMATED_SCRIPT
+                            val isFocused = lastFocusReport.classification == FocusClassification.FOCUSED_SINGLE_DEVICE
+
+                            val badgeColor = when {
+                                isFocused -> Color(0xFF00F5A0)
+                                isProxy || isBot -> Color(0xFFEF4444)
+                                else -> Color(0xFFF59E0B)
+                            }
+                            val badgeBg = badgeColor.copy(alpha = 0.10f)
+
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = badgeBg,
+                                border = BorderStroke(1.dp, badgeColor.copy(alpha = 0.45f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = when {
+                                                isFocused -> Icons.Default.CheckCircle
+                                                isProxy || isBot -> Icons.Default.Warning
+                                                else -> Icons.Default.Security
+                                            },
+                                            contentDescription = null,
+                                            tint = badgeColor,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Text(
+                                            text = when (lastFocusReport.classification) {
+                                                FocusClassification.FOCUSED_SINGLE_DEVICE -> "SINGLE-DEVICE HUMAN VERIFIED"
+                                                FocusClassification.DIVIDED_ATTENTION_PROXY -> "DIVIDED ATTENTION DETECTED (PROXY)"
+                                                FocusClassification.AUTOMATED_SCRIPT -> "AUTOMATION / BOT PATTERN"
+                                                FocusClassification.INATTENTIVE -> "INATTENTIVE / UNVERIFIED"
+                                            },
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Black,
+                                            letterSpacing = 0.5.sp,
+                                            color = badgeColor
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.height(8.dp))
+
+                                    // Behavioral Telemetry Metrics
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceEvenly
+                                    ) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Text(
+                                                text = "${lastFocusReport.meanLatencyMs.toInt()} ms",
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = textPrimary
+                                            )
+                                            Text(
+                                                text = "AVG RT",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = textMuted
+                                            )
+                                        }
+
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Text(
+                                                text = String.format(java.util.Locale.US, "%.2f", lastFocusReport.latencyOscillationIndex),
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = if (lastFocusReport.latencyOscillationIndex > 0.50f) Color(0xFFEF4444) else textPrimary
+                                            )
+                                            Text(
+                                                text = "SWITCH INDEX",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = textMuted
+                                            )
+                                        }
+
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Text(
+                                                text = "${(lastFocusReport.focusIndex * 100).toInt()}%",
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = badgeColor
+                                            )
+                                            Text(
+                                                text = "FOCUS INDEX",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = textMuted
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = lastFocusReport.diagnosticReason,
+                                        fontSize = 10.sp,
+                                        color = textMuted,
+                                        textAlign = TextAlign.Center,
+                                        lineHeight = 13.sp
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -1029,6 +1216,8 @@ private fun StudentSection(
 
         // Student Bottom Action Button
         val showNextButton = isGameOver && !hasProceededToNext
+        val isProxyOrBotFlagged = lastFocusReport?.classification == FocusClassification.DIVIDED_ATTENTION_PROXY ||
+                lastFocusReport?.classification == FocusClassification.AUTOMATED_SCRIPT
 
         Button(
             onClick = {
@@ -1047,6 +1236,7 @@ private fun StudentSection(
             shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = when {
+                    showNextButton && isProxyOrBotFlagged -> alertRed
                     showNextButton -> Color(0xFF059669)
                     isScanning -> alertRed
                     isUnverified -> Color(0xFFD97706)
@@ -1061,7 +1251,7 @@ private fun StudentSection(
             ) {
                 if (showNextButton) {
                     Text(
-                        text = "Next",
+                        text = if (isProxyOrBotFlagged) "Divided Attention Flagged (Proceed)" else "Confirm Attendance",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
                         color = Color.White

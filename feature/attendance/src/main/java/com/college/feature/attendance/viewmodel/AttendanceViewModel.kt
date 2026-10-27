@@ -138,17 +138,31 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var detectedSessionSalt by mutableStateOf("------")
     val discoveredPeers = mutableStateMapOf<String, PeerData>()
 
-    // Interactive Human Attention Challenge State
+    // Interactive Human Attention Challenge & Behavioral Telemetry State
     var challengeScore by mutableIntStateOf(0)
     var challengeTotalTargets by mutableIntStateOf(0)
+    var lastFocusReport by mutableStateOf<com.college.feature.attendance.telemetry.CognitiveFocusReport?>(null)
     val challengeScorePercentage: Int
         get() = if (challengeTotalTargets > 0) (challengeScore * 100) / challengeTotalTargets else 0
     val isChallengePassed: Boolean
-        get() = challengeTotalTargets == 0 || challengeScorePercentage >= 60
+        get() = (challengeTotalTargets == 0 || challengeScorePercentage >= 60) &&
+                (lastFocusReport == null || (
+                    lastFocusReport?.classification != com.college.feature.attendance.telemetry.FocusClassification.DIVIDED_ATTENTION_PROXY &&
+                    lastFocusReport?.classification != com.college.feature.attendance.telemetry.FocusClassification.AUTOMATED_SCRIPT
+                ))
 
     fun recordChallengeResult(hit: Int, total: Int) {
         challengeScore = hit
         challengeTotalTargets = total
+    }
+
+    fun recordBehavioralReport(report: com.college.feature.attendance.telemetry.CognitiveFocusReport) {
+        lastFocusReport = report
+        if (report.classification == com.college.feature.attendance.telemetry.FocusClassification.DIVIDED_ATTENTION_PROXY ||
+            report.classification == com.college.feature.attendance.telemetry.FocusClassification.AUTOMATED_SCRIPT
+        ) {
+            studentStatusMessage = report.diagnosticReason
+        }
     }
 
     // Top 3 desk neighbours with median RSSI >= -90 dBm (calibrated for classroom RF attenuation)
@@ -785,6 +799,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         studentStatusMessage = null
         challengeScore = 0
         challengeTotalTargets = 0
+        lastFocusReport = null
         onStartScanning?.invoke()
         startStudentDiscoveryWindow()
     }
@@ -809,6 +824,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         } else if (isChallengePassed) {
             StudentPhase.VERIFIED_PRESENT
         } else {
+            if (studentStatusMessage == null) {
+                studentStatusMessage = lastFocusReport?.diagnosticReason ?: "Focus verification requirements not met"
+            }
             StudentPhase.UNVERIFIED_FLAGGED
         }
         submitMyNeighborsToCloud(keepRadioActive = false)
