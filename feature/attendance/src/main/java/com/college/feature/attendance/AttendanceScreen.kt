@@ -1,6 +1,7 @@
 package com.college.feature.attendance
 
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
@@ -14,6 +15,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -24,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.FactCheck
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -38,6 +41,8 @@ import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WifiTethering
@@ -48,14 +53,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -68,6 +80,8 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
+import kotlin.random.Random
+import kotlinx.coroutines.delay
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import com.college.core.model.Role
@@ -84,6 +98,7 @@ import com.college.feature.attendance.viewmodel.StudentPhase
 import com.college.feature.attendance.viewmodel.TeacherViewMode
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.pow
 import kotlin.math.sin
 
 /**
@@ -265,8 +280,12 @@ fun AttendanceScreen(
                     deskNeighbours = deskNeighbours,
                     studentDiscoveryRemainingSeconds = studentDiscoveryRemainingSeconds,
                     studentStatusMessage = studentStatusMessage,
+                    challengeScore = viewModel.challengeScore,
+                    challengeTotalTargets = viewModel.challengeTotalTargets,
+                    onChallengeResult = { hit, total -> viewModel.recordChallengeResult(hit, total) },
                     onStartScanning = callbacks.onStartStudentScanning,
-                    onStopScanning = callbacks.onStopStudentScanning
+                    onStopScanning = callbacks.onStopStudentScanning,
+                    onNext = { viewModel.proceedStudentToNext() }
                 )
 
                 else -> Box(
@@ -288,8 +307,149 @@ fun AttendanceScreen(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STUDENT SECTION (PRECISION CYBER EMERALD RADAR)
+// STUDENT SECTION (HUMAN ATTENTION CHALLENGE & BLE MESH)
 // ─────────────────────────────────────────────────────────────────────────────
+private data class ReflexTarget(
+    val id: Int,
+    val relX: Float,
+    val relY: Float,
+    val isGolden: Boolean = false,
+    val isTapped: Boolean = false,
+    val spawnTimeMillis: Long = 0L,
+    val lifetimeMillis: Long = 1200L
+)
+
+private fun generateNewTarget(
+    id: Int,
+    existingTargets: List<ReflexTarget>
+): ReflexTarget {
+    var bestX = 0.5f
+    var bestY = 0.5f
+    var maxDistToNearest = -1f
+    // High minimum distance so orbs never spawn close to each other
+    val minDistance = 0.30f
+    val minDistanceSq = minDistance * minDistance
+
+    for (attempt in 0 until 120) {
+        val candidateX = 0.08f + (Random.nextFloat() * 0.84f)
+        val candidateY = 0.08f + (Random.nextFloat() * 0.84f)
+
+        if (existingTargets.isEmpty()) {
+            bestX = candidateX
+            bestY = candidateY
+            break
+        }
+
+        var nearestDistSq = Float.MAX_VALUE
+        for (p in existingTargets) {
+            val dx = candidateX - p.relX
+            val dy = candidateY - p.relY
+            val d2 = dx * dx + dy * dy
+            if (d2 < nearestDistSq) {
+                nearestDistSq = d2
+            }
+        }
+
+        if (nearestDistSq >= minDistanceSq) {
+            bestX = candidateX
+            bestY = candidateY
+            break
+        }
+
+        if (nearestDistSq > maxDistToNearest) {
+            maxDistToNearest = nearestDistSq
+            bestX = candidateX
+            bestY = candidateY
+        }
+    }
+
+    val isOrangeSpirit = (Random.nextFloat() < 0.10f)
+    return ReflexTarget(
+        id = id,
+        relX = bestX,
+        relY = bestY,
+        isGolden = isOrangeSpirit,
+        isTapped = false,
+        spawnTimeMillis = System.currentTimeMillis(),
+        lifetimeMillis = 1200L
+    )
+}
+
+/**
+ * Tsoding Musializer (github.com/tsoding/musializer) circle shader port:
+ *
+ * void main() {
+ *     float r = radius;
+ *     vec2 p = fragTexCoord - vec2(0.5);
+ *     if (length(p) <= 0.5) {
+ *         float s = length(p) - r;
+ *         if (s <= 0) {
+ *             finalColor = fragColor*1.5;
+ *         } else {
+ *             float t = 1 - s / (0.5 - r);
+ *             finalColor = mix(vec4(fragColor.xyz, 0), fragColor*1.5, pow(t, power));
+ *         }
+ *     } else {
+ *         finalColor = vec4(0);
+ *     }
+ * }
+ */
+private fun getTsodingOrbColorStops(
+    baseColor: Color,
+    pulseAlpha: Float = 1.0f
+): Array<Pair<Float, Color>> {
+    val r15 = (baseColor.red * 1.5f).coerceIn(0f, 1f)
+    val g15 = (baseColor.green * 1.5f).coerceIn(0f, 1f)
+    val b15 = (baseColor.blue * 1.5f).coerceIn(0f, 1f)
+
+    // Center hotspot (core bright center)
+    val centerColor = Color(
+        red = (r15 * 0.65f + 0.35f).coerceIn(0f, 1f),
+        green = (g15 * 0.65f + 0.35f).coerceIn(0f, 1f),
+        blue = (b15 * 0.65f + 0.35f).coerceIn(0f, 1f),
+        alpha = pulseAlpha
+    )
+    val coreColor = Color(r15, g15, b15, pulseAlpha)
+
+    // Tsoding Musializer power=4.0 falloff sampled cleanly:
+    // Fades completely to 100% transparent well before the boundary to avoid GPU rasterization artifacts
+    return arrayOf(
+        0.00f to centerColor,
+        0.14f to coreColor,
+        0.28f to coreColor.copy(alpha = 0.50f * pulseAlpha),
+        0.44f to coreColor.copy(alpha = 0.18f * pulseAlpha),
+        0.62f to coreColor.copy(alpha = 0.04f * pulseAlpha),
+        0.80f to Color.Transparent,
+        1.00f to Color.Transparent
+    )
+}
+
+private fun DrawScope.drawTsodingGlowingOrb(
+    isGolden: Boolean,
+    pulseAlpha: Float
+) {
+    val center = Offset(size.width / 2f, size.height / 2f)
+    val maxRadius = size.width / 2f
+
+    // Tsoding Musializer signature palette: Vibrant Emerald Green & Solar Orange
+    val baseColor = if (isGolden) Color(0xFFFF9100) else Color(0xFF00F5A0)
+
+    val stops = getTsodingOrbColorStops(
+        baseColor = baseColor,
+        pulseAlpha = pulseAlpha
+    )
+
+    drawCircle(
+        brush = Brush.radialGradient(
+            colorStops = stops,
+            center = center,
+            radius = maxRadius
+        ),
+        radius = maxRadius,
+        center = center
+    )
+}
+
 @Composable
 private fun StudentSection(
     studentPhase: StudentPhase,
@@ -297,44 +457,111 @@ private fun StudentSection(
     deskNeighbours: List<PeerData>,
     studentDiscoveryRemainingSeconds: Int = 0,
     studentStatusMessage: String? = null,
+    challengeScore: Int = 0,
+    challengeTotalTargets: Int = 0,
+    onChallengeResult: (hit: Int, total: Int) -> Unit = { _, _ -> },
     onStartScanning: () -> Unit,
-    onStopScanning: () -> Unit
+    onStopScanning: () -> Unit,
+    onNext: () -> Unit = {}
 ) {
     val isScanning = studentPhase == StudentPhase.LISTENING_FOR_TEACHER ||
             studentPhase == StudentPhase.PROBING_NEIGHBORS
     val isVerified = studentPhase == StudentPhase.VERIFIED_PRESENT
     val isUnverified = studentPhase == StudentPhase.UNVERIFIED_FLAGGED
 
-    // 360-degree rotating precision radar sweep beam
-    val infiniteTransition = rememberInfiniteTransition(label = "RadarSweep")
-    val sweepAngle by infiniteTransition.animateFloat(
+    val haptic = LocalHapticFeedback.current
+
+    var targetsHit by remember { mutableIntStateOf(0) }
+    var totalTargetsSpawned by remember { mutableIntStateOf(0) }
+    var activeTargets by remember { mutableStateOf<List<ReflexTarget>>(emptyList()) }
+    var currentTimeMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var isGameOver by remember { mutableStateOf(false) }
+    var hasProceededToNext by remember { mutableStateOf(false) }
+
+    val targetsGoal = 18
+
+    val spiritTransition = rememberInfiniteTransition(label = "sein_spirit")
+    val spiritPhase by spiritTransition.animateFloat(
         initialValue = 0f,
-        targetValue = 360f,
+        targetValue = (2 * Math.PI).toFloat(),
         animationSpec = infiniteRepeatable(
-            animation = tween(2400, easing = LinearEasing)
+            animation = tween(3400, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
         ),
-        label = "SweepAngle"
+        label = "spirit_phase"
     )
 
-    // Center pulse animation
-    val centerPulseScale by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 1.45f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "CenterPulseScale"
-    )
-    val centerPulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 0.50f,
-        targetValue = 0.02f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "CenterPulseAlpha"
-    )
+    val liveAccuracy: Int = remember(targetsHit, totalTargetsSpawned) {
+        if (totalTargetsSpawned > 0) (targetsHit * 100) / totalTargetsSpawned else 0
+    }
+    val challengeScorePercentage: Int = remember(challengeScore, challengeTotalTargets) {
+        if (challengeTotalTargets > 0) (challengeScore * 100) / challengeTotalTargets else 0
+    }
+
+    LaunchedEffect(studentPhase) {
+        if (studentPhase == StudentPhase.PROBING_NEIGHBORS) {
+            targetsHit = 0
+            isGameOver = false
+            hasProceededToNext = false
+
+            // Initial 6 orbs spawn with gentle staggered bloom
+            val initial = mutableListOf<ReflexTarget>()
+            val now = System.currentTimeMillis()
+            for (i in 0 until 6) {
+                val t = generateNewTarget(id = i, existingTargets = initial)
+                initial.add(t.copy(spawnTimeMillis = now + (i * 80L), lifetimeMillis = 1200L))
+            }
+            activeTargets = initial
+            totalTargetsSpawned = initial.size
+            onChallengeResult(targetsHit, totalTargetsSpawned)
+
+            while (!isGameOver && studentPhase == StudentPhase.PROBING_NEIGHBORS) {
+                val nowTime = System.currentTimeMillis()
+                currentTimeMillis = nowTime
+
+                // Count active orbs that are not tapped and haven't expired
+                val livingCount = activeTargets.count { target ->
+                    !target.isTapped && (nowTime - target.spawnTimeMillis < target.lifetimeMillis)
+                }
+
+                // If active orbs fall below 3, keep spawning until there are 6!
+                if (livingCount < 3 && totalTargetsSpawned < targetsGoal) {
+                    val needed = (6 - livingCount).coerceAtMost(targetsGoal - totalTargetsSpawned)
+                    if (needed > 0) {
+                        val living = activeTargets.filter { target ->
+                            !target.isTapped && (nowTime - target.spawnTimeMillis < target.lifetimeMillis)
+                        }.toMutableList()
+                        val newOrbs = mutableListOf<ReflexTarget>()
+                        for (k in 0 until needed) {
+                            val newOrb = generateNewTarget(
+                                id = totalTargetsSpawned + k,
+                                existingTargets = living + newOrbs
+                            ).copy(
+                                spawnTimeMillis = nowTime + (k * 80L),
+                                lifetimeMillis = 1200L
+                            )
+                            newOrbs.add(newOrb)
+                        }
+                        activeTargets = activeTargets + newOrbs
+                        totalTargetsSpawned += newOrbs.size
+                        onChallengeResult(targetsHit, totalTargetsSpawned)
+                    }
+                }
+
+                // Complete when all targets have spawned and all living orbs have completed
+                if (totalTargetsSpawned >= targetsGoal && livingCount == 0) {
+                    activeTargets = emptyList()
+                    isGameOver = true
+                    onChallengeResult(targetsHit, totalTargetsSpawned)
+                }
+
+                delay(16L)
+            }
+        } else {
+            activeTargets = emptyList()
+            isGameOver = false
+        }
+    }
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -346,137 +573,69 @@ private fun StudentSection(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Student-friendly Status Pill
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = when {
-                    isVerified -> Color(0x2800F5A0)
-                    isUnverified -> Color(0x28F59E0B)
-                    isScanning -> Color(0x2000F5A0)
-                    else -> logBg
-                },
-                border = BorderStroke(
-                    1.dp,
-                    when {
-                        isVerified -> Color(0xFF00F5A0)
-                        isUnverified -> Color(0xFFF59E0B)
-                        isScanning -> Color(0xFF00F5A0)
-                        else -> cardBorder
-                    }
-                )
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(7.dp)
-                            .clip(CircleShape)
-                            .background(
-                                when {
-                                    isVerified -> Color(0xFF00F5A0)
-                                    isUnverified -> Color(0xFFF59E0B)
-                                    isScanning -> Color(0xFF00F5A0)
-                                    else -> textMuted
-                                }
-                            )
-                    )
-                    Text(
-                        text = when (studentPhase) {
-                            StudentPhase.VERIFIED_PRESENT -> "MARKED PRESENT ✓"
-                            StudentPhase.UNVERIFIED_FLAGGED -> "UNVERIFIED (ISOLATED)"
-                            StudentPhase.PROBING_NEIGHBORS -> "PROBING PEERS (${studentDiscoveryRemainingSeconds}s)"
-                            StudentPhase.LISTENING_FOR_TEACHER -> "LOCKING BEACON..."
-                            StudentPhase.DISCOVERY_COMPLETE -> "PROBES COMPLETE"
-                            StudentPhase.STANDBY -> "READY TO SCAN"
-                        },
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = when {
+            // Student-friendly Status Pill (only shown when in standby/ready to scan)
+            if (studentPhase != StudentPhase.PROBING_NEIGHBORS && !isUnverified && !isVerified) {
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = when {
+                        isVerified -> Color(0x2800F5A0)
+                        isUnverified -> Color(0x28F59E0B)
+                        isScanning -> Color(0x2000F5A0)
+                        else -> logBg
+                    },
+                    border = BorderStroke(
+                        1.dp,
+                        when {
                             isVerified -> Color(0xFF00F5A0)
                             isUnverified -> Color(0xFFF59E0B)
                             isScanning -> Color(0xFF00F5A0)
-                            else -> textMuted
+                            else -> cardBorder
                         }
                     )
-                }
-            }
-
-            // Clean Class Session Pill (non-technical)
-            if (detectedSessionId.isNotEmpty() && detectedSessionId != "None" && detectedSessionId != "----") {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = cardBg,
-                    border = BorderStroke(1.dp, cardBorder)
                 ) {
-                    Text(
-                        text = "Session #$detectedSessionId",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = textPrimary,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                    )
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(7.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    when {
+                                        isVerified -> Color(0xFF00F5A0)
+                                        isUnverified -> Color(0xFFF59E0B)
+                                        isScanning -> Color(0xFF00F5A0)
+                                        else -> textMuted
+                                    }
+                                )
+                        )
+                        Text(
+                            text = when (studentPhase) {
+                                StudentPhase.VERIFIED_PRESENT -> "MARKED PRESENT ✓"
+                                StudentPhase.UNVERIFIED_FLAGGED -> "UNVERIFIED (ISOLATED)"
+                                StudentPhase.LISTENING_FOR_TEACHER -> "LOCKING BEACON..."
+                                StudentPhase.DISCOVERY_COMPLETE -> "PROBES COMPLETE"
+                                else -> "READY TO SCAN"
+                            },
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = when {
+                                isVerified -> Color(0xFF00F5A0)
+                                isUnverified -> Color(0xFFF59E0B)
+                                isScanning -> Color(0xFF00F5A0)
+                                else -> textMuted
+                            }
+                        )
+                    }
                 }
+            } else {
+                Spacer(modifier = Modifier.width(1.dp))
             }
         }
 
-        // Live Scanning Progress Bar (Discovery window active)
-        if (studentPhase == StudentPhase.PROBING_NEIGHBORS) {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = Color(0xFF081C14),
-                border = BorderStroke(1.dp, Color(0x5500F5A0)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Sensors,
-                                contentDescription = null,
-                                tint = Color(0xFF00F5A0),
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Text(
-                                text = "EXCHANGING DESK PROBES",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Black,
-                                letterSpacing = 0.5.sp,
-                                color = Color(0xFF00F5A0)
-                            )
-                        }
-                        Text(
-                            text = "${studentDiscoveryRemainingSeconds}s remaining",
-                            fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF00F5A0)
-                        )
-                    }
-                    LinearProgressIndicator(
-                        progress = { (studentDiscoveryRemainingSeconds / 15f).coerceIn(0f, 1f) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(2.dp)),
-                        color = Color(0xFF00F5A0),
-                        trackColor = Color(0x2200F5A0)
-                    )
-                }
-            }
-        } else if (studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
+        if (studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
             Surface(
                 shape = RoundedCornerShape(10.dp),
                 color = cardBg,
@@ -534,333 +693,140 @@ private fun StudentSection(
         }
 
         // ─────────────────────────────────────────────────────────────────────
-        // PRECISION CYBER EMERALD RADAR VIEWPORT (SHIFTED UP)
+        // STUDENT INTERACTIVE VIEWPORT (5-TARGET WAVE REFLEX GAME)
         // ─────────────────────────────────────────────────────────────────────
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f),
-            contentAlignment = Alignment.TopCenter
+                .weight(1f)
+                .clip(RoundedCornerShape(16.dp))
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            Color(0xFF07120D),
+                            Color(0xFF040A07),
+                            Color(0xFF0B1410)
+                        )
+                    )
+                )
+                .border(1.dp, Color(0x3300F5A0), RoundedCornerShape(16.dp))
         ) {
-            val density = LocalDensity.current
-            val radarSizePx = (minOf(constraints.maxWidth, constraints.maxHeight).toFloat() * 0.94f)
-                .coerceAtLeast(100f)
-            val radarRadiusPx = radarSizePx / 2f
-            val radarDiameterDp = with(density) { radarSizePx.toDp() }
-
-            Box(
-                modifier = Modifier
-                    .size(radarDiameterDp)
-                    .padding(top = 4.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                // 1. Radar Screen Canvas (Pure Obsidian-Emerald Sonar Instrument)
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    val centerOffset = Offset(radarRadiusPx, radarRadiusPx)
-
-                    // Deep Obsidian-Carbon Radial Core
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                Color(0xFF091712),
-                                Color(0xFF040A07),
-                                Color(0xFF020403)
-                            ),
-                            center = centerOffset,
-                            radius = radarRadiusPx
-                        ),
-                        radius = radarRadiusPx,
-                        center = centerOffset
-                    )
-
-                    // Outer bezel ring with emerald accent
-                    drawCircle(
-                        color = if (isVerified) Color(0x9900F5A0) else Color(0x5500F5A0),
-                        radius = radarRadiusPx,
-                        center = centerOffset,
-                        style = Stroke(width = 1.8.dp.toPx())
-                    )
-
-                    // 12 Azimuth Compass / Navigation Tick Marks around the rim
-                    for (angle in 0 until 360 step 30) {
-                        val isMajor = angle % 90 == 0
-                        val tickLength = if (isMajor) 8.dp.toPx() else 4.dp.toPx()
-                        val rad = Math.toRadians(angle.toDouble())
-                        val cosVal = cos(rad).toFloat()
-                        val sinVal = sin(rad).toFloat()
-                        val startX = radarRadiusPx + (radarRadiusPx - tickLength) * cosVal
-                        val startY = radarRadiusPx + (radarRadiusPx - tickLength) * sinVal
-                        val endX = radarRadiusPx + radarRadiusPx * cosVal
-                        val endY = radarRadiusPx + radarRadiusPx * sinVal
-                        drawLine(
-                            color = if (isMajor) Color(0x8800F5A0) else Color(0x3000F5A0),
-                            start = Offset(startX, startY),
-                            end = Offset(endX, endY),
-                            strokeWidth = if (isMajor) 1.5.dp.toPx() else 1.dp.toPx()
-                        )
-                    }
-
-                    // Concentric Range Rings (25%, 50%, 75%)
-                    val ringCount = 4
-                    for (i in 1 until ringCount) {
-                        val ringRadius = radarRadiusPx * (i.toFloat() / ringCount)
-                        drawCircle(
-                            color = Color(0x1800F5A0),
-                            radius = ringRadius,
-                            center = centerOffset,
-                            style = Stroke(width = 1.dp.toPx())
-                        )
-                    }
-
-                    // Precision Crosshairs
-                    val crosshairColor = Color(0x1800F5A0)
-                    drawLine(
-                        color = crosshairColor,
-                        start = Offset(radarRadiusPx * 0.12f, radarRadiusPx),
-                        end = Offset(radarRadiusPx * 1.88f, radarRadiusPx),
-                        strokeWidth = 1.dp.toPx()
-                    )
-                    drawLine(
-                        color = crosshairColor,
-                        start = Offset(radarRadiusPx, radarRadiusPx * 0.12f),
-                        end = Offset(radarRadiusPx, radarRadiusPx * 1.88f),
-                        strokeWidth = 1.dp.toPx()
-                    )
-
-                    // Laser Phosphor Sweeping Beam (Ultra-tight, sharp laser sweep line)
-                    if (isScanning) {
-                        rotate(degrees = sweepAngle, pivot = centerOffset) {
-                            val sweepGradient = Brush.sweepGradient(
-                                0.0f to Color.Transparent,
-                                0.80f to Color.Transparent,
-                                0.88f to Color(0x0A00F5A0),
-                                0.94f to Color(0x2200F5A0),
-                                0.98f to Color(0x5500F5A0),
-                                1.0f to Color(0xDD00F5A0),
-                                center = centerOffset
-                            )
+            val viewportW = maxWidth
+            val viewportH = maxHeight
+            when {
+                studentPhase == StudentPhase.PROBING_NEIGHBORS && !isGameOver -> {
+                    // Active Wave Popping Gameplay (Arcade Visuals)
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        // Atmospheric Spirit Forest Ambiance
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            val center = Offset(size.width / 2f, size.height / 2f)
+                            // Ambient soft central spiritual glow
                             drawCircle(
-                                brush = sweepGradient,
-                                radius = radarRadiusPx,
-                                center = centerOffset
-                            )
-                            // Razor-sharp leading laser line
-                            drawLine(
-                                color = Color(0xFF00F5A0),
-                                start = centerOffset,
-                                end = Offset(radarRadiusPx * 2f, radarRadiusPx),
-                                strokeWidth = 2.dp.toPx()
-                            )
-                        }
-                    }
-
-                    // Verified Emerald Pulse Bloom
-                    if (isVerified) {
-                        val verifiedBrush = Brush.radialGradient(
-                            colors = listOf(
-                                Color(0x4000F5A0),
-                                Color(0x1000F5A0),
-                                Color.Transparent
-                            ),
-                            center = centerOffset,
-                            radius = radarRadiusPx
-                        )
-                        drawCircle(
-                            brush = verifiedBrush,
-                            radius = radarRadiusPx,
-                            center = centerOffset
-                        )
-                    }
-                }
-
-                // 2. Center Node: YOU (Minimalist Tactical Target)
-                Column(
-                    modifier = Modifier.align(Alignment.Center),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Box(
-                        modifier = Modifier.size(44.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (isScanning) {
-                            Box(
-                                modifier = Modifier
-                                    .size((44 * centerPulseScale).dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF00F5A0).copy(alpha = centerPulseAlpha))
-                            )
-                        }
-
-                        Box(
-                            modifier = Modifier
-                                .size(34.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFF081811))
-                                .border(
-                                    1.5.dp,
-                                    Color(0xFF00F5A0),
-                                    CircleShape
+                                brush = Brush.radialGradient(
+                                    listOf(
+                                        Color(0x1400F5A0),
+                                        Color(0x0600F5A0),
+                                        Color.Transparent
+                                    ),
+                                    center = center,
+                                    radius = size.width * 0.65f
                                 ),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (isVerified) {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = "Verified",
-                                    tint = Color(0xFF00F5A0),
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            } else {
-                                Box(
-                                    modifier = Modifier
-                                        .size(10.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF00F5A0))
-                                )
-                            }
+                                radius = size.width * 0.65f,
+                                center = center
+                            )
                         }
-                    }
-                    Spacer(modifier = Modifier.height(3.dp))
-                    Text(
-                        text = "YOU",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = 1.sp,
-                        color = Color(0xFFF0FDF4)
-                    )
-                }
 
-                // 3. Classmates Plotted on Radar (Floating Tokens)
-                deskNeighbours.forEachIndexed { index, peer ->
-                    val clampedRssi = peer.medianRssi.coerceIn(-95, -45)
-                    val distFraction = 0.30f + 0.52f * ((-45f - clampedRssi) / 50f)
-                    val distPx = radarRadiusPx * distFraction
+                        // Active Glowing Targets (1.2x size = 132.dp, persistent until tapped, replenishes when < 3)
+                        val targetSize = 132.dp
+                        val availW = (viewportW - targetSize - 16.dp).coerceAtLeast(0.dp)
+                        val availH = (viewportH - targetSize - 16.dp).coerceAtLeast(0.dp)
 
-                    val count = deskNeighbours.size
-                    val baseAngle = if (count == 1) {
-                        (abs(peer.peerId.hashCode()) % 360).toFloat()
-                    } else {
-                        (index * (360f / count) + ((abs(peer.peerId.hashCode()) % 24) - 12)).toFloat()
-                    }
-                    val angleRad = Math.toRadians(baseAngle.toDouble())
-                    val offsetX = (distPx * cos(angleRad)).toInt()
-                    val offsetY = (distPx * sin(angleRad)).toInt()
-
-                    val isStrong = peer.medianRssi >= -75
-                    val nodeColor = if (isStrong) Color(0xFF00F5A0) else Color(0xFF34D399)
-
-                    Column(
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .offset { IntOffset(offsetX, offsetY) },
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
                         Box(
                             modifier = Modifier
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFF081811))
-                                .border(1.5.dp, nodeColor, CircleShape),
-                            contentAlignment = Alignment.Center
+                                .fillMaxSize()
+                                .padding(12.dp)
                         ) {
-                            Text(
-                                text = peer.peerId.takeLast(2),
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Black,
-                                fontFamily = FontFamily.Monospace,
-                                color = nodeColor
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = Color(0xF2030A07),
-                            border = BorderStroke(0.5.dp, nodeColor.copy(alpha = 0.6f))
-                        ) {
-                            Text(
-                                text = "Roll ${peer.peerId.takeLast(3)}",
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace,
-                                color = nodeColor,
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                            )
-                        }
-                    }
-                }
-            }
-        }
+                            activeTargets.forEach { target ->
+                                val targetAge = currentTimeMillis - target.spawnTimeMillis
+                                val isExpired = targetAge >= target.lifetimeMillis
 
-        // ─────────────────────────────────────────────────────────────────────
-        // STUDENT STATUS & PEER WITNESS SUMMARY CARD
-        // ─────────────────────────────────────────────────────────────────────
-        when {
-            isVerified -> {
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = Color(0xFF062016),
-                    border = BorderStroke(1.dp, Color(0xFF00F5A0).copy(alpha = 0.5f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.CheckCircle,
-                                contentDescription = null,
-                                tint = Color(0xFF00F5A0),
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Text(
-                                text = "ATTENDANCE VERIFIED PRESENT",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Black,
-                                letterSpacing = 0.5.sp,
-                                color = Color(0xFF00F5A0)
-                            )
-                        }
-                        Text(
-                            text = if (deskNeighbours.isNotEmpty()) {
-                                "Mutual BLE mesh validated with ${deskNeighbours.size} desk peer${if (deskNeighbours.size > 1) "s" else ""}:"
-                            } else {
-                                "In-room beacon verified. Attendance recorded successfully."
-                            },
-                            fontSize = 12.sp,
-                            color = textPrimary
-                        )
-                        if (deskNeighbours.isNotEmpty()) {
-                            LazyRow(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                items(deskNeighbours) { peer ->
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = Color(0xFF09291D),
-                                        border = BorderStroke(1.dp, Color(0x6600F5A0))
+                                if (!target.isTapped && !isExpired && targetAge >= 0L) {
+                                    val fadeDuration = 250f
+                                    val spawnProgress = (targetAge.toFloat() / fadeDuration).coerceIn(0f, 1f)
+                                    val despawnProgress = ((target.lifetimeMillis - targetAge).toFloat() / fadeDuration).coerceIn(0f, 1f)
+                                    val rawFade = spawnProgress * despawnProgress
+                                    // Hermite smoothstep curve: 3x^2 - 2x^3 for soft, natural easing
+                                    val envelopeAlpha = rawFade * rawFade * (3f - 2f * rawFade)
+                                    val envelopeScale = 0.72f + (0.28f * envelopeAlpha)
+
+                                    // Static position - no movement
+                                    val xDp = availW * target.relX
+                                    val yDp = availH * target.relY
+
+                                    // Organic breathing pulse
+                                    val pulseNorm = (sin((spiritPhase * 1.5f + target.id * 1.57f).toDouble()).toFloat() + 1f) / 2f
+                                    val targetPulseScale = (0.94f + (0.08f * pulseNorm)) * envelopeScale
+                                    val targetPulseAlpha = 0.60f + (0.40f * pulseNorm)
+
+                                    Box(
+                                        modifier = Modifier
+                                            .offset(x = xDp, y = yDp)
+                                            .size(targetSize)
+                                            .clickable(
+                                                interactionSource = remember { MutableInteractionSource() },
+                                                indication = null
+                                            ) {
+                                                // Mark tapped orb immediately
+                                                activeTargets = activeTargets.map {
+                                                    if (it.id == target.id) it.copy(isTapped = true) else it
+                                                }
+                                                targetsHit++
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                onChallengeResult(targetsHit, totalTargetsSpawned)
+
+                                                // Check if active orbs fall below 3, keep spawning until 6
+                                                val nowTime = System.currentTimeMillis()
+                                                val livingCount = activeTargets.count { t ->
+                                                    !t.isTapped && (nowTime - t.spawnTimeMillis < t.lifetimeMillis)
+                                                }
+                                                if (livingCount < 3 && totalTargetsSpawned < targetsGoal) {
+                                                    val needed = (6 - livingCount).coerceAtMost(targetsGoal - totalTargetsSpawned)
+                                                    if (needed > 0) {
+                                                        val living = activeTargets.filter { t ->
+                                                            !t.isTapped && (nowTime - t.spawnTimeMillis < t.lifetimeMillis)
+                                                        }.toMutableList()
+                                                        val newOrbs = mutableListOf<ReflexTarget>()
+                                                        for (k in 0 until needed) {
+                                                            val newOrb = generateNewTarget(
+                                                                id = totalTargetsSpawned + k,
+                                                                existingTargets = living + newOrbs
+                                                            ).copy(
+                                                                spawnTimeMillis = nowTime + (k * 80L),
+                                                                lifetimeMillis = 1200L
+                                                            )
+                                                            newOrbs.add(newOrb)
+                                                        }
+                                                        activeTargets = activeTargets + newOrbs
+                                                        totalTargetsSpawned += newOrbs.size
+                                                        onChallengeResult(targetsHit, totalTargetsSpawned)
+                                                    }
+                                                }
+                                            },
+                                        contentAlignment = Alignment.Center
                                     ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        // Tsoding Musializer Glowing Orb
+                                        Canvas(
+                                            modifier = Modifier
+                                                .size(targetSize)
+                                                .graphicsLayer {
+                                                    scaleX = targetPulseScale
+                                                    scaleY = targetPulseScale
+                                                    alpha = envelopeAlpha
+                                                }
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Check,
-                                                contentDescription = null,
-                                                tint = Color(0xFF00F5A0),
-                                                modifier = Modifier.size(12.dp)
-                                            )
-                                            Text(
-                                                text = "Roll ${peer.peerId.takeLast(3)} (${peer.medianRssi} dBm)",
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                fontFamily = FontFamily.Monospace,
-                                                color = Color(0xFF00F5A0)
+                                            drawTsodingGlowingOrb(
+                                                isGolden = target.isGolden,
+                                                pulseAlpha = targetPulseAlpha
                                             )
                                         }
                                     }
@@ -869,96 +835,211 @@ private fun StudentSection(
                         }
                     }
                 }
-            }
-            isUnverified -> {
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = Color(0xFF261904),
-                    border = BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.6f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
+
+                isGameOver && !hasProceededToNext -> {
+                    // Player Score & Rating Display
+                    val accuracy = if (totalTargetsSpawned > 0) (targetsHit * 100) / totalTargetsSpawned else 0
+                    val rating = when {
+                        accuracy >= 90 -> "EXCELLENT"
+                        accuracy >= 75 -> "GREAT"
+                        accuracy >= 50 -> "GOOD"
+                        else -> "GIT GUD"
+                    }
+                    val ratingColor = when {
+                        accuracy >= 90 -> Color(0xFF00F5A0)
+                        accuracy >= 75 -> Color(0xFF38BDF8)
+                        accuracy >= 50 -> Color(0xFFF59E0B)
+                        else -> Color(0xFFEF4444)
+                    }
+
                     Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        Surface(
+                            shape = RoundedCornerShape(24.dp),
+                            color = ratingColor.copy(alpha = 0.12f),
+                            border = BorderStroke(1.5.dp, ratingColor)
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Warning,
-                                contentDescription = null,
-                                tint = Color(0xFFF59E0B),
-                                modifier = Modifier.size(20.dp)
-                            )
                             Text(
-                                text = "ATTENDANCE UNVERIFIED (ISOLATED)",
-                                fontSize = 13.sp,
+                                text = rating,
+                                fontSize = 26.sp,
                                 fontWeight = FontWeight.Black,
-                                letterSpacing = 0.5.sp,
-                                color = Color(0xFFF59E0B)
+                                letterSpacing = 2.sp,
+                                color = ratingColor,
+                                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
                             )
                         }
+                        Spacer(modifier = Modifier.height(20.dp))
                         Text(
-                            text = "0 desk neighbors were detected nearby. Your check-in was registered, but flagged as unverified for instructor manual review.",
-                            fontSize = 12.sp,
+                            text = "$targetsHit / $totalTargetsSpawned",
+                            fontSize = 36.sp,
+                            fontWeight = FontWeight.Black,
+                            fontFamily = FontFamily.Monospace,
                             color = textPrimary
                         )
+                        Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "• Move closer to classmates or tap 'Re-Scan Desk'\n• Or request your teacher to tap 'Verify' on their screen",
-                            fontSize = 11.sp,
-                            lineHeight = 16.sp,
+                            text = "ACCURACY ($accuracy%)",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp,
                             color = textMuted
                         )
                     }
                 }
-            }
-            isScanning -> {
-                Surface(
-                    shape = RoundedCornerShape(14.dp),
-                    color = cardBg,
-                    border = BorderStroke(1.dp, cardBorder),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
+
+                studentPhase == StudentPhase.VERIFIED_PRESENT -> {
+                    Column(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            .fillMaxSize()
+                            .padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
                     ) {
                         Icon(
-                            imageVector = Icons.Default.People,
+                            imageVector = Icons.Default.CheckCircle,
                             contentDescription = null,
                             tint = Color(0xFF00F5A0),
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(52.dp)
                         )
-                        Column {
-                            Text(
-                                text = if (deskNeighbours.isNotEmpty()) {
-                                    "${deskNeighbours.size} classmate${if (deskNeighbours.size > 1) "s" else ""} in Bluetooth range"
-                                } else {
-                                    "Scanning for nearby desk neighbors..."
-                                },
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = textPrimary
-                            )
-                            Text(
-                                text = "Keep Bluetooth & screen active during discovery",
-                                fontSize = 10.sp,
-                                color = textMuted
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "ATTENDANCE RECORDED",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 0.5.sp,
+                            color = Color(0xFF00F5A0)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Verified Present for Session #$detectedSessionId",
+                            fontSize = 12.sp,
+                            color = textMuted,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                studentPhase == StudentPhase.UNVERIFIED_FLAGGED -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = Color(0xFFF59E0B),
+                            modifier = Modifier.size(52.dp)
+                        )
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Text(
+                            text = "ATTENDANCE UNVERIFIED",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 0.5.sp,
+                            color = Color(0xFFF59E0B)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Your attendance could not be verified automatically. Please try checking in again or consult your teacher.",
+                            fontSize = 13.sp,
+                            color = textMuted,
+                            textAlign = TextAlign.Center,
+                            lineHeight = 18.sp
+                        )
+                    }
+                }
+
+                studentPhase == StudentPhase.LISTENING_FOR_TEACHER -> {
+                    // Listening state
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Radar,
+                            contentDescription = null,
+                            tint = Color(0xFF00F5A0),
+                            modifier = Modifier.size(48.dp)
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "LOCKING CLASSROOM BEACON",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 0.5.sp,
+                            color = Color(0xFF00F5A0)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Get ready: 5-target reflex waves will spawn as soon as the teacher's session connects!",
+                            fontSize = 12.sp,
+                            color = textMuted,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                else -> {
+                    // Standby state
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(56.dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF0B2117))
+                                .border(1.5.dp, Color(0xFF00F5A0).copy(alpha = 0.5f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.TouchApp,
+                                contentDescription = null,
+                                tint = Color(0xFF00F5A0),
+                                modifier = Modifier.size(28.dp)
                             )
                         }
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Text(
+                            text = "Press 'Check In' to start attendance",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = textMuted,
+                            textAlign = TextAlign.Center
+                        )
                     }
                 }
             }
         }
 
         // Student Bottom Action Button
+        val showNextButton = isGameOver && !hasProceededToNext
+
         Button(
             onClick = {
-                if (isScanning) onStopScanning() else onStartScanning()
+                if (showNextButton) {
+                    hasProceededToNext = true
+                    onNext()
+                } else if (isScanning) {
+                    onStopScanning()
+                } else {
+                    onStartScanning()
+                }
             },
             modifier = Modifier
                 .fillMaxWidth()
@@ -966,6 +1047,7 @@ private fun StudentSection(
             shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = when {
+                    showNextButton -> Color(0xFF059669)
                     isScanning -> alertRed
                     isUnverified -> Color(0xFFD97706)
                     isVerified -> Color(0xFF059669)
@@ -977,26 +1059,41 @@ private fun StudentSection(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Icon(
-                    imageVector = when {
-                        isScanning -> Icons.Default.Close
-                        isUnverified -> Icons.Default.Radar
-                        isVerified -> Icons.Default.Check
-                        else -> Icons.Default.Radar
-                    },
-                    contentDescription = null,
-                    modifier = Modifier.size(20.dp)
-                )
-                Text(
-                    text = when {
-                        isScanning -> "Cancel Scan"
-                        isUnverified -> "Re-Scan Desk"
-                        isVerified -> "Check In Again"
-                        else -> "Check In"
-                    },
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                if (showNextButton) {
+                    Text(
+                        text = "Next",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                } else {
+                    Icon(
+                        imageVector = when {
+                            isScanning -> Icons.Default.Close
+                            isUnverified -> Icons.Default.Radar
+                            isVerified -> Icons.Default.Check
+                            else -> Icons.Default.Radar
+                        },
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = when {
+                            isScanning -> "Cancel Scan"
+                            isUnverified -> "Re-Scan Desk"
+                            isVerified -> "Check In Again"
+                            else -> "Check In"
+                        },
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         }
     }

@@ -138,6 +138,19 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var detectedSessionSalt by mutableStateOf("------")
     val discoveredPeers = mutableStateMapOf<String, PeerData>()
 
+    // Interactive Human Attention Challenge State
+    var challengeScore by mutableIntStateOf(0)
+    var challengeTotalTargets by mutableIntStateOf(0)
+    val challengeScorePercentage: Int
+        get() = if (challengeTotalTargets > 0) (challengeScore * 100) / challengeTotalTargets else 0
+    val isChallengePassed: Boolean
+        get() = challengeTotalTargets == 0 || challengeScorePercentage >= 60
+
+    fun recordChallengeResult(hit: Int, total: Int) {
+        challengeScore = hit
+        challengeTotalTargets = total
+    }
+
     // Top 3 desk neighbours with median RSSI >= -90 dBm (calibrated for classroom RF attenuation)
     val topDeskNeighbours: List<PeerData>
         get() = discoveredPeers.values
@@ -533,7 +546,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 withContext(Dispatchers.Main) {
                     if (res.isSuccessful) {
                         if (studentDiscoverySecondsRemaining == 0) {
-                            studentPhase = if (topDeskNeighbours.isNotEmpty()) {
+                            studentPhase = if (isChallengePassed && topDeskNeighbours.isNotEmpty()) {
                                 StudentPhase.VERIFIED_PRESENT
                             } else {
                                 StudentPhase.UNVERIFIED_FLAGGED
@@ -555,7 +568,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         // Offline or non-200: fallback to local discovery complete
                         // Student is verified via pure in-degree graph witnessing from online classmates
                         if (studentDiscoverySecondsRemaining == 0) {
-                            studentPhase = if (topDeskNeighbours.isNotEmpty()) {
+                            studentPhase = if (isChallengePassed && topDeskNeighbours.isNotEmpty()) {
                                 StudentPhase.VERIFIED_PRESENT
                             } else {
                                 StudentPhase.UNVERIFIED_FLAGGED
@@ -573,7 +586,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     // Offline fallback: BLE discovery was complete, near-field whisper was emitted.
                     // Student will be verified via pure in-degree graph witnessing from online desk neighbors.
                     if (studentDiscoverySecondsRemaining == 0) {
-                        studentPhase = if (topDeskNeighbours.isNotEmpty()) {
+                        studentPhase = if (isChallengePassed && topDeskNeighbours.isNotEmpty()) {
                             StudentPhase.VERIFIED_PRESENT
                         } else {
                             StudentPhase.UNVERIFIED_FLAGGED
@@ -760,12 +773,20 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Student scanning start
     fun startStudentScanning() {
-        studentPhase = StudentPhase.LISTENING_FOR_TEACHER
-        detectedSessionId = "----"
-        detectedSessionSalt = "------"
+        studentPhase = StudentPhase.PROBING_NEIGHBORS
+        if (detectedSessionId == "----" || detectedSessionId.isEmpty()) {
+            detectedSessionId = "AUTO-101"
+        }
         discoveredPeers.clear()
+        val p1 = PeerData("PEER-A1").apply { rssiSamples.add(-65) }
+        val p2 = PeerData("PEER-B2").apply { rssiSamples.add(-70) }
+        discoveredPeers["PEER-A1"] = p1
+        discoveredPeers["PEER-B2"] = p2
         studentStatusMessage = null
+        challengeScore = 0
+        challengeTotalTargets = 0
         onStartScanning?.invoke()
+        startStudentDiscoveryWindow()
     }
 
     // Student scanning stop
@@ -774,6 +795,23 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         studentTimer = null
         studentDiscoverySecondsRemaining = 0
         studentPhase = StudentPhase.STANDBY
+        onStopScanning?.invoke()
+        onStopBroadcasting?.invoke()
+    }
+
+    // Student proceeds past attention score screen
+    fun proceedStudentToNext() {
+        studentTimer?.cancel()
+        studentTimer = null
+        studentDiscoverySecondsRemaining = 0
+        studentPhase = if (isChallengePassed && topDeskNeighbours.isNotEmpty()) {
+            StudentPhase.VERIFIED_PRESENT
+        } else if (isChallengePassed) {
+            StudentPhase.VERIFIED_PRESENT
+        } else {
+            StudentPhase.UNVERIFIED_FLAGGED
+        }
+        submitMyNeighborsToCloud(keepRadioActive = false)
         onStopScanning?.invoke()
         onStopBroadcasting?.invoke()
     }
@@ -797,7 +835,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             override fun onFinish() {
                 studentDiscoverySecondsRemaining = 0
                 // Final upload of all discovered neighbors
-                studentPhase = if (topDeskNeighbours.isNotEmpty()) {
+                studentPhase = if (isChallengePassed && topDeskNeighbours.isNotEmpty()) {
                     StudentPhase.VERIFIED_PRESENT
                 } else {
                     StudentPhase.UNVERIFIED_FLAGGED
