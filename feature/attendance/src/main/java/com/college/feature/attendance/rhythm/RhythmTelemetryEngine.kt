@@ -45,7 +45,7 @@ object RhythmTelemetryEngine {
         }
 
         // 1. Fair Weighted Rhythm Accuracy Calculation:
-        // Perfect = 1.0, Great = 0.85, Good = 0.70, Miss = 0.0
+        // Perfect = 100%, Great = 85%, Good = 70%, Miss = 0%
         var weightedHitScore = 0f
         interactions.forEach {
             weightedHitScore += when (it.judgement) {
@@ -58,8 +58,12 @@ object RhythmTelemetryEngine {
         val accuracyPercentage = ((weightedHitScore / totalObjects.toFloat()) * 100f).toInt().coerceIn(0, 100)
 
         // 2. Approach Timing Error Phase-Lock (|actual - target|)
-        val timingErrors = interactions.filter { it.judgement != JudgementType.MISS }.map { abs(it.timingErrorMs).toFloat() }
-        val meanTimingError = if (timingErrors.isNotEmpty()) timingErrors.average().toFloat() else 350f
+        // Filter only valid non-miss hits with realistic touch timing
+        val validTimingInteractions = interactions.filter {
+            it.judgement != JudgementType.MISS && (it.timingErrorMs != 0L || !it.isSlider)
+        }
+        val timingErrors = validTimingInteractions.map { abs(it.timingErrorMs).toFloat() }
+        val meanTimingError = if (timingErrors.isNotEmpty()) timingErrors.average().toFloat() else 180f
 
         val timingVariance = if (timingErrors.size > 1) {
             timingErrors.map { (it - meanTimingError).pow(2) }.sum() / (timingErrors.size - 1)
@@ -82,11 +86,11 @@ object RhythmTelemetryEngine {
         } else 1.0f
 
         // 5. Sequential Order Integrity
-        val outOfOrderStrikes = interactions.count { !it.hitInOrder }
+        val outOfOrderStrikes = interactions.count { !it.hitInOrder && it.judgement != JudgementType.MISS }
         val orderIntegrityRatio = (1f - (outOfOrderStrikes.toFloat() / totalObjects.toFloat())).coerceIn(0f, 1f)
 
         // 6. Touch Radial Offset & Spatial Jitter
-        val radialOffsets = interactions.map { it.normalizedRadialOffset }
+        val radialOffsets = interactions.filter { it.judgement != JudgementType.MISS }.map { it.normalizedRadialOffset }
         val meanRadialOffset = if (radialOffsets.isNotEmpty()) radialOffsets.average().toFloat() else 0f
         val spatialVariance = if (radialOffsets.size > 1) {
             radialOffsets.map { (it - meanRadialOffset).pow(2) }.sum() / (radialOffsets.size - 1)
@@ -94,22 +98,22 @@ object RhythmTelemetryEngine {
         val spatialDispersionStdDev = sqrt(spatialVariance)
 
         // 7. Bot / Superhuman Script Checks
-        val isZeroJitterBot = timingErrors.size >= 6 && timingStdDev < 8f && spatialDispersionStdDev < 0.015f
-        val isSuperhumanTiming = timingErrors.isNotEmpty() && meanTimingError < 15f && timingStdDev < 10f
+        val isZeroJitterBot = timingErrors.size >= 8 && timingStdDev < 6f && spatialDispersionStdDev < 0.010f
+        val isSuperhumanTiming = timingErrors.size >= 6 && meanTimingError < 12f && timingStdDev < 8f
 
         // 8. Cognitive Component Scores [0.0 .. 1.0]
         val timingScore = when {
-            meanTimingError < 120f -> 1.0f
-            meanTimingError < 220f -> 0.85f
-            meanTimingError < 350f -> 0.65f
-            else -> 0.35f
+            meanTimingError < 140f -> 1.0f
+            meanTimingError < 240f -> 0.85f
+            meanTimingError < 360f -> 0.65f
+            else -> 0.40f
         }
 
         val sliderScore = when {
-            avgSliderTrackingRatio >= 0.70f -> 1.0f
-            avgSliderTrackingRatio >= 0.45f -> 0.80f
-            avgSliderTrackingRatio >= 0.25f -> 0.50f
-            else -> 0.20f
+            avgSliderTrackingRatio >= 0.60f -> 1.0f
+            avgSliderTrackingRatio >= 0.35f -> 0.80f
+            avgSliderTrackingRatio >= 0.15f -> 0.55f
+            else -> 0.25f
         }
 
         val presenceScore = (hits.toFloat() / totalObjects.toFloat()).coerceIn(0f, 1f)
@@ -129,18 +133,18 @@ object RhythmTelemetryEngine {
         when {
             isZeroJitterBot || isSuperhumanTiming -> {
                 classification = FocusClassification.AUTOMATED_SCRIPT
-                diagnosticReason = "Superhuman timing precision (< 15ms error) and zero coordinate jitter detected"
+                diagnosticReason = "Superhuman timing precision (< 12ms error) and zero coordinate jitter detected"
             }
 
             // Dual-phone proxy indicators:
-            // Must exhibit severe bimodal timing oscillation (LOI > 0.60)
-            // paired with high timing variance (CV > 0.55) and broken tracking/order
-            (oscillationIndex > 0.60f && timingCoeffOfVariation > 0.55f && (outOfOrderStrikes >= 2 || avgSliderTrackingRatio < 0.30f)) -> {
+            // Must exhibit severe bimodal timing oscillation (LOI > 0.65)
+            // paired with high timing variance (CV > 0.60) and broken tracking/order
+            (oscillationIndex > 0.65f && timingCoeffOfVariation > 0.60f && (outOfOrderStrikes >= 3 || avgSliderTrackingRatio < 0.20f)) -> {
                 classification = FocusClassification.DIVIDED_ATTENTION_PROXY
                 diagnosticReason = "Periodic bimodal timing swings and gaze-shift pauses indicate divided attention across 2+ devices"
             }
 
-            hits >= (totalObjects / 2) && accuracyPercentage >= 45 -> {
+            hits >= (totalObjects / 2) || accuracyPercentage >= 40 -> {
                 classification = FocusClassification.FOCUSED_SINGLE_DEVICE
                 diagnosticReason = "Human visual rhythm verified ($hits/$totalObjects hits, ${accuracyPercentage}% accuracy)"
             }

@@ -97,8 +97,8 @@ object AttendanceBeatmap {
             comboNumber = 1,
             relX = 0.28f,
             relY = 0.35f,
-            spawnOffsetMs = 300L,
-            approachDurationMs = 1100L,
+            spawnOffsetMs = 250L,
+            approachDurationMs = 1000L,
             colorLong = 0xFF00F5A0
         ),
         RhythmBeatmapObject(
@@ -107,8 +107,8 @@ object AttendanceBeatmap {
             comboNumber = 2,
             relX = 0.50f,
             relY = 0.48f,
-            spawnOffsetMs = 1150L,
-            approachDurationMs = 1100L,
+            spawnOffsetMs = 1050L,
+            approachDurationMs = 1000L,
             colorLong = 0xFF00F5A0
         ),
         RhythmBeatmapObject(
@@ -117,8 +117,8 @@ object AttendanceBeatmap {
             comboNumber = 3,
             relX = 0.72f,
             relY = 0.35f,
-            spawnOffsetMs = 2000L,
-            approachDurationMs = 1100L,
+            spawnOffsetMs = 1850L,
+            approachDurationMs = 1000L,
             colorLong = 0xFF00F5A0
         ),
         // Arc Slider 4: Smooth curve from bottom-right up through center
@@ -132,9 +132,9 @@ object AttendanceBeatmap {
             controlRelY = 0.78f,
             endRelX = 0.26f,
             endRelY = 0.62f,
-            spawnOffsetMs = 2850L,
-            approachDurationMs = 1100L,
-            durationMs = 1300L,
+            spawnOffsetMs = 2650L,
+            approachDurationMs = 1000L,
+            durationMs = 1200L,
             colorLong = 0xFF00F5A0
         ),
 
@@ -145,8 +145,8 @@ object AttendanceBeatmap {
             comboNumber = 1,
             relX = 0.28f,
             relY = 0.68f,
-            spawnOffsetMs = 5300L,
-            approachDurationMs = 1050L,
+            spawnOffsetMs = 4900L,
+            approachDurationMs = 950L,
             colorLong = 0xFF38BDF8
         ),
         RhythmBeatmapObject(
@@ -155,8 +155,8 @@ object AttendanceBeatmap {
             comboNumber = 2,
             relX = 0.70f,
             relY = 0.50f,
-            spawnOffsetMs = 6150L,
-            approachDurationMs = 1050L,
+            spawnOffsetMs = 5700L,
+            approachDurationMs = 950L,
             colorLong = 0xFF38BDF8
         ),
         RhythmBeatmapObject(
@@ -165,8 +165,8 @@ object AttendanceBeatmap {
             comboNumber = 3,
             relX = 0.45f,
             relY = 0.28f,
-            spawnOffsetMs = 7000L,
-            approachDurationMs = 1050L,
+            spawnOffsetMs = 6500L,
+            approachDurationMs = 950L,
             colorLong = 0xFF38BDF8
         ),
         // Sweep Slider 4: Gliding curve from top-left to bottom-right
@@ -180,9 +180,9 @@ object AttendanceBeatmap {
             controlRelY = 0.45f,
             endRelX = 0.74f,
             endRelY = 0.68f,
-            spawnOffsetMs = 7850L,
-            approachDurationMs = 1050L,
-            durationMs = 1400L,
+            spawnOffsetMs = 7300L,
+            approachDurationMs = 950L,
+            durationMs = 1250L,
             colorLong = 0xFF38BDF8
         ),
 
@@ -193,8 +193,8 @@ object AttendanceBeatmap {
             comboNumber = 1,
             relX = 0.68f,
             relY = 0.32f,
-            spawnOffsetMs = 10300L,
-            approachDurationMs = 1000L,
+            spawnOffsetMs = 9500L,
+            approachDurationMs = 900L,
             colorLong = 0xFFF59E0B
         ),
         RhythmBeatmapObject(
@@ -203,8 +203,8 @@ object AttendanceBeatmap {
             comboNumber = 2,
             relX = 0.30f,
             relY = 0.48f,
-            spawnOffsetMs = 11150L,
-            approachDurationMs = 1000L,
+            spawnOffsetMs = 10250L,
+            approachDurationMs = 900L,
             colorLong = 0xFFF59E0B
         ),
         RhythmBeatmapObject(
@@ -213,8 +213,8 @@ object AttendanceBeatmap {
             comboNumber = 3,
             relX = 0.65f,
             relY = 0.68f,
-            spawnOffsetMs = 12000L,
-            approachDurationMs = 1000L,
+            spawnOffsetMs = 11000L,
+            approachDurationMs = 900L,
             colorLong = 0xFFF59E0B
         ),
         // Grand Center Star Finale
@@ -224,11 +224,11 @@ object AttendanceBeatmap {
             comboNumber = 4,
             relX = 0.50f,
             relY = 0.45f,
-            spawnOffsetMs = 12850L,
-            approachDurationMs = 1000L,
+            spawnOffsetMs = 11750L,
+            approachDurationMs = 900L,
             colorLong = 0xFFF59E0B
         )
     )
 
-    val totalDurationMs: Long = 14800L
+    val totalDurationMs: Long = 13500L
 }

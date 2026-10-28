@@ -145,7 +145,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     val challengeScorePercentage: Int
         get() = if (challengeTotalTargets > 0) (challengeScore * 100) / challengeTotalTargets else 0
     val isChallengePassed: Boolean
-        get() = (challengeTotalTargets == 0 || challengeScorePercentage >= 60) &&
+        get() = (challengeTotalTargets == 0 || challengeScorePercentage >= 50) &&
                 (lastFocusReport == null || (
                     lastFocusReport?.classification != com.college.feature.attendance.telemetry.FocusClassification.DIVIDED_ATTENTION_PROXY &&
                     lastFocusReport?.classification != com.college.feature.attendance.telemetry.FocusClassification.AUTOMATED_SCRIPT
@@ -559,7 +559,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 val res = api.submitNeighbors(sessId, req)
                 withContext(Dispatchers.Main) {
                     if (res.isSuccessful) {
-                        if (studentDiscoverySecondsRemaining == 0) {
+                        if (!keepRadioActive && studentDiscoverySecondsRemaining == 0) {
                             studentPhase = if (isChallengePassed && topDeskNeighbours.isNotEmpty()) {
                                 StudentPhase.VERIFIED_PRESENT
                             } else {
@@ -581,7 +581,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     } else {
                         // Offline or non-200: fallback to local discovery complete
                         // Student is verified via pure in-degree graph witnessing from online classmates
-                        if (studentDiscoverySecondsRemaining == 0) {
+                        if (!keepRadioActive && studentDiscoverySecondsRemaining == 0) {
                             studentPhase = if (isChallengePassed && topDeskNeighbours.isNotEmpty()) {
                                 StudentPhase.VERIFIED_PRESENT
                             } else {
@@ -599,7 +599,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 withContext(Dispatchers.Main) {
                     // Offline fallback: BLE discovery was complete, near-field whisper was emitted.
                     // Student will be verified via pure in-degree graph witnessing from online desk neighbors.
-                    if (studentDiscoverySecondsRemaining == 0) {
+                    if (!keepRadioActive && studentDiscoverySecondsRemaining == 0) {
                         studentPhase = if (isChallengePassed && topDeskNeighbours.isNotEmpty()) {
                             StudentPhase.VERIFIED_PRESENT
                         } else {

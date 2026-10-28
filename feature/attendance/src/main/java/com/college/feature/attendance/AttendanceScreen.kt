@@ -505,8 +505,9 @@ private fun StudentSection(
             isGameOver = false
             hasProceededToNext = false
             onChallengeResult(0, totalTargetsSpawned)
-        } else {
+        } else if (studentPhase == StudentPhase.STANDBY || studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
             isGameOver = false
+            hasProceededToNext = false
         }
     }
 
@@ -853,6 +854,30 @@ private fun StudentSection(
                                     )
                                 }
                             }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+                        val isProxyFlagged = lastFocusReport?.classification == FocusClassification.DIVIDED_ATTENTION_PROXY ||
+                                lastFocusReport?.classification == FocusClassification.AUTOMATED_SCRIPT
+                        Button(
+                            onClick = {
+                                hasProceededToNext = true
+                                onNext()
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isProxyFlagged) alertRed else Color(0xFF059669)
+                            )
+                        ) {
+                            Text(
+                                text = if (isProxyFlagged) "Confirm & Proceed  ➜" else "Confirm Attendance  ➜",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
                         }
                     }
                 }

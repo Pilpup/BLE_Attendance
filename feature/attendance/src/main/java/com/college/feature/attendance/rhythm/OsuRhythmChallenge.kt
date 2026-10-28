@@ -73,6 +73,8 @@ fun OsuRhythmChallenge(
     val hitObjectStates = remember { mutableStateMapOf<Int, Boolean>() } // id -> isCompleted
     val activeSliders = remember { mutableStateListOf<Int>() }           // id of sliders currently in progress
     val sliderFrameStats = remember { mutableStateMapOf<Int, Pair<Int, Int>>() } // id -> (trackedFrames, totalFrames)
+    val sliderHeadTimings = remember { mutableStateMapOf<Int, Long>() }
+    val sliderHeadRadialOffsets = remember { mutableStateMapOf<Int, Float>() }
     val interactions = remember { mutableStateListOf<RhythmInteractionRecord>() }
     val floatingBursts = remember { mutableStateListOf<JudgementBurst>() }
     val activePointers = remember { mutableStateMapOf<Long, Offset>() }
@@ -120,14 +122,14 @@ fun OsuRhythmChallenge(
     // Tap Handling Function (Generous, Natural Mobile Touch Window)
     fun processTap(touchPos: Offset, w: Float, h: Float) {
         val now = System.currentTimeMillis()
-        val hitRadius = with(density) { 62.dp.toPx() }
+        val hitRadius = with(density) { 65.dp.toPx() }
 
-        // Find active circles or slider heads on screen that have not been hit yet
+        // Find active circles or slider heads on screen that have not been completed yet
         val eligible = objects.filter { obj ->
             hitObjectStates[obj.id] != true &&
             obj.id !in activeSliders &&
             now >= (obj.spawnOffsetMs + gameStartMs) &&
-            now <= (obj.targetHitTimeMs(gameStartMs) + 400L)
+            now <= (obj.targetHitTimeMs(gameStartMs) + 380L)
         }.sortedBy { it.targetHitTimeMs(gameStartMs) }
 
         for (obj in eligible) {
@@ -138,12 +140,19 @@ fun OsuRhythmChallenge(
 
             if (dist <= hitRadius) {
                 val deltaTiming = now - obj.targetHitTimeMs(gameStartMs)
-                val absDelta = abs(deltaTiming)
 
+                // If tapped more than 380ms early, the approach circle is still too far out
+                // Ignore the tap so the player waits for the proper beat
+                if (deltaTiming < -380L) {
+                    continue
+                }
+
+                val absDelta = abs(deltaTiming)
                 val judgement = when {
-                    absDelta <= 140L -> JudgementType.PERFECT
-                    absDelta <= 280L -> JudgementType.GREAT
-                    else -> JudgementType.GOOD
+                    absDelta <= 110L -> JudgementType.PERFECT
+                    absDelta <= 240L -> JudgementType.GREAT
+                    absDelta <= 380L -> JudgementType.GOOD
+                    else -> JudgementType.MISS
                 }
 
                 val hitInOrder = (obj.comboNumber == 1) ||
@@ -176,6 +185,8 @@ fun OsuRhythmChallenge(
                 } else {
                     // Slider head tapped! Activate slider tracking
                     activeSliders.add(obj.id)
+                    sliderHeadTimings[obj.id] = deltaTiming
+                    sliderHeadRadialOffsets[obj.id] = (dist / hitRadius).coerceIn(0f, 1f)
                 }
 
                 floatingBursts.add(
@@ -203,13 +214,7 @@ fun OsuRhythmChallenge(
             for (obj in objects) {
                 if (hitObjectStates[obj.id] != true && obj.id !in activeSliders) {
                     val targetTime = obj.targetHitTimeMs(gameStartMs)
-                    val deadline = if (obj.type == RhythmObjectType.SLIDER) {
-                        obj.sliderEndTimeMs(gameStartMs) + 200L
-                    } else {
-                        targetTime + 400L
-                    }
-
-                    if (now > deadline) {
+                    if (now > targetTime + 380L) {
                         hitObjectStates[obj.id] = true
                         completedObjectCount++
                         comboCounter = 0 // Combo breaks on miss
@@ -219,7 +224,7 @@ fun OsuRhythmChallenge(
                                 objectId = obj.id,
                                 isSlider = obj.type == RhythmObjectType.SLIDER,
                                 comboNumber = obj.comboNumber,
-                                timingErrorMs = 400L,
+                                timingErrorMs = 380L,
                                 judgement = JudgementType.MISS,
                                 touchDistancePx = 999f,
                                 normalizedRadialOffset = 1.0f,
@@ -243,16 +248,14 @@ fun OsuRhythmChallenge(
                 }
             }
 
-            // 2. Active Sliders Tracking (Automatically engages if finger is on moving ball)
+            // 2. Active Sliders Tracking (Automatically engages if ball starts rolling)
             val rollingSliders = objects.filter {
                 it.type == RhythmObjectType.SLIDER &&
                 hitObjectStates[it.id] != true &&
-                now >= it.targetHitTimeMs(gameStartMs) &&
-                now <= it.sliderEndTimeMs(gameStartMs)
+                (it.id in activeSliders || now >= it.targetHitTimeMs(gameStartMs))
             }
 
             for (slider in rollingSliders) {
-                // Auto-activate if not already active
                 if (slider.id !in activeSliders) {
                     activeSliders.add(slider.id)
                 }
@@ -273,16 +276,17 @@ fun OsuRhythmChallenge(
                 val newTotal = stats.second + 1
                 sliderFrameStats[slider.id] = Pair(newTracked, newTotal)
 
-                // Slider reached the end
-                if (progress >= 1.0f) {
+                // Slider reached the end (guaranteed completion)
+                if (progress >= 1.0f || now >= slider.sliderEndTimeMs(gameStartMs)) {
                     hitObjectStates[slider.id] = true
+                    activeSliders.remove(slider.id)
                     completedObjectCount++
                     val ratio = (newTracked.toFloat() / newTotal.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
 
                     val finalJudgement = when {
-                        ratio >= 0.65f -> JudgementType.PERFECT
-                        ratio >= 0.38f -> JudgementType.GREAT
-                        ratio >= 0.18f -> JudgementType.GOOD
+                        ratio >= 0.50f -> JudgementType.PERFECT
+                        ratio >= 0.30f -> JudgementType.GREAT
+                        ratio >= 0.15f -> JudgementType.GOOD
                         else -> JudgementType.MISS
                     }
 
@@ -294,15 +298,18 @@ fun OsuRhythmChallenge(
                         comboCounter = 0
                     }
 
+                    val headTiming = sliderHeadTimings[slider.id] ?: 120L
+                    val headOffset = sliderHeadRadialOffsets[slider.id] ?: 0.25f
+
                     interactions.add(
                         RhythmInteractionRecord(
                             objectId = slider.id,
                             isSlider = true,
                             comboNumber = slider.comboNumber,
-                            timingErrorMs = 0L,
+                            timingErrorMs = headTiming,
                             judgement = finalJudgement,
                             touchDistancePx = 0f,
-                            normalizedRadialOffset = 0f,
+                            normalizedRadialOffset = headOffset,
                             hitInOrder = true,
                             sliderTrackingRatio = ratio,
                             timestampMs = now
@@ -326,8 +333,28 @@ fun OsuRhythmChallenge(
             floatingBursts.removeAll { now - it.spawnTimeMs > it.durationMs }
 
             // 4. Session Completion Check
-            if (completedObjectCount >= totalObjects || elapsed >= AttendanceBeatmap.totalDurationMs + 800L) {
-                delay(350L)
+            if (completedObjectCount >= totalObjects || elapsed >= AttendanceBeatmap.totalDurationMs + 400L) {
+                // Ensure all objects are finalized in interactions list
+                for (obj in objects) {
+                    if (hitObjectStates[obj.id] != true) {
+                        hitObjectStates[obj.id] = true
+                        interactions.add(
+                            RhythmInteractionRecord(
+                                objectId = obj.id,
+                                isSlider = obj.type == RhythmObjectType.SLIDER,
+                                comboNumber = obj.comboNumber,
+                                timingErrorMs = 400L,
+                                judgement = JudgementType.MISS,
+                                touchDistancePx = 999f,
+                                normalizedRadialOffset = 1.0f,
+                                hitInOrder = false,
+                                sliderTrackingRatio = 0f,
+                                timestampMs = now
+                            )
+                        )
+                    }
+                }
+                delay(300L)
                 onComplete(interactions.toList())
                 break
             }
@@ -342,9 +369,9 @@ fun OsuRhythmChallenge(
             .background(
                 Brush.verticalGradient(
                     listOf(
-                        Color(0xFF06140E),
-                        Color(0xFF030A07),
-                        Color(0xFF091710)
+                        Color(0xFF040A07),
+                        Color(0xFF020604),
+                        Color(0xFF07120C)
                     )
                 )
             )
@@ -395,7 +422,7 @@ fun OsuRhythmChallenge(
             // ── LAYER 2: Combo Connecting Trajectory Lines ──
             val visibleObjects = objects.filter {
                 hitObjectStates[it.id] != true &&
-                nowMs >= (it.spawnOffsetMs + gameStartMs - 200L) &&
+                nowMs >= (it.spawnOffsetMs + gameStartMs - 300L) &&
                 nowMs <= (it.sliderEndTimeMs(gameStartMs) + 300L)
             }.sortedBy { it.id }
 
@@ -406,10 +433,10 @@ fun OsuRhythmChallenge(
                     val p1 = Offset(curr.relX * canvasW, curr.relY * canvasH)
                     val p2 = Offset(next.relX * canvasW, next.relY * canvasH)
                     drawLine(
-                        color = Color(curr.colorLong).copy(alpha = 0.35f),
+                        color = Color(curr.colorLong).copy(alpha = 0.40f),
                         start = p1,
                         end = p2,
-                        strokeWidth = 2.dp.toPx()
+                        strokeWidth = 2.5.dp.toPx()
                     )
                 }
             }
@@ -442,7 +469,7 @@ fun OsuRhythmChallenge(
                 // B. Outer Crisp Neon Border
                 drawPath(
                     path = sliderPath,
-                    color = trackColor.copy(alpha = 0.80f),
+                    color = trackColor.copy(alpha = 0.85f),
                     style = Stroke(width = 3.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
                 )
 
@@ -478,10 +505,10 @@ fun OsuRhythmChallenge(
                     }
 
                     drawCircle(
-                        color = if (isBeingTracked) trackColor.copy(alpha = 0.45f) else Color(0x30F59E0B),
+                        color = if (isBeingTracked) trackColor.copy(alpha = 0.50f) else Color(0x35F59E0B),
                         radius = followerRadius * (if (isBeingTracked) pulsePhase else 0.95f),
                         center = ballPos,
-                        style = Stroke(width = 2.dp.toPx())
+                        style = Stroke(width = 2.5.dp.toPx())
                     )
 
                     drawCircle(
@@ -517,27 +544,27 @@ fun OsuRhythmChallenge(
 
                 // A. Base Hit Circle Body
                 drawCircle(
-                    color = Color(0xDD0B1A13),
+                    color = Color(0xEE08160F),
                     radius = circleRadius,
                     center = circleCenter
                 )
-                // B. Crisp Outer Neon Border
+                // B. Crisp Outer White Border (osu! style)
                 drawCircle(
-                    color = accentColor,
+                    color = Color.White.copy(alpha = 0.90f),
                     radius = circleRadius,
                     center = circleCenter,
-                    style = Stroke(width = 3.5.dp.toPx())
+                    style = Stroke(width = 4.dp.toPx())
                 )
-                // C. Inner Frosted Glow
+                // C. Inner Colored Neon Ring
                 drawCircle(
-                    color = accentColor.copy(alpha = 0.25f),
-                    radius = circleRadius * 0.72f,
+                    color = accentColor.copy(alpha = 0.40f),
+                    radius = circleRadius * 0.78f,
                     center = circleCenter
                 )
 
                 // D. Combo Sequence Number in Center
                 drawContext.canvas.nativeCanvas.apply {
-                    numberTextPaint.textSize = with(density) { 24.sp.toPx() }
+                    numberTextPaint.textSize = with(density) { 26.sp.toPx() }
                     drawText(
                         "${obj.comboNumber}",
                         circleCenter.x,
@@ -550,10 +577,10 @@ fun OsuRhythmChallenge(
                 if (timeToHit > 0L) {
                     val progress = (timeToHit.toFloat() / obj.approachDurationMs.toFloat()).coerceIn(0f, 1f)
                     val approachScale = 1.0f + (progress * 1.6f) // Shrinks from 2.6x to 1.0x
-                    val ringAlpha = (1f - (progress * 0.45f)).coerceIn(0.25f, 0.95f)
+                    val ringAlpha = (1f - (progress * 0.40f)).coerceIn(0.30f, 0.95f)
 
                     drawCircle(
-                        color = accentColor.copy(alpha = ringAlpha),
+                        color = Color.White.copy(alpha = ringAlpha),
                         radius = circleRadius * approachScale,
                         center = circleCenter,
                         style = Stroke(width = 2.5.dp.toPx())
@@ -580,7 +607,29 @@ fun OsuRhythmChallenge(
                 }
             }
 
-            // ── LAYER 6: Top HUD (Combo, Score & Sequence Progress) ──
+            // ── LAYER 6: Interactive Cursor Glowing Dot (osu! Cursor) ──
+            val activeTouch = activePointers.values.firstOrNull()
+            if (activeTouch != null) {
+                // Outer glowing cursor halo
+                drawCircle(
+                    color = Color(0x44FF2A55),
+                    radius = 26.dp.toPx(),
+                    center = activeTouch
+                )
+                // Inner bright cursor bead
+                drawCircle(
+                    color = Color(0xFFFF3366),
+                    radius = 12.dp.toPx(),
+                    center = activeTouch
+                )
+                drawCircle(
+                    color = Color.White,
+                    radius = 4.dp.toPx(),
+                    center = activeTouch
+                )
+            }
+
+            // ── LAYER 7: Top HUD (Combo, Score & Sequence Progress) ──
             drawContext.canvas.nativeCanvas.apply {
                 hudTextPaint.textSize = with(density) { 16.sp.toPx() }
                 // Combo Counter
