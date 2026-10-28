@@ -94,6 +94,9 @@ import com.college.feature.attendance.network.AttendanceSessionResponse
 import com.college.feature.attendance.network.CourseResponse
 import com.college.feature.attendance.network.RegisterRequest
 import com.college.feature.attendance.ui.theme.*
+import com.college.feature.attendance.rhythm.AttendanceBeatmap
+import com.college.feature.attendance.rhythm.OsuRhythmChallenge
+import com.college.feature.attendance.rhythm.RhythmTelemetryEngine
 import com.college.feature.attendance.telemetry.BehavioralTelemetryEngine
 import com.college.feature.attendance.telemetry.CognitiveFocusReport
 import com.college.feature.attendance.telemetry.ExpiredTargetEvent
@@ -484,27 +487,9 @@ private fun StudentSection(
     val haptic = LocalHapticFeedback.current
 
     var targetsHit by remember { mutableIntStateOf(0) }
-    var totalTargetsSpawned by remember { mutableIntStateOf(0) }
-    var activeTargets by remember { mutableStateOf<List<ReflexTarget>>(emptyList()) }
-    var currentTimeMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var totalTargetsSpawned by remember { mutableIntStateOf(AttendanceBeatmap.objects.size) }
     var isGameOver by remember { mutableStateOf(false) }
     var hasProceededToNext by remember { mutableStateOf(false) }
-
-    val recordedTaps = remember { mutableStateListOf<TapEvent>() }
-    val recordedExpired = remember { mutableStateListOf<ExpiredTargetEvent>() }
-
-    val targetsGoal = 18
-
-    val spiritTransition = rememberInfiniteTransition(label = "sein_spirit")
-    val spiritPhase by spiritTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2 * Math.PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(3400, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "spirit_phase"
-    )
 
     val liveAccuracy: Int = remember(targetsHit, totalTargetsSpawned) {
         if (totalTargetsSpawned > 0) (targetsHit * 100) / totalTargetsSpawned else 0
@@ -516,89 +501,11 @@ private fun StudentSection(
     LaunchedEffect(studentPhase) {
         if (studentPhase == StudentPhase.PROBING_NEIGHBORS) {
             targetsHit = 0
+            totalTargetsSpawned = AttendanceBeatmap.objects.size
             isGameOver = false
             hasProceededToNext = false
-            recordedTaps.clear()
-            recordedExpired.clear()
-
-            // Initial 6 orbs spawn with gentle staggered bloom
-            val initial = mutableListOf<ReflexTarget>()
-            val now = System.currentTimeMillis()
-            for (i in 0 until 6) {
-                val t = generateNewTarget(id = i, existingTargets = initial)
-                initial.add(t.copy(spawnTimeMillis = now + (i * 80L), lifetimeMillis = 1200L))
-            }
-            activeTargets = initial
-            totalTargetsSpawned = initial.size
-            onChallengeResult(targetsHit, totalTargetsSpawned)
-
-            while (!isGameOver && studentPhase == StudentPhase.PROBING_NEIGHBORS) {
-                val nowTime = System.currentTimeMillis()
-                currentTimeMillis = nowTime
-
-                // Track orbs that expired without being tapped
-                val newlyExpired = activeTargets.filter { target ->
-                    !target.isTapped && (nowTime - target.spawnTimeMillis >= target.lifetimeMillis) &&
-                    recordedExpired.none { it.targetId == target.id }
-                }
-                for (e in newlyExpired) {
-                    recordedExpired.add(
-                        ExpiredTargetEvent(
-                            targetId = e.id,
-                            spawnTimeMillis = e.spawnTimeMillis,
-                            expiredTimeMillis = nowTime,
-                            targetRelX = e.relX,
-                            targetRelY = e.relY
-                        )
-                    )
-                }
-
-                // Count active orbs that are not tapped and haven't expired
-                val livingCount = activeTargets.count { target ->
-                    !target.isTapped && (nowTime - target.spawnTimeMillis < target.lifetimeMillis)
-                }
-
-                // If active orbs fall below 3, keep spawning until there are 6!
-                if (livingCount < 3 && totalTargetsSpawned < targetsGoal) {
-                    val needed = (6 - livingCount).coerceAtMost(targetsGoal - totalTargetsSpawned)
-                    if (needed > 0) {
-                        val living = activeTargets.filter { target ->
-                            !target.isTapped && (nowTime - target.spawnTimeMillis < target.lifetimeMillis)
-                        }.toMutableList()
-                        val newOrbs = mutableListOf<ReflexTarget>()
-                        for (k in 0 until needed) {
-                            val newOrb = generateNewTarget(
-                                id = totalTargetsSpawned + k,
-                                existingTargets = living + newOrbs
-                            ).copy(
-                                spawnTimeMillis = nowTime + (k * 80L),
-                                lifetimeMillis = 1200L
-                            )
-                            newOrbs.add(newOrb)
-                        }
-                        activeTargets = activeTargets + newOrbs
-                        totalTargetsSpawned += newOrbs.size
-                        onChallengeResult(targetsHit, totalTargetsSpawned)
-                    }
-                }
-
-                // Complete when all targets have spawned and all living orbs have completed
-                if (totalTargetsSpawned >= targetsGoal && livingCount == 0) {
-                    activeTargets = emptyList()
-                    isGameOver = true
-                    val report = BehavioralTelemetryEngine.analyze(
-                        taps = recordedTaps.toList(),
-                        expired = recordedExpired.toList(),
-                        totalTargetsGoal = targetsGoal
-                    )
-                    onBehavioralReport(report)
-                    onChallengeResult(targetsHit, totalTargetsSpawned)
-                }
-
-                delay(16L)
-            }
+            onChallengeResult(0, totalTargetsSpawned)
         } else {
-            activeTargets = emptyList()
             isGameOver = false
         }
     }
@@ -755,151 +662,20 @@ private fun StudentSection(
             val viewportH = maxHeight
             when {
                 studentPhase == StudentPhase.PROBING_NEIGHBORS && !isGameOver -> {
-                    // Active Wave Popping Gameplay (Arcade Visuals)
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        // Atmospheric Spirit Forest Ambiance
-                        Canvas(modifier = Modifier.fillMaxSize()) {
-                            val center = Offset(size.width / 2f, size.height / 2f)
-                            // Ambient soft central spiritual glow
-                            drawCircle(
-                                brush = Brush.radialGradient(
-                                    listOf(
-                                        Color(0x1400F5A0),
-                                        Color(0x0600F5A0),
-                                        Color.Transparent
-                                    ),
-                                    center = center,
-                                    radius = size.width * 0.65f
-                                ),
-                                radius = size.width * 0.65f,
-                                center = center
-                            )
+                    OsuRhythmChallenge(
+                        modifier = Modifier.fillMaxSize(),
+                        onProgressUpdate = { completed, total ->
+                            targetsHit = completed
+                            totalTargetsSpawned = total
+                            onChallengeResult(completed, total)
+                        },
+                        onComplete = { interactionList ->
+                            isGameOver = true
+                            val report = RhythmTelemetryEngine.analyze(interactionList)
+                            onBehavioralReport(report)
+                            onChallengeResult(report.hits, report.totalSpawns)
                         }
-
-                        // Active Glowing Targets (1.2x size = 132.dp, persistent until tapped, replenishes when < 3)
-                        val targetSize = 132.dp
-                        val availW = (viewportW - targetSize - 16.dp).coerceAtLeast(0.dp)
-                        val availH = (viewportH - targetSize - 16.dp).coerceAtLeast(0.dp)
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(12.dp)
-                        ) {
-                            activeTargets.forEach { target ->
-                                val targetAge = currentTimeMillis - target.spawnTimeMillis
-                                val isExpired = targetAge >= target.lifetimeMillis
-
-                                if (!target.isTapped && !isExpired && targetAge >= 0L) {
-                                    val fadeDuration = 250f
-                                    val spawnProgress = (targetAge.toFloat() / fadeDuration).coerceIn(0f, 1f)
-                                    val despawnProgress = ((target.lifetimeMillis - targetAge).toFloat() / fadeDuration).coerceIn(0f, 1f)
-                                    val rawFade = spawnProgress * despawnProgress
-                                    // Hermite smoothstep curve: 3x^2 - 2x^3 for soft, natural easing
-                                    val envelopeAlpha = rawFade * rawFade * (3f - 2f * rawFade)
-                                    val envelopeScale = 0.72f + (0.28f * envelopeAlpha)
-
-                                    // Static position - no movement
-                                    val xDp = availW * target.relX
-                                    val yDp = availH * target.relY
-
-                                    // Organic breathing pulse
-                                    val pulseNorm = (sin((spiritPhase * 1.5f + target.id * 1.57f).toDouble()).toFloat() + 1f) / 2f
-                                    val targetPulseScale = (0.94f + (0.08f * pulseNorm)) * envelopeScale
-                                    val targetPulseAlpha = 0.60f + (0.40f * pulseNorm)
-
-                                    Box(
-                                        modifier = Modifier
-                                            .offset(x = xDp, y = yDp)
-                                            .size(targetSize)
-                                            .pointerInput(target.id) {
-                                                detectTapGestures { offset ->
-                                                    if (target.isTapped) return@detectTapGestures
-                                                    val nowTapTime = System.currentTimeMillis()
-                                                    if (nowTapTime - target.spawnTimeMillis >= target.lifetimeMillis) return@detectTapGestures
-
-                                                    val targetSizePx = size.width.toFloat()
-                                                    val centerX = targetSizePx / 2f
-                                                    val centerY = targetSizePx / 2f
-                                                    val dx = offset.x - centerX
-                                                    val dy = offset.y - centerY
-                                                    val radius = (targetSizePx / 2f).coerceAtLeast(1f)
-                                                    val dist = sqrt(dx * dx + dy * dy)
-                                                    val normalizedRadial = (dist / radius).coerceIn(0f, 1f)
-                                                    val latency = (nowTapTime - target.spawnTimeMillis).coerceAtLeast(0L)
-
-                                                    recordedTaps.add(
-                                                        TapEvent(
-                                                            targetId = target.id,
-                                                            tapTimeMillis = nowTapTime,
-                                                            spawnTimeMillis = target.spawnTimeMillis,
-                                                            latencyMs = latency,
-                                                            targetRelX = target.relX,
-                                                            targetRelY = target.relY,
-                                                            touchOffsetX = dx,
-                                                            touchOffsetY = dy,
-                                                            normalizedRadialOffset = normalizedRadial
-                                                        )
-                                                    )
-
-                                                    // Mark tapped orb immediately
-                                                    activeTargets = activeTargets.map {
-                                                        if (it.id == target.id) it.copy(isTapped = true) else it
-                                                    }
-                                                    targetsHit++
-                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                    onChallengeResult(targetsHit, totalTargetsSpawned)
-
-                                                    // Check if active orbs fall below 3, keep spawning until 6
-                                                    val livingCount = activeTargets.count { t ->
-                                                        !t.isTapped && (nowTapTime - t.spawnTimeMillis < t.lifetimeMillis)
-                                                    }
-                                                    if (livingCount < 3 && totalTargetsSpawned < targetsGoal) {
-                                                        val needed = (6 - livingCount).coerceAtMost(targetsGoal - totalTargetsSpawned)
-                                                        if (needed > 0) {
-                                                            val living = activeTargets.filter { t ->
-                                                                !t.isTapped && (nowTapTime - t.spawnTimeMillis < t.lifetimeMillis)
-                                                            }.toMutableList()
-                                                            val newOrbs = mutableListOf<ReflexTarget>()
-                                                            for (k in 0 until needed) {
-                                                                val newOrb = generateNewTarget(
-                                                                    id = totalTargetsSpawned + k,
-                                                                    existingTargets = living + newOrbs
-                                                                ).copy(
-                                                                    spawnTimeMillis = nowTapTime + (k * 80L),
-                                                                    lifetimeMillis = 1200L
-                                                                )
-                                                                newOrbs.add(newOrb)
-                                                            }
-                                                            activeTargets = activeTargets + newOrbs
-                                                            totalTargetsSpawned += newOrbs.size
-                                                            onChallengeResult(targetsHit, totalTargetsSpawned)
-                                                        }
-                                                    }
-                                                }
-                                            },
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        // Tsoding Musializer Glowing Orb
-                                        Canvas(
-                                            modifier = Modifier
-                                                .size(targetSize)
-                                                .graphicsLayer {
-                                                    scaleX = targetPulseScale
-                                                    scaleY = targetPulseScale
-                                                    alpha = envelopeAlpha
-                                                }
-                                        ) {
-                                            drawTsodingGlowingOrb(
-                                                isGolden = target.isGolden,
-                                                pulseAlpha = targetPulseAlpha
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    )
                 }
 
                 isGameOver && !hasProceededToNext -> {
