@@ -145,7 +145,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     val challengeScorePercentage: Int
         get() = if (challengeTotalTargets > 0) (challengeScore * 100) / challengeTotalTargets else 0
     val isChallengePassed: Boolean
-        get() = (challengeTotalTargets == 0 || challengeScorePercentage >= 65) &&
+        get() = (challengeTotalTargets == 0 || challengeScorePercentage >= 60) &&
                 (lastFocusReport == null || (
                     lastFocusReport?.classification != com.college.feature.attendance.telemetry.FocusClassification.DIVIDED_ATTENTION_PROXY &&
                     lastFocusReport?.classification != com.college.feature.attendance.telemetry.FocusClassification.AUTOMATED_SCRIPT &&

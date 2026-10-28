@@ -271,7 +271,7 @@ fun OsuRhythmChallenge(
                 val targetTime = slider.targetHitTimeMs(gameStartMs)
                 val progress = ((now - targetTime).toFloat() / slider.durationMs.toFloat()).coerceIn(0f, 1f)
                 val ballPos = slider.getBezierPoint(progress, currentWidthPx, currentHeightPx)
-                val trackingRadius = with(density) { 56.dp.toPx() } // Calibrated to detect divided attention drift
+                val trackingRadius = with(density) { 68.dp.toPx() } // Generous mobile finger follower radius
 
                 val isFingerOnBall = activePointers.values.any { touch ->
                     val dx = touch.x - ballPos.x
@@ -292,9 +292,9 @@ fun OsuRhythmChallenge(
                     val ratio = (newTracked.toFloat() / newTotal.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
 
                     val finalJudgement = when {
-                        ratio >= 0.70f -> JudgementType.PERFECT
-                        ratio >= 0.50f -> JudgementType.GREAT
-                        ratio >= 0.30f -> JudgementType.GOOD
+                        ratio >= 0.50f -> JudgementType.PERFECT
+                        ratio >= 0.30f -> JudgementType.GREAT
+                        ratio >= 0.15f -> JudgementType.GOOD
                         else -> JudgementType.MISS
                     }
 
@@ -505,7 +505,7 @@ fun OsuRhythmChallenge(
                     val progress = ((nowMs - targetTime).toFloat() / slider.durationMs.toFloat()).coerceIn(0f, 1f)
                     val ballPos = slider.getBezierPoint(progress, canvasW, canvasH)
 
-                    val followerRadius = 56.dp.toPx()
+                    val followerRadius = 68.dp.toPx()
                     val isBeingTracked = activePointers.values.any { touch ->
                         val dx = touch.x - ballPos.x
                         val dy = touch.y - ballPos.y

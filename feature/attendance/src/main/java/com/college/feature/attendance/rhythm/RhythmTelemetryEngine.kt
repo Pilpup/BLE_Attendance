@@ -136,24 +136,26 @@ object RhythmTelemetryEngine {
                 diagnosticReason = "Superhuman timing precision (< 12ms error) and zero coordinate jitter detected"
             }
 
-            // Dual-phone proxy indicators:
-            // Intermittent gaze saccades between 2 devices create bimodal timing oscillation (LOI > 0.45),
-            // high timing variability (CV > 0.45), or broken continuous slider pursuit (ratio < 0.45).
-            (oscillationIndex > 0.45f && timingCoeffOfVariation > 0.45f) ||
-            (oscillationIndex > 0.40f && avgSliderTrackingRatio < 0.45f) ||
-            (timingCoeffOfVariation > 0.42f && outOfOrderStrikes >= 2) -> {
-                classification = FocusClassification.DIVIDED_ATTENTION_PROXY
-                diagnosticReason = "Divided attention detected (timing oscillation index ${String.format(java.util.Locale.US, "%.2f", oscillationIndex)}, slider tracking ${(avgSliderTrackingRatio * 100).toInt()}%)"
-            }
-
-            hits >= 8 && accuracyPercentage >= 65 -> {
+            // Human single-device verification:
+            // A player who maintains consistent visual-motor rhythm on this device's unique
+            // procedural beatmap without severe bimodal gaze-switch swings is verified single-device.
+            hits >= 7 && accuracyPercentage >= 60 && mcd < 130f -> {
                 classification = FocusClassification.FOCUSED_SINGLE_DEVICE
                 diagnosticReason = "Human visual rhythm verified ($hits/$totalObjects hits, ${accuracyPercentage}% accuracy)"
             }
 
+            // Dual-phone proxy indicators:
+            // Intermittent gaze saccades between 2 devices create severe bimodal timing swings
+            // (MCD > 130ms and timing std dev > 75ms) or broken continuous slider pursuit combined with low hits.
+            (mcd > 130f && timingStdDev > 75f) ||
+            (oscillationIndex > 0.65f && timingCoeffOfVariation > 0.60f && (outOfOrderStrikes >= 2 || avgSliderTrackingRatio < 0.25f)) -> {
+                classification = FocusClassification.DIVIDED_ATTENTION_PROXY
+                diagnosticReason = "Divided attention detected: alternating gaze-shift delays (swing ${mcd.toInt()}ms, CV ${String.format(java.util.Locale.US, "%.2f", timingCoeffOfVariation)})"
+            }
+
             else -> {
                 classification = FocusClassification.INATTENTIVE
-                diagnosticReason = "Rhythm accuracy below verification threshold ($hits/$totalObjects hits, ${accuracyPercentage}% accuracy; required >= 65%)"
+                diagnosticReason = "Rhythm score below verification threshold ($hits/$totalObjects hits, ${accuracyPercentage}% accuracy; required >= 60%)"
             }
         }
 
