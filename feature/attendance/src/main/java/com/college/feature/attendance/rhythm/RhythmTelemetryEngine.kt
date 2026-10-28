@@ -137,21 +137,23 @@ object RhythmTelemetryEngine {
             }
 
             // Dual-phone proxy indicators:
-            // Must exhibit severe bimodal timing oscillation (LOI > 0.65)
-            // paired with high timing variance (CV > 0.60) and broken tracking/order
-            (oscillationIndex > 0.65f && timingCoeffOfVariation > 0.60f && (outOfOrderStrikes >= 3 || avgSliderTrackingRatio < 0.20f)) -> {
+            // Intermittent gaze saccades between 2 devices create bimodal timing oscillation (LOI > 0.45),
+            // high timing variability (CV > 0.45), or broken continuous slider pursuit (ratio < 0.45).
+            (oscillationIndex > 0.45f && timingCoeffOfVariation > 0.45f) ||
+            (oscillationIndex > 0.40f && avgSliderTrackingRatio < 0.45f) ||
+            (timingCoeffOfVariation > 0.42f && outOfOrderStrikes >= 2) -> {
                 classification = FocusClassification.DIVIDED_ATTENTION_PROXY
-                diagnosticReason = "Periodic bimodal timing swings and gaze-shift pauses indicate divided attention across 2+ devices"
+                diagnosticReason = "Divided attention detected (timing oscillation index ${String.format(java.util.Locale.US, "%.2f", oscillationIndex)}, slider tracking ${(avgSliderTrackingRatio * 100).toInt()}%)"
             }
 
-            hits >= (totalObjects / 2) || accuracyPercentage >= 40 -> {
+            hits >= 8 && accuracyPercentage >= 65 -> {
                 classification = FocusClassification.FOCUSED_SINGLE_DEVICE
                 diagnosticReason = "Human visual rhythm verified ($hits/$totalObjects hits, ${accuracyPercentage}% accuracy)"
             }
 
             else -> {
                 classification = FocusClassification.INATTENTIVE
-                diagnosticReason = "Incomplete rhythm sequence ($hits/$totalObjects hits); please focus and try again"
+                diagnosticReason = "Rhythm accuracy below verification threshold ($hits/$totalObjects hits, ${accuracyPercentage}% accuracy; required >= 65%)"
             }
         }
 

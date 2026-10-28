@@ -47,15 +47,26 @@ import kotlin.math.sqrt
  * osu!-Style Rhythm & Slider Verification Interactive Canvas.
  * Combines shrinking approach rings, numbered combos, and continuous slider path tracking
  * to capture high-resolution visual-motor phase lock and continuous attention telemetry.
+ *
+ * Enforces strict visual saccade traps (tight ±220ms hit windows, procedural unsynchronized
+ * beatmap per student, and continuous bimanual motor tracking).
  */
 @Composable
 fun OsuRhythmChallenge(
     modifier: Modifier = Modifier,
+    seedKey: String = "",
     onProgressUpdate: (hitCount: Int, totalObjects: Int) -> Unit = { _, _ -> },
     onComplete: (interactions: List<RhythmInteractionRecord>) -> Unit
 ) {
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
+
+    // Generate or fetch device-unique procedural beatmap
+    val objects = remember(seedKey) { AttendanceBeatmap.getForSeed(seedKey) }
+    val totalObjects = objects.size
+    val totalDurationMs = remember(objects) {
+        (objects.maxOfOrNull { it.sliderEndTimeMs(0L) } ?: 13500L) + 400L
+    }
 
     // Session State (initialized immediately)
     val gameStartMs = remember { System.currentTimeMillis() }
@@ -116,20 +127,17 @@ fun OsuRhythmChallenge(
         }
     }
 
-    val objects = AttendanceBeatmap.objects
-    val totalObjects = objects.size
-
-    // Tap Handling Function (Generous, Natural Mobile Touch Window)
+    // Tap Handling Function with Visual Saccade Trap Windows
     fun processTap(touchPos: Offset, w: Float, h: Float) {
         val now = System.currentTimeMillis()
-        val hitRadius = with(density) { 65.dp.toPx() }
+        val hitRadius = with(density) { 62.dp.toPx() }
 
         // Find active circles or slider heads on screen that have not been completed yet
         val eligible = objects.filter { obj ->
             hitObjectStates[obj.id] != true &&
             obj.id !in activeSliders &&
             now >= (obj.spawnOffsetMs + gameStartMs) &&
-            now <= (obj.targetHitTimeMs(gameStartMs) + 380L)
+            now <= (obj.targetHitTimeMs(gameStartMs) + 220L)
         }.sortedBy { it.targetHitTimeMs(gameStartMs) }
 
         for (obj in eligible) {
@@ -141,17 +149,17 @@ fun OsuRhythmChallenge(
             if (dist <= hitRadius) {
                 val deltaTiming = now - obj.targetHitTimeMs(gameStartMs)
 
-                // If tapped more than 380ms early, the approach circle is still too far out
-                // Ignore the tap so the player waits for the proper beat
-                if (deltaTiming < -380L) {
+                // If tapped more than 220ms early, the approach circle is still too far out
+                // Ignore the tap so the player must synchronize with the approach circle
+                if (deltaTiming < -220L) {
                     continue
                 }
 
                 val absDelta = abs(deltaTiming)
                 val judgement = when {
-                    absDelta <= 110L -> JudgementType.PERFECT
-                    absDelta <= 240L -> JudgementType.GREAT
-                    absDelta <= 380L -> JudgementType.GOOD
+                    absDelta <= 80L -> JudgementType.PERFECT   // 300
+                    absDelta <= 150L -> JudgementType.GREAT    // 100
+                    absDelta <= 220L -> JudgementType.GOOD     // 50
                     else -> JudgementType.MISS
                 }
 
@@ -210,11 +218,11 @@ fun OsuRhythmChallenge(
             currentClockMs = now
             val elapsed = now - gameStartMs
 
-            // 1. Check for expired objects that player missed
+            // 1. Check for expired objects that player missed (Strict ±220ms cutoff)
             for (obj in objects) {
                 if (hitObjectStates[obj.id] != true && obj.id !in activeSliders) {
                     val targetTime = obj.targetHitTimeMs(gameStartMs)
-                    if (now > targetTime + 380L) {
+                    if (now > targetTime + 220L) {
                         hitObjectStates[obj.id] = true
                         completedObjectCount++
                         comboCounter = 0 // Combo breaks on miss
@@ -224,7 +232,7 @@ fun OsuRhythmChallenge(
                                 objectId = obj.id,
                                 isSlider = obj.type == RhythmObjectType.SLIDER,
                                 comboNumber = obj.comboNumber,
-                                timingErrorMs = 380L,
+                                timingErrorMs = 220L,
                                 judgement = JudgementType.MISS,
                                 touchDistancePx = 999f,
                                 normalizedRadialOffset = 1.0f,
@@ -248,7 +256,7 @@ fun OsuRhythmChallenge(
                 }
             }
 
-            // 2. Active Sliders Tracking (Automatically engages if ball starts rolling)
+            // 2. Active Sliders Tracking (Continuous pursuit motor control)
             val rollingSliders = objects.filter {
                 it.type == RhythmObjectType.SLIDER &&
                 hitObjectStates[it.id] != true &&
@@ -263,7 +271,7 @@ fun OsuRhythmChallenge(
                 val targetTime = slider.targetHitTimeMs(gameStartMs)
                 val progress = ((now - targetTime).toFloat() / slider.durationMs.toFloat()).coerceIn(0f, 1f)
                 val ballPos = slider.getBezierPoint(progress, currentWidthPx, currentHeightPx)
-                val trackingRadius = with(density) { 72.dp.toPx() } // Generous mobile finger follower radius
+                val trackingRadius = with(density) { 56.dp.toPx() } // Calibrated to detect divided attention drift
 
                 val isFingerOnBall = activePointers.values.any { touch ->
                     val dx = touch.x - ballPos.x
@@ -284,9 +292,9 @@ fun OsuRhythmChallenge(
                     val ratio = (newTracked.toFloat() / newTotal.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
 
                     val finalJudgement = when {
-                        ratio >= 0.50f -> JudgementType.PERFECT
-                        ratio >= 0.30f -> JudgementType.GREAT
-                        ratio >= 0.15f -> JudgementType.GOOD
+                        ratio >= 0.70f -> JudgementType.PERFECT
+                        ratio >= 0.50f -> JudgementType.GREAT
+                        ratio >= 0.30f -> JudgementType.GOOD
                         else -> JudgementType.MISS
                     }
 
@@ -333,7 +341,7 @@ fun OsuRhythmChallenge(
             floatingBursts.removeAll { now - it.spawnTimeMs > it.durationMs }
 
             // 4. Session Completion Check
-            if (completedObjectCount >= totalObjects || elapsed >= AttendanceBeatmap.totalDurationMs + 400L) {
+            if (completedObjectCount >= totalObjects || elapsed >= totalDurationMs) {
                 // Ensure all objects are finalized in interactions list
                 for (obj in objects) {
                     if (hitObjectStates[obj.id] != true) {
@@ -343,7 +351,7 @@ fun OsuRhythmChallenge(
                                 objectId = obj.id,
                                 isSlider = obj.type == RhythmObjectType.SLIDER,
                                 comboNumber = obj.comboNumber,
-                                timingErrorMs = 400L,
+                                timingErrorMs = 220L,
                                 judgement = JudgementType.MISS,
                                 touchDistancePx = 999f,
                                 normalizedRadialOffset = 1.0f,
@@ -497,7 +505,7 @@ fun OsuRhythmChallenge(
                     val progress = ((nowMs - targetTime).toFloat() / slider.durationMs.toFloat()).coerceIn(0f, 1f)
                     val ballPos = slider.getBezierPoint(progress, canvasW, canvasH)
 
-                    val followerRadius = 62.dp.toPx()
+                    val followerRadius = 56.dp.toPx()
                     val isBeingTracked = activePointers.values.any { touch ->
                         val dx = touch.x - ballPos.x
                         val dy = touch.y - ballPos.y
@@ -533,7 +541,7 @@ fun OsuRhythmChallenge(
                 hitObjectStates[it.id] != true &&
                 it.id !in activeSliders &&
                 nowMs >= (it.spawnOffsetMs + gameStartMs) &&
-                nowMs <= (it.targetHitTimeMs(gameStartMs) + 380L)
+                nowMs <= (it.targetHitTimeMs(gameStartMs) + 220L)
             }
 
             for (obj in activeCircles) {

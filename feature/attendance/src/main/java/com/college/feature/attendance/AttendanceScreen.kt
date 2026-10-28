@@ -288,6 +288,8 @@ fun AttendanceScreen(
                 user.hasRole(Role.STUDENT) -> StudentSection(
                     studentPhase = studentPhase,
                     detectedSessionId = detectedSessionId,
+                    sessionSalt = viewModel.detectedSessionSalt,
+                    studentId = viewModel.studentShortId,
                     deskNeighbours = deskNeighbours,
                     studentDiscoveryRemainingSeconds = studentDiscoveryRemainingSeconds,
                     studentStatusMessage = studentStatusMessage,
@@ -467,6 +469,8 @@ private fun DrawScope.drawTsodingGlowingOrb(
 private fun StudentSection(
     studentPhase: StudentPhase,
     detectedSessionId: String,
+    sessionSalt: String = "",
+    studentId: String = "",
     deskNeighbours: List<PeerData>,
     studentDiscoveryRemainingSeconds: Int = 0,
     studentStatusMessage: String? = null,
@@ -665,6 +669,7 @@ private fun StudentSection(
                 studentPhase == StudentPhase.PROBING_NEIGHBORS && !isGameOver -> {
                     OsuRhythmChallenge(
                         modifier = Modifier.fillMaxSize(),
+                        seedKey = "$detectedSessionId:$sessionSalt:$studentId",
                         onProgressUpdate = { hits, total ->
                             targetsHit = hits
                             totalTargetsSpawned = total

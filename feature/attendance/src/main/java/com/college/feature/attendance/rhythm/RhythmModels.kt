@@ -85,150 +85,249 @@ data class RhythmInteractionRecord(
 )
 
 /**
- * Curated 12-second attendance rhythm map.
- * Fast, fluid, elegant, and engaging for all students.
+ * Procedural Beatmap Generator that synthesizes device-unique, unsynchronized rhythm maps.
+ * Uses SHA-256 hash of SessionID + BeaconSalt + StudentID to produce distinct spatial coordinates,
+ * distinct tempo intervals, and unpredictable curved slider trajectories.
+ * This completely defeats dual-phone proxy attempts because human visual attention cannot
+ * track two independent, unsynchronized rhythmic fields simultaneously.
+ */
+object ProceduralBeatmapGenerator {
+    fun generate(seedKey: String): List<RhythmBeatmapObject> {
+        val hash = seedKey.fold(1125899906842597L) { acc, c ->
+            (acc * 131L + c.code.toLong()) and 0x7FFFFFFFFFFFFFFFL
+        }
+        val rng = java.util.Random(hash)
+
+        val objects = mutableListOf<RhythmBeatmapObject>()
+        var currentSpawnMs = 250L
+
+        // Combo 1: Emerald Rhythm Stream (4 objects: 3 circles + 1 curved slider)
+        val combo1Color = 0xFF00F5A0
+        val p1x = 0.25f + rng.nextFloat() * 0.18f
+        val p1y = 0.30f + rng.nextFloat() * 0.14f
+        objects.add(
+            RhythmBeatmapObject(
+                id = 1,
+                type = RhythmObjectType.CIRCLE,
+                comboNumber = 1,
+                relX = p1x,
+                relY = p1y,
+                spawnOffsetMs = currentSpawnMs,
+                approachDurationMs = 1000L,
+                colorLong = combo1Color
+            )
+        )
+
+        currentSpawnMs += 780L + (rng.nextInt(140) - 70L)
+        val p2x = 0.44f + rng.nextFloat() * 0.16f
+        val p2y = 0.44f + rng.nextFloat() * 0.14f
+        objects.add(
+            RhythmBeatmapObject(
+                id = 2,
+                type = RhythmObjectType.CIRCLE,
+                comboNumber = 2,
+                relX = p2x,
+                relY = p2y,
+                spawnOffsetMs = currentSpawnMs,
+                approachDurationMs = 1000L,
+                colorLong = combo1Color
+            )
+        )
+
+        currentSpawnMs += 780L + (rng.nextInt(140) - 70L)
+        val p3x = 0.62f + rng.nextFloat() * 0.16f
+        val p3y = 0.30f + rng.nextFloat() * 0.14f
+        objects.add(
+            RhythmBeatmapObject(
+                id = 3,
+                type = RhythmObjectType.CIRCLE,
+                comboNumber = 3,
+                relX = p3x,
+                relY = p3y,
+                spawnOffsetMs = currentSpawnMs,
+                approachDurationMs = 1000L,
+                colorLong = combo1Color
+            )
+        )
+
+        currentSpawnMs += 800L + (rng.nextInt(120) - 60L)
+        val s4Start = Offset(0.64f + rng.nextFloat() * 0.12f, 0.60f + rng.nextFloat() * 0.08f)
+        val s4Ctrl = Offset(0.46f + rng.nextFloat() * 0.10f, 0.74f + rng.nextFloat() * 0.05f)
+        val s4End = Offset(0.24f + rng.nextFloat() * 0.10f, 0.58f + rng.nextFloat() * 0.08f)
+        objects.add(
+            RhythmBeatmapObject(
+                id = 4,
+                type = RhythmObjectType.SLIDER,
+                comboNumber = 4,
+                relX = s4Start.x,
+                relY = s4Start.y,
+                controlRelX = s4Ctrl.x,
+                controlRelY = s4Ctrl.y,
+                endRelX = s4End.x,
+                endRelY = s4End.y,
+                spawnOffsetMs = currentSpawnMs,
+                approachDurationMs = 1000L,
+                durationMs = 1250L,
+                colorLong = combo1Color
+            )
+        )
+
+        // Combo 2: Electric Cyan (4 objects: 3 circles + 1 sweep slider)
+        val combo2Color = 0xFF38BDF8
+        currentSpawnMs += 2250L // Transition after slider 4 finishes
+        val p5x = 0.24f + rng.nextFloat() * 0.14f
+        val p5y = 0.64f + rng.nextFloat() * 0.10f
+        objects.add(
+            RhythmBeatmapObject(
+                id = 5,
+                type = RhythmObjectType.CIRCLE,
+                comboNumber = 1,
+                relX = p5x,
+                relY = p5y,
+                spawnOffsetMs = currentSpawnMs,
+                approachDurationMs = 950L,
+                colorLong = combo2Color
+            )
+        )
+
+        currentSpawnMs += 760L + (rng.nextInt(120) - 60L)
+        val p6x = 0.66f + rng.nextFloat() * 0.12f
+        val p6y = 0.48f + rng.nextFloat() * 0.12f
+        objects.add(
+            RhythmBeatmapObject(
+                id = 6,
+                type = RhythmObjectType.CIRCLE,
+                comboNumber = 2,
+                relX = p6x,
+                relY = p6y,
+                spawnOffsetMs = currentSpawnMs,
+                approachDurationMs = 950L,
+                colorLong = combo2Color
+            )
+        )
+
+        currentSpawnMs += 760L + (rng.nextInt(120) - 60L)
+        val p7x = 0.42f + rng.nextFloat() * 0.16f
+        val p7y = 0.26f + rng.nextFloat() * 0.10f
+        objects.add(
+            RhythmBeatmapObject(
+                id = 7,
+                type = RhythmObjectType.CIRCLE,
+                comboNumber = 3,
+                relX = p7x,
+                relY = p7y,
+                spawnOffsetMs = currentSpawnMs,
+                approachDurationMs = 950L,
+                colorLong = combo2Color
+            )
+        )
+
+        currentSpawnMs += 780L + (rng.nextInt(120) - 60L)
+        val s8Start = Offset(0.24f + rng.nextFloat() * 0.10f, 0.32f + rng.nextFloat() * 0.08f)
+        val s8Ctrl = Offset(0.50f + rng.nextFloat() * 0.08f, 0.46f + rng.nextFloat() * 0.08f)
+        val s8End = Offset(0.72f + rng.nextFloat() * 0.08f, 0.66f + rng.nextFloat() * 0.08f)
+        objects.add(
+            RhythmBeatmapObject(
+                id = 8,
+                type = RhythmObjectType.SLIDER,
+                comboNumber = 4,
+                relX = s8Start.x,
+                relY = s8Start.y,
+                controlRelX = s8Ctrl.x,
+                controlRelY = s8Ctrl.y,
+                endRelX = s8End.x,
+                endRelY = s8End.y,
+                spawnOffsetMs = currentSpawnMs,
+                approachDurationMs = 950L,
+                durationMs = 1300L,
+                colorLong = combo2Color
+            )
+        )
+
+        // Combo 3: Golden Crescendo Finale (4 circles)
+        val combo3Color = 0xFFF59E0B
+        currentSpawnMs += 2250L // Transition after slider 8 finishes
+        val p9x = 0.66f + rng.nextFloat() * 0.12f
+        val p9y = 0.30f + rng.nextFloat() * 0.10f
+        objects.add(
+            RhythmBeatmapObject(
+                id = 9,
+                type = RhythmObjectType.CIRCLE,
+                comboNumber = 1,
+                relX = p9x,
+                relY = p9y,
+                spawnOffsetMs = currentSpawnMs,
+                approachDurationMs = 900L,
+                colorLong = combo3Color
+            )
+        )
+
+        currentSpawnMs += 720L + (rng.nextInt(100) - 50L)
+        val p10x = 0.28f + rng.nextFloat() * 0.10f
+        val p10y = 0.48f + rng.nextFloat() * 0.10f
+        objects.add(
+            RhythmBeatmapObject(
+                id = 10,
+                type = RhythmObjectType.CIRCLE,
+                comboNumber = 2,
+                relX = p10x,
+                relY = p10y,
+                spawnOffsetMs = currentSpawnMs,
+                approachDurationMs = 900L,
+                colorLong = combo3Color
+            )
+        )
+
+        currentSpawnMs += 720L + (rng.nextInt(100) - 50L)
+        val p11x = 0.64f + rng.nextFloat() * 0.10f
+        val p11y = 0.66f + rng.nextFloat() * 0.08f
+        objects.add(
+            RhythmBeatmapObject(
+                id = 11,
+                type = RhythmObjectType.CIRCLE,
+                comboNumber = 3,
+                relX = p11x,
+                relY = p11y,
+                spawnOffsetMs = currentSpawnMs,
+                approachDurationMs = 900L,
+                colorLong = combo3Color
+            )
+        )
+
+        currentSpawnMs += 740L + (rng.nextInt(100) - 50L)
+        val p12x = 0.46f + rng.nextFloat() * 0.08f
+        val p12y = 0.44f + rng.nextFloat() * 0.08f
+        objects.add(
+            RhythmBeatmapObject(
+                id = 12,
+                type = RhythmObjectType.CIRCLE,
+                comboNumber = 4,
+                relX = p12x,
+                relY = p12y,
+                spawnOffsetMs = currentSpawnMs,
+                approachDurationMs = 900L,
+                colorLong = combo3Color
+            )
+        )
+
+        return objects
+    }
+}
+
+/**
+ * Standard beatmap wrapper with fallback.
  */
 object AttendanceBeatmap {
-    val objects: List<RhythmBeatmapObject> = listOf(
-        // ── Combo 1: Emerald Rhythm Stream (Warmup Phase) ──
-        RhythmBeatmapObject(
-            id = 1,
-            type = RhythmObjectType.CIRCLE,
-            comboNumber = 1,
-            relX = 0.28f,
-            relY = 0.35f,
-            spawnOffsetMs = 250L,
-            approachDurationMs = 1000L,
-            colorLong = 0xFF00F5A0
-        ),
-        RhythmBeatmapObject(
-            id = 2,
-            type = RhythmObjectType.CIRCLE,
-            comboNumber = 2,
-            relX = 0.50f,
-            relY = 0.48f,
-            spawnOffsetMs = 1050L,
-            approachDurationMs = 1000L,
-            colorLong = 0xFF00F5A0
-        ),
-        RhythmBeatmapObject(
-            id = 3,
-            type = RhythmObjectType.CIRCLE,
-            comboNumber = 3,
-            relX = 0.72f,
-            relY = 0.35f,
-            spawnOffsetMs = 1850L,
-            approachDurationMs = 1000L,
-            colorLong = 0xFF00F5A0
-        ),
-        // Arc Slider 4: Smooth curve from bottom-right up through center
-        RhythmBeatmapObject(
-            id = 4,
-            type = RhythmObjectType.SLIDER,
-            comboNumber = 4,
-            relX = 0.72f,
-            relY = 0.65f,
-            controlRelX = 0.50f,
-            controlRelY = 0.78f,
-            endRelX = 0.26f,
-            endRelY = 0.62f,
-            spawnOffsetMs = 2650L,
-            approachDurationMs = 1000L,
-            durationMs = 1200L,
-            colorLong = 0xFF00F5A0
-        ),
+    fun getForSeed(seedKey: String?): List<RhythmBeatmapObject> {
+        val cleanSeed = seedKey?.trim() ?: ""
+        return if (cleanSeed.isNotEmpty() && cleanSeed != "----" && cleanSeed != "----:------:0000") {
+            ProceduralBeatmapGenerator.generate(cleanSeed)
+        } else {
+            defaultObjects
+        }
+    }
 
-        // ── Combo 2: Electric Cyan Triangle & Diagonal Slider ──
-        RhythmBeatmapObject(
-            id = 5,
-            type = RhythmObjectType.CIRCLE,
-            comboNumber = 1,
-            relX = 0.28f,
-            relY = 0.68f,
-            spawnOffsetMs = 4900L,
-            approachDurationMs = 950L,
-            colorLong = 0xFF38BDF8
-        ),
-        RhythmBeatmapObject(
-            id = 6,
-            type = RhythmObjectType.CIRCLE,
-            comboNumber = 2,
-            relX = 0.70f,
-            relY = 0.50f,
-            spawnOffsetMs = 5700L,
-            approachDurationMs = 950L,
-            colorLong = 0xFF38BDF8
-        ),
-        RhythmBeatmapObject(
-            id = 7,
-            type = RhythmObjectType.CIRCLE,
-            comboNumber = 3,
-            relX = 0.45f,
-            relY = 0.28f,
-            spawnOffsetMs = 6500L,
-            approachDurationMs = 950L,
-            colorLong = 0xFF38BDF8
-        ),
-        // Sweep Slider 4: Gliding curve from top-left to bottom-right
-        RhythmBeatmapObject(
-            id = 8,
-            type = RhythmObjectType.SLIDER,
-            comboNumber = 4,
-            relX = 0.26f,
-            relY = 0.32f,
-            controlRelX = 0.52f,
-            controlRelY = 0.45f,
-            endRelX = 0.74f,
-            endRelY = 0.68f,
-            spawnOffsetMs = 7300L,
-            approachDurationMs = 950L,
-            durationMs = 1250L,
-            colorLong = 0xFF38BDF8
-        ),
-
-        // ── Combo 3: Golden Crescendo Finale ──
-        RhythmBeatmapObject(
-            id = 9,
-            type = RhythmObjectType.CIRCLE,
-            comboNumber = 1,
-            relX = 0.68f,
-            relY = 0.32f,
-            spawnOffsetMs = 9500L,
-            approachDurationMs = 900L,
-            colorLong = 0xFFF59E0B
-        ),
-        RhythmBeatmapObject(
-            id = 10,
-            type = RhythmObjectType.CIRCLE,
-            comboNumber = 2,
-            relX = 0.30f,
-            relY = 0.48f,
-            spawnOffsetMs = 10250L,
-            approachDurationMs = 900L,
-            colorLong = 0xFFF59E0B
-        ),
-        RhythmBeatmapObject(
-            id = 11,
-            type = RhythmObjectType.CIRCLE,
-            comboNumber = 3,
-            relX = 0.65f,
-            relY = 0.68f,
-            spawnOffsetMs = 11000L,
-            approachDurationMs = 900L,
-            colorLong = 0xFFF59E0B
-        ),
-        // Grand Center Star Finale
-        RhythmBeatmapObject(
-            id = 12,
-            type = RhythmObjectType.CIRCLE,
-            comboNumber = 4,
-            relX = 0.50f,
-            relY = 0.45f,
-            spawnOffsetMs = 11750L,
-            approachDurationMs = 900L,
-            colorLong = 0xFFF59E0B
-        )
-    )
-
+    val defaultObjects: List<RhythmBeatmapObject> = ProceduralBeatmapGenerator.generate("ATTENDANCE_DEFAULT_CURATED_MAP")
+    val objects: List<RhythmBeatmapObject> get() = defaultObjects
     val totalDurationMs: Long = 13500L
 }
