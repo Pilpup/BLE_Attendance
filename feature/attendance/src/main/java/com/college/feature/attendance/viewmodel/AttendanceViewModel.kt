@@ -852,13 +852,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
             override fun onFinish() {
                 studentDiscoverySecondsRemaining = 0
-                // Final upload of all discovered neighbors
-                studentPhase = if (isChallengePassed && topDeskNeighbours.isNotEmpty()) {
-                    StudentPhase.VERIFIED_PRESENT
-                } else {
-                    StudentPhase.UNVERIFIED_FLAGGED
-                }
+                // Background BLE discovery window complete; sync neighbors to cloud
                 submitMyNeighborsToCloud(keepRadioActive = true)
+                // studentPhase remains PROBING_NEIGHBORS so the score window stays visible
+                // until the student reviews their metrics and explicitly taps 'Next'
             }
         }.start()
     }

@@ -44,11 +44,18 @@ object RhythmTelemetryEngine {
             )
         }
 
-        // 1. Scoring & Accuracy Calculation
-        var totalPointsEarned = 0
-        val maxPoints = totalObjects * 300
-        interactions.forEach { totalPointsEarned += it.judgement.score }
-        val accuracyPercentage = ((totalPointsEarned.toFloat() / maxPoints.toFloat()) * 100f).toInt().coerceIn(0, 100)
+        // 1. Fair Weighted Rhythm Accuracy Calculation:
+        // Perfect = 1.0, Great = 0.85, Good = 0.70, Miss = 0.0
+        var weightedHitScore = 0f
+        interactions.forEach {
+            weightedHitScore += when (it.judgement) {
+                JudgementType.PERFECT -> 1.0f
+                JudgementType.GREAT -> 0.85f
+                JudgementType.GOOD -> 0.70f
+                JudgementType.MISS -> 0.0f
+            }
+        }
+        val accuracyPercentage = ((weightedHitScore / totalObjects.toFloat()) * 100f).toInt().coerceIn(0, 100)
 
         // 2. Approach Timing Error Phase-Lock (|actual - target|)
         val timingErrors = interactions.filter { it.judgement != JudgementType.MISS }.map { abs(it.timingErrorMs).toFloat() }
@@ -91,23 +98,20 @@ object RhythmTelemetryEngine {
         val isSuperhumanTiming = timingErrors.isNotEmpty() && meanTimingError < 15f && timingStdDev < 10f
 
         // 8. Cognitive Component Scores [0.0 .. 1.0]
-        // A. Timing Phase-Lock Score: optimal is tight timing error (< 75ms)
         val timingScore = when {
-            meanTimingError < 80f -> 1.0f
-            meanTimingError < 140f -> 0.85f
-            meanTimingError < 220f -> 0.65f
-            else -> 0.30f
+            meanTimingError < 120f -> 1.0f
+            meanTimingError < 220f -> 0.85f
+            meanTimingError < 350f -> 0.65f
+            else -> 0.35f
         }
 
-        // B. Slider Continuous Tracking Score: single-device focus is > 75%
         val sliderScore = when {
-            avgSliderTrackingRatio >= 0.80f -> 1.0f
-            avgSliderTrackingRatio >= 0.60f -> 0.75f
-            avgSliderTrackingRatio >= 0.40f -> 0.40f
-            else -> 0.10f // Dropped slider while looking at second phone
+            avgSliderTrackingRatio >= 0.70f -> 1.0f
+            avgSliderTrackingRatio >= 0.45f -> 0.80f
+            avgSliderTrackingRatio >= 0.25f -> 0.50f
+            else -> 0.20f
         }
 
-        // C. Rhythm Flow & Presence Score
         val presenceScore = (hits.toFloat() / totalObjects.toFloat()).coerceIn(0f, 1f)
 
         // Composite Focus Index
@@ -125,31 +129,25 @@ object RhythmTelemetryEngine {
         when {
             isZeroJitterBot || isSuperhumanTiming -> {
                 classification = FocusClassification.AUTOMATED_SCRIPT
-                diagnosticReason = "Superhuman timing accuracy (avg error ${meanTimingError.toInt()}ms) and zero spatial jitter detected"
+                diagnosticReason = "Superhuman timing precision (< 15ms error) and zero coordinate jitter detected"
             }
 
             // Dual-phone proxy indicators:
-            // - Dropped continuous slider tracking (< 50%) due to moving hand to second device
-            // - High timing oscillation (> 0.52) or out-of-order combo strikes paired with erratic phase-lock
-            (avgSliderTrackingRatio < 0.48f && sliderInteractions.isNotEmpty()) ||
-            (oscillationIndex > 0.52f && (outOfOrderStrikes > 1 || avgSliderTrackingRatio < 0.65f)) ||
-            (timingStdDev > 110f && avgSliderTrackingRatio < 0.60f) -> {
+            // Must exhibit severe bimodal timing oscillation (LOI > 0.60)
+            // paired with high timing variance (CV > 0.55) and broken tracking/order
+            (oscillationIndex > 0.60f && timingCoeffOfVariation > 0.55f && (outOfOrderStrikes >= 2 || avgSliderTrackingRatio < 0.30f)) -> {
                 classification = FocusClassification.DIVIDED_ATTENTION_PROXY
-                diagnosticReason = if (avgSliderTrackingRatio < 0.48f) {
-                    "Broken continuous slider tracking (${(avgSliderTrackingRatio * 100).toInt()}%) indicates attention shifted to secondary device"
-                } else {
-                    "Alternating timing phase-drift and sequential combo errors indicate divided attention across 2+ screens"
-                }
+                diagnosticReason = "Periodic bimodal timing swings and gaze-shift pauses indicate divided attention across 2+ devices"
             }
 
-            focusIndex >= 0.60f && accuracyPercentage >= 60 -> {
+            hits >= (totalObjects / 2) && accuracyPercentage >= 45 -> {
                 classification = FocusClassification.FOCUSED_SINGLE_DEVICE
-                diagnosticReason = "Synchronized visual-motor phase lock, continuous path tracking (${(avgSliderTrackingRatio * 100).toInt()}%), and foveal focus confirmed"
+                diagnosticReason = "Human visual rhythm verified ($hits/$totalObjects hits, ${accuracyPercentage}% accuracy)"
             }
 
             else -> {
                 classification = FocusClassification.INATTENTIVE
-                diagnosticReason = "Incomplete rhythm sequence or timing phase drift without alternating proxy pattern"
+                diagnosticReason = "Incomplete rhythm sequence ($hits/$totalObjects hits); please focus and try again"
             }
         }
 

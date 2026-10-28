@@ -117,16 +117,17 @@ fun OsuRhythmChallenge(
     val objects = AttendanceBeatmap.objects
     val totalObjects = objects.size
 
-    // Tap Handling Function
+    // Tap Handling Function (Generous, Natural Mobile Touch Window)
     fun processTap(touchPos: Offset, w: Float, h: Float) {
         val now = System.currentTimeMillis()
-        val hitRadius = with(density) { 56.dp.toPx() }
+        val hitRadius = with(density) { 62.dp.toPx() }
 
-        // Find eligible unhit objects within the active hit window: [targetTime - 320ms, targetTime + 320ms]
+        // Find active circles or slider heads on screen that have not been hit yet
         val eligible = objects.filter { obj ->
             hitObjectStates[obj.id] != true &&
             obj.id !in activeSliders &&
-            abs(now - obj.targetHitTimeMs(gameStartMs)) <= 320L
+            now >= (obj.spawnOffsetMs + gameStartMs) &&
+            now <= (obj.targetHitTimeMs(gameStartMs) + 400L)
         }.sortedBy { it.targetHitTimeMs(gameStartMs) }
 
         for (obj in eligible) {
@@ -140,8 +141,8 @@ fun OsuRhythmChallenge(
                 val absDelta = abs(deltaTiming)
 
                 val judgement = when {
-                    absDelta <= 100L -> JudgementType.PERFECT
-                    absDelta <= 200L -> JudgementType.GREAT
+                    absDelta <= 140L -> JudgementType.PERFECT
+                    absDelta <= 280L -> JudgementType.GREAT
                     else -> JudgementType.GOOD
                 }
 
@@ -202,7 +203,13 @@ fun OsuRhythmChallenge(
             for (obj in objects) {
                 if (hitObjectStates[obj.id] != true && obj.id !in activeSliders) {
                     val targetTime = obj.targetHitTimeMs(gameStartMs)
-                    if (now > targetTime + 320L) {
+                    val deadline = if (obj.type == RhythmObjectType.SLIDER) {
+                        obj.sliderEndTimeMs(gameStartMs) + 200L
+                    } else {
+                        targetTime + 400L
+                    }
+
+                    if (now > deadline) {
                         hitObjectStates[obj.id] = true
                         completedObjectCount++
                         comboCounter = 0 // Combo breaks on miss
@@ -212,7 +219,7 @@ fun OsuRhythmChallenge(
                                 objectId = obj.id,
                                 isSlider = obj.type == RhythmObjectType.SLIDER,
                                 comboNumber = obj.comboNumber,
-                                timingErrorMs = 350L,
+                                timingErrorMs = 400L,
                                 judgement = JudgementType.MISS,
                                 touchDistancePx = 999f,
                                 normalizedRadialOffset = 1.0f,
@@ -236,13 +243,24 @@ fun OsuRhythmChallenge(
                 }
             }
 
-            // 2. Active Sliders Tracking & Progress Check
-            val currentSliders = objects.filter { it.id in activeSliders && hitObjectStates[it.id] != true }
-            for (slider in currentSliders) {
+            // 2. Active Sliders Tracking (Automatically engages if finger is on moving ball)
+            val rollingSliders = objects.filter {
+                it.type == RhythmObjectType.SLIDER &&
+                hitObjectStates[it.id] != true &&
+                now >= it.targetHitTimeMs(gameStartMs) &&
+                now <= it.sliderEndTimeMs(gameStartMs)
+            }
+
+            for (slider in rollingSliders) {
+                // Auto-activate if not already active
+                if (slider.id !in activeSliders) {
+                    activeSliders.add(slider.id)
+                }
+
                 val targetTime = slider.targetHitTimeMs(gameStartMs)
                 val progress = ((now - targetTime).toFloat() / slider.durationMs.toFloat()).coerceIn(0f, 1f)
                 val ballPos = slider.getBezierPoint(progress, currentWidthPx, currentHeightPx)
-                val trackingRadius = with(density) { 62.dp.toPx() }
+                val trackingRadius = with(density) { 72.dp.toPx() } // Generous mobile finger follower radius
 
                 val isFingerOnBall = activePointers.values.any { touch ->
                     val dx = touch.x - ballPos.x
@@ -263,8 +281,8 @@ fun OsuRhythmChallenge(
 
                     val finalJudgement = when {
                         ratio >= 0.65f -> JudgementType.PERFECT
-                        ratio >= 0.40f -> JudgementType.GREAT
-                        ratio >= 0.20f -> JudgementType.GOOD
+                        ratio >= 0.38f -> JudgementType.GREAT
+                        ratio >= 0.18f -> JudgementType.GOOD
                         else -> JudgementType.MISS
                     }
 
@@ -308,7 +326,7 @@ fun OsuRhythmChallenge(
             floatingBursts.removeAll { now - it.spawnTimeMs > it.durationMs }
 
             // 4. Session Completion Check
-            if (completedObjectCount >= totalObjects || elapsed >= AttendanceBeatmap.totalDurationMs + 600L) {
+            if (completedObjectCount >= totalObjects || elapsed >= AttendanceBeatmap.totalDurationMs + 800L) {
                 delay(350L)
                 onComplete(interactions.toList())
                 break
@@ -452,7 +470,7 @@ fun OsuRhythmChallenge(
                     val progress = ((nowMs - targetTime).toFloat() / slider.durationMs.toFloat()).coerceIn(0f, 1f)
                     val ballPos = slider.getBezierPoint(progress, canvasW, canvasH)
 
-                    val followerRadius = 56.dp.toPx()
+                    val followerRadius = 62.dp.toPx()
                     val isBeingTracked = activePointers.values.any { touch ->
                         val dx = touch.x - ballPos.x
                         val dy = touch.y - ballPos.y
@@ -460,7 +478,7 @@ fun OsuRhythmChallenge(
                     }
 
                     drawCircle(
-                        color = if (isBeingTracked) trackColor.copy(alpha = 0.40f) else Color(0x30F59E0B),
+                        color = if (isBeingTracked) trackColor.copy(alpha = 0.45f) else Color(0x30F59E0B),
                         radius = followerRadius * (if (isBeingTracked) pulsePhase else 0.95f),
                         center = ballPos,
                         style = Stroke(width = 2.dp.toPx())
@@ -488,7 +506,7 @@ fun OsuRhythmChallenge(
                 hitObjectStates[it.id] != true &&
                 it.id !in activeSliders &&
                 nowMs >= (it.spawnOffsetMs + gameStartMs) &&
-                nowMs <= (it.targetHitTimeMs(gameStartMs) + 320L)
+                nowMs <= (it.targetHitTimeMs(gameStartMs) + 380L)
             }
 
             for (obj in activeCircles) {
