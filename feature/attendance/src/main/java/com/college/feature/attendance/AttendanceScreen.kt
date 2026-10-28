@@ -664,14 +664,16 @@ private fun StudentSection(
                 studentPhase == StudentPhase.PROBING_NEIGHBORS && !isGameOver -> {
                     OsuRhythmChallenge(
                         modifier = Modifier.fillMaxSize(),
-                        onProgressUpdate = { completed, total ->
-                            targetsHit = completed
+                        onProgressUpdate = { hits, total ->
+                            targetsHit = hits
                             totalTargetsSpawned = total
-                            onChallengeResult(completed, total)
+                            onChallengeResult(hits, total)
                         },
                         onComplete = { interactionList ->
                             isGameOver = true
                             val report = RhythmTelemetryEngine.analyze(interactionList)
+                            targetsHit = report.hits
+                            totalTargetsSpawned = report.totalSpawns
                             onBehavioralReport(report)
                             onChallengeResult(report.hits, report.totalSpawns)
                         }
@@ -680,17 +682,17 @@ private fun StudentSection(
 
                 isGameOver && !hasProceededToNext -> {
                     // Player Score & Rating Display
-                    val accuracy = if (totalTargetsSpawned > 0) (targetsHit * 100) / totalTargetsSpawned else 0
+                    val accuracy = lastFocusReport?.accuracyPercentage ?: if (totalTargetsSpawned > 0) (targetsHit * 100) / totalTargetsSpawned else 0
                     val rating = when {
-                        accuracy >= 90 -> "EXCELLENT"
+                        accuracy >= 90 -> "PERFECT"
                         accuracy >= 75 -> "GREAT"
-                        accuracy >= 50 -> "GOOD"
-                        else -> "GIT GUD"
+                        accuracy >= 55 -> "GOOD"
+                        else -> "TRY AGAIN"
                     }
                     val ratingColor = when {
                         accuracy >= 90 -> Color(0xFF00F5A0)
                         accuracy >= 75 -> Color(0xFF38BDF8)
-                        accuracy >= 50 -> Color(0xFFF59E0B)
+                        accuracy >= 55 -> Color(0xFFF59E0B)
                         else -> Color(0xFFEF4444)
                     }
 
@@ -718,8 +720,8 @@ private fun StudentSection(
                         }
                         Spacer(modifier = Modifier.height(10.dp))
                         Text(
-                            text = "$targetsHit / $totalTargetsSpawned",
-                            fontSize = 32.sp,
+                            text = "$targetsHit / $totalTargetsSpawned HITS",
+                            fontSize = 30.sp,
                             fontWeight = FontWeight.Black,
                             fontFamily = FontFamily.Monospace,
                             color = textPrimary
@@ -727,7 +729,7 @@ private fun StudentSection(
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             text = "ACCURACY ($accuracy%)",
-                            fontSize = 11.sp,
+                            fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 1.sp,
                             color = textMuted
@@ -801,7 +803,7 @@ private fun StudentSection(
                                                 color = textPrimary
                                             )
                                             Text(
-                                                text = "AVG RT",
+                                                text = "TIMING SYNC",
                                                 fontSize = 9.sp,
                                                 fontWeight = FontWeight.SemiBold,
                                                 color = textMuted

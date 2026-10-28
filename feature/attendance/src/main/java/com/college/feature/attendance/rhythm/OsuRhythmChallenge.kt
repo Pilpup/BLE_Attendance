@@ -2,7 +2,6 @@ package com.college.feature.attendance.rhythm
 
 import android.graphics.Paint
 import android.graphics.Typeface
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -13,7 +12,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -33,8 +31,9 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -44,6 +43,11 @@ import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.sqrt
 
+/**
+ * osu!-Style Rhythm & Slider Verification Interactive Canvas.
+ * Combines shrinking approach rings, numbered combos, and continuous slider path tracking
+ * to capture high-resolution visual-motor phase lock and continuous attention telemetry.
+ */
 @Composable
 fun OsuRhythmChallenge(
     modifier: Modifier = Modifier,
@@ -53,19 +57,25 @@ fun OsuRhythmChallenge(
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
 
-    // Session State
-    var gameStartMs by remember { mutableLongStateOf(0L) }
-    var currentClockMs by remember { mutableLongStateOf(0L) }
+    // Session State (initialized immediately)
+    val gameStartMs = remember { System.currentTimeMillis() }
+    var currentClockMs by remember { mutableLongStateOf(gameStartMs) }
     var comboCounter by remember { mutableIntStateOf(0) }
     var totalScore by remember { mutableIntStateOf(0) }
+    var successfulHitsCount by remember { mutableIntStateOf(0) }
     var completedObjectCount by remember { mutableIntStateOf(0) }
 
-    // Active Objects Tracking
-    val hitObjectStates = remember { mutableStateMapOf<Int, Boolean>() } // id -> isHitOrFinished
-    val sliderTrackingStats = remember { mutableStateMapOf<Int, Pair<Int, Int>>() } // id -> (trackedFrames, totalFrames)
+    // Screen Dimensions for frame-loop calculations
+    var currentWidthPx by remember { mutableStateOf(1080f) }
+    var currentHeightPx by remember { mutableStateOf(1920f) }
+
+    // Active Tracking Structures
+    val hitObjectStates = remember { mutableStateMapOf<Int, Boolean>() } // id -> isCompleted
+    val activeSliders = remember { mutableStateListOf<Int>() }           // id of sliders currently in progress
+    val sliderFrameStats = remember { mutableStateMapOf<Int, Pair<Int, Int>>() } // id -> (trackedFrames, totalFrames)
     val interactions = remember { mutableStateListOf<RhythmInteractionRecord>() }
     val floatingBursts = remember { mutableStateListOf<JudgementBurst>() }
-    val activeTouches = remember { mutableStateListOf<Offset>() }
+    val activePointers = remember { mutableStateMapOf<Long, Offset>() }
 
     // Ambient Pulse Animation
     val pulseTransition = rememberInfiniteTransition(label = "osu_pulse")
@@ -107,50 +117,110 @@ fun OsuRhythmChallenge(
     val objects = AttendanceBeatmap.objects
     val totalObjects = objects.size
 
-    // Game Clock Loop
-    LaunchedEffect(Unit) {
-        val start = System.currentTimeMillis()
-        gameStartMs = start
-        currentClockMs = start
+    // Tap Handling Function
+    fun processTap(touchPos: Offset, w: Float, h: Float) {
+        val now = System.currentTimeMillis()
+        val hitRadius = with(density) { 56.dp.toPx() }
 
+        // Find eligible unhit objects within the active hit window: [targetTime - 320ms, targetTime + 320ms]
+        val eligible = objects.filter { obj ->
+            hitObjectStates[obj.id] != true &&
+            obj.id !in activeSliders &&
+            abs(now - obj.targetHitTimeMs(gameStartMs)) <= 320L
+        }.sortedBy { it.targetHitTimeMs(gameStartMs) }
+
+        for (obj in eligible) {
+            val targetPos = Offset(obj.relX * w, obj.relY * h)
+            val dx = touchPos.x - targetPos.x
+            val dy = touchPos.y - targetPos.y
+            val dist = sqrt(dx * dx + dy * dy)
+
+            if (dist <= hitRadius) {
+                val deltaTiming = now - obj.targetHitTimeMs(gameStartMs)
+                val absDelta = abs(deltaTiming)
+
+                val judgement = when {
+                    absDelta <= 100L -> JudgementType.PERFECT
+                    absDelta <= 200L -> JudgementType.GREAT
+                    else -> JudgementType.GOOD
+                }
+
+                val hitInOrder = (obj.comboNumber == 1) ||
+                        objects.any { it.comboNumber == obj.comboNumber - 1 && hitObjectStates[it.id] == true }
+
+                comboCounter++
+                totalScore += judgement.score * comboCounter.coerceAtMost(8)
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+
+                if (obj.type == RhythmObjectType.CIRCLE) {
+                    hitObjectStates[obj.id] = true
+                    successfulHitsCount++
+                    completedObjectCount++
+
+                    interactions.add(
+                        RhythmInteractionRecord(
+                            objectId = obj.id,
+                            isSlider = false,
+                            comboNumber = obj.comboNumber,
+                            timingErrorMs = deltaTiming,
+                            judgement = judgement,
+                            touchDistancePx = dist,
+                            normalizedRadialOffset = (dist / hitRadius).coerceIn(0f, 1f),
+                            hitInOrder = hitInOrder,
+                            sliderTrackingRatio = 1.0f,
+                            timestampMs = now
+                        )
+                    )
+                    onProgressUpdate(successfulHitsCount, totalObjects)
+                } else {
+                    // Slider head tapped! Activate slider tracking
+                    activeSliders.add(obj.id)
+                }
+
+                floatingBursts.add(
+                    JudgementBurst(
+                        id = now,
+                        text = judgement.label,
+                        colorLong = judgement.colorLong,
+                        position = Offset(obj.relX, obj.relY),
+                        spawnTimeMs = now
+                    )
+                )
+                break // Each tap consumes at most one circle
+            }
+        }
+    }
+
+    // 60 FPS Frame Loop (State Transitions, Sliders, Expirations)
+    LaunchedEffect(Unit) {
         while (true) {
             val now = System.currentTimeMillis()
             currentClockMs = now
-            val elapsed = now - start
+            val elapsed = now - gameStartMs
 
-            // Check for expired circles that user completely missed
+            // 1. Check for expired objects that player missed
             for (obj in objects) {
-                if (hitObjectStates[obj.id] != true) {
-                    val targetTime = obj.targetHitTimeMs(start)
-                    val expireDeadline = if (obj.type == RhythmObjectType.SLIDER) {
-                        obj.sliderEndTimeMs(start) + 150L
-                    } else {
-                        targetTime + 360L
-                    }
-
-                    if (now > expireDeadline) {
+                if (hitObjectStates[obj.id] != true && obj.id !in activeSliders) {
+                    val targetTime = obj.targetHitTimeMs(gameStartMs)
+                    if (now > targetTime + 320L) {
                         hitObjectStates[obj.id] = true
-                        comboCounter = 0 // Combo reset on miss
                         completedObjectCount++
+                        comboCounter = 0 // Combo breaks on miss
 
-                        val trackingRatio = if (obj.type == RhythmObjectType.SLIDER) {
-                            val stats = sliderTrackingStats[obj.id] ?: Pair(0, 1)
-                            (stats.first.toFloat() / stats.second.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
-                        } else 0f
-
-                        val record = RhythmInteractionRecord(
-                            objectId = obj.id,
-                            isSlider = obj.type == RhythmObjectType.SLIDER,
-                            comboNumber = obj.comboNumber,
-                            timingErrorMs = 380L,
-                            judgement = JudgementType.MISS,
-                            touchDistancePx = 999f,
-                            normalizedRadialOffset = 1.0f,
-                            hitInOrder = false,
-                            sliderTrackingRatio = trackingRatio,
-                            timestampMs = now
+                        interactions.add(
+                            RhythmInteractionRecord(
+                                objectId = obj.id,
+                                isSlider = obj.type == RhythmObjectType.SLIDER,
+                                comboNumber = obj.comboNumber,
+                                timingErrorMs = 350L,
+                                judgement = JudgementType.MISS,
+                                touchDistancePx = 999f,
+                                normalizedRadialOffset = 1.0f,
+                                hitInOrder = false,
+                                sliderTrackingRatio = 0f,
+                                timestampMs = now
+                            )
                         )
-                        interactions.add(record)
 
                         floatingBursts.add(
                             JudgementBurst(
@@ -161,22 +231,90 @@ fun OsuRhythmChallenge(
                                 spawnTimeMs = now
                             )
                         )
-                        onProgressUpdate(completedObjectCount, totalObjects)
+                        onProgressUpdate(successfulHitsCount, totalObjects)
                     }
                 }
             }
 
-            // Prune expired floating bursts (> 700ms old)
+            // 2. Active Sliders Tracking & Progress Check
+            val currentSliders = objects.filter { it.id in activeSliders && hitObjectStates[it.id] != true }
+            for (slider in currentSliders) {
+                val targetTime = slider.targetHitTimeMs(gameStartMs)
+                val progress = ((now - targetTime).toFloat() / slider.durationMs.toFloat()).coerceIn(0f, 1f)
+                val ballPos = slider.getBezierPoint(progress, currentWidthPx, currentHeightPx)
+                val trackingRadius = with(density) { 62.dp.toPx() }
+
+                val isFingerOnBall = activePointers.values.any { touch ->
+                    val dx = touch.x - ballPos.x
+                    val dy = touch.y - ballPos.y
+                    sqrt(dx * dx + dy * dy) <= trackingRadius
+                }
+
+                val stats = sliderFrameStats[slider.id] ?: Pair(0, 0)
+                val newTracked = if (isFingerOnBall) stats.first + 1 else stats.first
+                val newTotal = stats.second + 1
+                sliderFrameStats[slider.id] = Pair(newTracked, newTotal)
+
+                // Slider reached the end
+                if (progress >= 1.0f) {
+                    hitObjectStates[slider.id] = true
+                    completedObjectCount++
+                    val ratio = (newTracked.toFloat() / newTotal.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
+
+                    val finalJudgement = when {
+                        ratio >= 0.65f -> JudgementType.PERFECT
+                        ratio >= 0.40f -> JudgementType.GREAT
+                        ratio >= 0.20f -> JudgementType.GOOD
+                        else -> JudgementType.MISS
+                    }
+
+                    if (finalJudgement != JudgementType.MISS) {
+                        successfulHitsCount++
+                        comboCounter++
+                        totalScore += finalJudgement.score * comboCounter.coerceAtMost(8)
+                    } else {
+                        comboCounter = 0
+                    }
+
+                    interactions.add(
+                        RhythmInteractionRecord(
+                            objectId = slider.id,
+                            isSlider = true,
+                            comboNumber = slider.comboNumber,
+                            timingErrorMs = 0L,
+                            judgement = finalJudgement,
+                            touchDistancePx = 0f,
+                            normalizedRadialOffset = 0f,
+                            hitInOrder = true,
+                            sliderTrackingRatio = ratio,
+                            timestampMs = now
+                        )
+                    )
+
+                    floatingBursts.add(
+                        JudgementBurst(
+                            id = now,
+                            text = finalJudgement.label,
+                            colorLong = finalJudgement.colorLong,
+                            position = Offset(slider.endRelX, slider.endRelY),
+                            spawnTimeMs = now
+                        )
+                    )
+                    onProgressUpdate(successfulHitsCount, totalObjects)
+                }
+            }
+
+            // 3. Prune expired floating bursts
             floatingBursts.removeAll { now - it.spawnTimeMs > it.durationMs }
 
-            // Check game completion
-            if (elapsed >= AttendanceBeatmap.totalDurationMs + 800L || completedObjectCount >= totalObjects) {
-                delay(300L)
+            // 4. Session Completion Check
+            if (completedObjectCount >= totalObjects || elapsed >= AttendanceBeatmap.totalDurationMs + 600L) {
+                delay(350L)
                 onComplete(interactions.toList())
                 break
             }
 
-            delay(16L) // ~60 FPS update tick
+            delay(16L) // steady 60 FPS
         }
     }
 
@@ -196,174 +334,23 @@ fun OsuRhythmChallenge(
                 awaitPointerEventScope {
                     while (true) {
                         val event = awaitPointerEvent()
-                        val nowMs = System.currentTimeMillis()
                         val w = size.width.toFloat()
                         val h = size.height.toFloat()
+                        currentWidthPx = w
+                        currentHeightPx = h
 
-                        // Update current active touch coordinates
-                        activeTouches.clear()
+                        // Maintain active pointer registry
+                        activePointers.clear()
                         for (change in event.changes) {
                             if (change.pressed) {
-                                activeTouches.add(change.position)
+                                activePointers[change.id.value] = change.position
                             }
                         }
 
-                        // 1. Process Down / Press Events on Hit Circles and Sliders
-                        if (event.type == PointerEventType.Press) {
-                            for (change in event.changes) {
-                                if (change.pressed) {
-                                    val touchPos = change.position
-                                    val touchX = touchPos.x
-                                    val touchY = touchPos.y
-
-                                    // Find eligible hit object (active approach window, not yet hit)
-                                    val eligible = objects.filter { obj ->
-                                        hitObjectStates[obj.id] != true &&
-                                        nowMs >= (obj.spawnOffsetMs + gameStartMs) &&
-                                        nowMs <= (obj.targetHitTimeMs(gameStartMs) + 360L)
-                                    }.sortedBy { it.targetHitTimeMs(gameStartMs) }
-
-                                    for (obj in eligible) {
-                                        val objCenterX = obj.relX * w
-                                        val objCenterY = obj.relY * h
-                                        val dx = touchX - objCenterX
-                                        val dy = touchY - objCenterY
-                                        val dist = sqrt(dx * dx + dy * dy)
-                                        val hitRadius = with(density) { 56.dp.toPx() } // Generous hit area
-
-                                        if (dist <= hitRadius) {
-                                            // HIT REGISTERED!
-                                            val targetTime = obj.targetHitTimeMs(gameStartMs)
-                                            val deltaTiming = nowMs - targetTime
-                                            val absDelta = abs(deltaTiming)
-
-                                            // Judgement based on precision of approach ring sync
-                                            val judgement = when {
-                                                absDelta <= 110L -> JudgementType.PERFECT
-                                                absDelta <= 210L -> JudgementType.GREAT
-                                                absDelta <= 340L -> JudgementType.GOOD
-                                                else -> JudgementType.MISS
-                                            }
-
-                                            // Order check: was previous combo number finished?
-                                            val hitInOrder = obj.comboNumber == 1 ||
-                                                    objects.any { it.comboNumber == obj.comboNumber - 1 && hitObjectStates[it.id] == true }
-
-                                            if (judgement != JudgementType.MISS) {
-                                                comboCounter++
-                                                totalScore += judgement.score * comboCounter.coerceAtMost(8)
-                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                            } else {
-                                                comboCounter = 0
-                                            }
-
-                                            // Mark hit (for circles mark finished immediately; for sliders start tracking)
-                                            if (obj.type == RhythmObjectType.CIRCLE) {
-                                                hitObjectStates[obj.id] = true
-                                                completedObjectCount++
-                                                val record = RhythmInteractionRecord(
-                                                    objectId = obj.id,
-                                                    isSlider = false,
-                                                    comboNumber = obj.comboNumber,
-                                                    timingErrorMs = deltaTiming,
-                                                    judgement = judgement,
-                                                    touchDistancePx = dist,
-                                                    normalizedRadialOffset = (dist / hitRadius).coerceIn(0f, 1f),
-                                                    hitInOrder = hitInOrder,
-                                                    sliderTrackingRatio = 1.0f,
-                                                    timestampMs = nowMs
-                                                )
-                                                interactions.add(record)
-                                                onProgressUpdate(completedObjectCount, totalObjects)
-                                            } else {
-                                                // Slider started
-                                                sliderTrackingStats[obj.id] = Pair(1, 1)
-                                            }
-
-                                            floatingBursts.add(
-                                                JudgementBurst(
-                                                    id = nowMs,
-                                                    text = judgement.label,
-                                                    colorLong = judgement.colorLong,
-                                                    position = Offset(obj.relX, obj.relY),
-                                                    spawnTimeMs = nowMs
-                                                )
-                                            )
-                                            break // Handled this tap
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // 2. Continuous Tracking for Active Sliders
-                        val activeSliders = objects.filter {
-                            it.type == RhythmObjectType.SLIDER &&
-                            hitObjectStates[it.id] != true &&
-                            nowMs >= it.targetHitTimeMs(gameStartMs) &&
-                            nowMs <= it.sliderEndTimeMs(gameStartMs)
-                        }
-
-                        for (slider in activeSliders) {
-                            val startMs = slider.targetHitTimeMs(gameStartMs)
-                            val progress = ((nowMs - startMs).toFloat() / slider.durationMs.toFloat()).coerceIn(0f, 1f)
-                            val ballPos = slider.getBezierPoint(progress, w, h)
-                            val trackingRadius = with(density) { 64.dp.toPx() }
-
-                            val isTracked = activeTouches.any { touch ->
-                                val tdx = touch.x - ballPos.x
-                                val tdy = touch.y - ballPos.y
-                                sqrt(tdx * tdx + tdy * tdy) <= trackingRadius
-                            }
-
-                            val currentStats = sliderTrackingStats[slider.id] ?: Pair(0, 0)
-                            val newTracked = if (isTracked) currentStats.first + 1 else currentStats.first
-                            val newTotal = currentStats.second + 1
-                            sliderTrackingStats[slider.id] = Pair(newTracked, newTotal)
-
-                            // Check if slider reached the end
-                            if (progress >= 1.0f) {
-                                hitObjectStates[slider.id] = true
-                                completedObjectCount++
-                                val trackingRatio = (newTracked.toFloat() / newTotal.coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
-                                val finalJudgement = when {
-                                    trackingRatio >= 0.75f -> JudgementType.PERFECT
-                                    trackingRatio >= 0.50f -> JudgementType.GREAT
-                                    trackingRatio >= 0.30f -> JudgementType.GOOD
-                                    else -> JudgementType.MISS
-                                }
-
-                                if (finalJudgement != JudgementType.MISS) {
-                                    comboCounter++
-                                    totalScore += finalJudgement.score * comboCounter.coerceAtMost(8)
-                                } else {
-                                    comboCounter = 0
-                                }
-
-                                val record = RhythmInteractionRecord(
-                                    objectId = slider.id,
-                                    isSlider = true,
-                                    comboNumber = slider.comboNumber,
-                                    timingErrorMs = 0L,
-                                    judgement = finalJudgement,
-                                    touchDistancePx = 0f,
-                                    normalizedRadialOffset = 0f,
-                                    hitInOrder = true,
-                                    sliderTrackingRatio = trackingRatio,
-                                    timestampMs = nowMs
-                                )
-                                interactions.add(record)
-                                onProgressUpdate(completedObjectCount, totalObjects)
-
-                                floatingBursts.add(
-                                    JudgementBurst(
-                                        id = nowMs,
-                                        text = finalJudgement.label,
-                                        colorLong = finalJudgement.colorLong,
-                                        position = Offset(slider.endRelX, slider.endRelY),
-                                        spawnTimeMs = nowMs
-                                    )
-                                )
+                        // Process initial finger contacts
+                        for (change in event.changes) {
+                            if (change.changedToDown()) {
+                                processTap(change.position, w, h)
                             }
                         }
                     }
@@ -374,9 +361,9 @@ fun OsuRhythmChallenge(
             val canvasW = size.width
             val canvasH = size.height
             val nowMs = currentClockMs
-            val circleRadius = 42.dp.toPx()
+            val circleRadius = 38.dp.toPx()
 
-            // ── LAYER 1: Ambient Central Spiritual Glow ──
+            // ── LAYER 1: Ambient Forest Glow ──
             drawCircle(
                 brush = Brush.radialGradient(
                     listOf(Color(0x1800F5A0), Color(0x0600F5A0), Color.Transparent),
@@ -388,7 +375,6 @@ fun OsuRhythmChallenge(
             )
 
             // ── LAYER 2: Combo Connecting Trajectory Lines ──
-            // Draw connecting lines between consecutive unhit objects (like in osu!)
             val visibleObjects = objects.filter {
                 hitObjectStates[it.id] != true &&
                 nowMs >= (it.spawnOffsetMs + gameStartMs - 200L) &&
@@ -428,17 +414,17 @@ fun OsuRhythmChallenge(
                     quadraticBezierTo(ctrlPt.x, ctrlPt.y, endPt.x, endPt.y)
                 }
 
-                // A. Slider Body Track (Thick Translucent Neon Ribbon)
                 val trackColor = Color(slider.colorLong)
+                // A. Slider Body Ribbon
                 drawPath(
                     path = sliderPath,
                     color = trackColor.copy(alpha = 0.18f),
                     style = Stroke(width = 46.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
                 )
-                // B. Slider Track Outer Crisp Neon Border
+                // B. Outer Crisp Neon Border
                 drawPath(
                     path = sliderPath,
-                    color = trackColor.copy(alpha = 0.75f),
+                    color = trackColor.copy(alpha = 0.80f),
                     style = Stroke(width = 3.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
                 )
 
@@ -466,9 +452,8 @@ fun OsuRhythmChallenge(
                     val progress = ((nowMs - targetTime).toFloat() / slider.durationMs.toFloat()).coerceIn(0f, 1f)
                     val ballPos = slider.getBezierPoint(progress, canvasW, canvasH)
 
-                    // Follower Tolerance Ring
                     val followerRadius = 56.dp.toPx()
-                    val isBeingTracked = activeTouches.any { touch ->
+                    val isBeingTracked = activePointers.values.any { touch ->
                         val dx = touch.x - ballPos.x
                         val dy = touch.y - ballPos.y
                         sqrt(dx * dx + dy * dy) <= followerRadius
@@ -481,7 +466,6 @@ fun OsuRhythmChallenge(
                         style = Stroke(width = 2.dp.toPx())
                     )
 
-                    // Brilliant Glowing Ball
                     drawCircle(
                         brush = Brush.radialGradient(
                             listOf(Color.White, trackColor, Color.Transparent),
@@ -502,8 +486,9 @@ fun OsuRhythmChallenge(
             // ── LAYER 4: Hit Circles & Shrinking Approach Rings ──
             val activeCircles = objects.filter {
                 hitObjectStates[it.id] != true &&
+                it.id !in activeSliders &&
                 nowMs >= (it.spawnOffsetMs + gameStartMs) &&
-                nowMs <= (it.targetHitTimeMs(gameStartMs) + 350L)
+                nowMs <= (it.targetHitTimeMs(gameStartMs) + 320L)
             }
 
             for (obj in activeCircles) {
@@ -547,7 +532,7 @@ fun OsuRhythmChallenge(
                 if (timeToHit > 0L) {
                     val progress = (timeToHit.toFloat() / obj.approachDurationMs.toFloat()).coerceIn(0f, 1f)
                     val approachScale = 1.0f + (progress * 1.6f) // Shrinks from 2.6x to 1.0x
-                    val ringAlpha = (1f - (progress * 0.5f)).coerceIn(0.2f, 0.95f)
+                    val ringAlpha = (1f - (progress * 0.45f)).coerceIn(0.25f, 0.95f)
 
                     drawCircle(
                         color = accentColor.copy(alpha = ringAlpha),
@@ -566,7 +551,7 @@ fun OsuRhythmChallenge(
                 val alpha = (1f - animProgress).coerceIn(0f, 1f)
 
                 drawContext.canvas.nativeCanvas.apply {
-                    burstPaint.color = Color(burst.colorLong).copy(alpha = alpha).hashCode()
+                    burstPaint.color = Color(burst.colorLong).copy(alpha = alpha).toArgb()
                     burstPaint.textSize = with(density) { (22 + (animProgress * 6)).sp.toPx() }
                     drawText(
                         burst.text,
@@ -584,8 +569,8 @@ fun OsuRhythmChallenge(
                 val comboText = if (comboCounter > 1) "COMBO ${comboCounter}x" else ""
                 drawText(comboText, 24.dp.toPx(), 36.dp.toPx(), hudTextPaint)
 
-                // Real-time Accuracy & Score
-                val progressText = "$completedObjectCount / $totalObjects"
+                // Real-time Hits & Progress
+                val progressText = "$successfulHitsCount / $totalObjects"
                 hudTextPaint.textAlign = Paint.Align.RIGHT
                 drawText(progressText, canvasW - 24.dp.toPx(), 36.dp.toPx(), hudTextPaint)
                 hudTextPaint.textAlign = Paint.Align.LEFT
