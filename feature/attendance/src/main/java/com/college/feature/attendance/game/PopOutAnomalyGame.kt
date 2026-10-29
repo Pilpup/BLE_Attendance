@@ -81,7 +81,7 @@ fun PopOutAnomalyGame(
             0.25f to 0.72f, 0.50f to 0.75f, 0.75f to 0.72f
         )
 
-        for (t in 0 until 2) {
+        for (t in 0 until 5) {
             val brokenIdx = rng.nextInt(gridPositions.size)
             val ringList = gridPositions.mapIndexed { idx, pos ->
                 val jitterX = (rng.nextFloat() * 0.06f - 0.03f)

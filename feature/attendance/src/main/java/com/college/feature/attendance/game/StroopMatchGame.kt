@@ -91,7 +91,7 @@ fun StroopMatchGame(
         val seed = seedKey.hashCode().toLong().absoluteValue
         val rng = Random(seed)
         val list = mutableListOf<StroopCard>()
-        for (i in 0 until 3) {
+        for (i in 0 until 8) {
             val shouldMatch = rng.nextBoolean()
             val textIdx = rng.nextInt(colorTokens.size)
             val colorIdx = if (shouldMatch) textIdx else {

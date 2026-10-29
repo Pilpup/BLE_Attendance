@@ -39,7 +39,6 @@ fun AttendanceGameContainer(
     seedKey: String,
     neighborIds: List<String> = emptyList(),
     debugGameOverride: AttendanceGameType? = null,
-    onDebugGameChange: (AttendanceGameType?) -> Unit = {},
     onProgressUpdate: (hits: Int, total: Int) -> Unit = { _, _ -> },
     onComplete: (CognitiveFocusReport) -> Unit,
     modifier: Modifier = Modifier
@@ -50,73 +49,8 @@ fun AttendanceGameContainer(
     }
     val activeGame = debugGameOverride ?: assignedGame
 
-    Column(modifier = modifier.fillMaxSize()) {
-        // ── DEBUG GAME SELECTOR ROW (Only visible in Debug Builds) ──
-        if (BuildConfig.DEBUG) {
-            Surface(
-                color = Color(0xFF07120C),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "DEBUG:",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Black,
-                        fontFamily = FontFamily.Monospace,
-                        color = Color(0xFF38BDF8)
-                    )
-
-                    // Auto (Mesh assigned) pill
-                    val isAuto = (debugGameOverride == null)
-                    Surface(
-                        onClick = { onDebugGameChange(null) },
-                        shape = RoundedCornerShape(12.dp),
-                        color = if (isAuto) Color(0xFF00F5A0) else Color(0x22FFFFFF)
-                    ) {
-                        Text(
-                            text = "AUTO (${assignedGame.displayName})",
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isAuto) Color.Black else Color.White,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        )
-                    }
-
-                    // 6 Game Archetype pills
-                    AttendanceGameType.entries.forEach { game ->
-                        val isSelected = (debugGameOverride == game)
-                        Surface(
-                            onClick = { onDebugGameChange(game) },
-                            shape = RoundedCornerShape(12.dp),
-                            color = if (isSelected) Color(0xFF00E5FF) else Color(0x18FFFFFF)
-                        ) {
-                            Text(
-                                text = "${game.id + 1}: ${game.displayName}",
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (isSelected) Color.Black else Color(0xCCFFFFFF),
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── ACTIVE GAME VIEWPORT ──
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-        ) {
-            when (activeGame) {
+    Box(modifier = modifier.fillMaxSize()) {
+        when (activeGame) {
                 AttendanceGameType.CHIMP_MEMORY -> {
                     ChimpMemoryGame(
                         seedKey = seedKey,
@@ -125,7 +59,7 @@ fun AttendanceGameContainer(
                             val report = GameTelemetryEngine.analyze(
                                 gameType = AttendanceGameType.CHIMP_MEMORY,
                                 interactions = interactions,
-                                totalTrials = 3
+                                totalTrials = 7
                             )
                             onComplete(report)
                         }
@@ -140,7 +74,7 @@ fun AttendanceGameContainer(
                             val report = GameTelemetryEngine.analyze(
                                 gameType = AttendanceGameType.STROOP_MATCH,
                                 interactions = interactions,
-                                totalTrials = 3
+                                totalTrials = 8
                             )
                             onComplete(report)
                         }
@@ -155,7 +89,7 @@ fun AttendanceGameContainer(
                             val report = GameTelemetryEngine.analyze(
                                 gameType = AttendanceGameType.SUBITIZING_RUSH,
                                 interactions = interactions,
-                                totalTrials = 2
+                                totalTrials = 6
                             )
                             onComplete(report)
                         }
@@ -170,7 +104,7 @@ fun AttendanceGameContainer(
                             val report = GameTelemetryEngine.analyze(
                                 gameType = AttendanceGameType.ORB_VECTOR_FLICK,
                                 interactions = interactions,
-                                totalTrials = 3
+                                totalTrials = 7
                             )
                             onComplete(report)
                         }
@@ -185,7 +119,7 @@ fun AttendanceGameContainer(
                             val report = GameTelemetryEngine.analyze(
                                 gameType = AttendanceGameType.CHUBB_CONTRAST,
                                 interactions = interactions,
-                                totalTrials = 2
+                                totalTrials = 6
                             )
                             onComplete(report)
                         }
@@ -200,7 +134,7 @@ fun AttendanceGameContainer(
                             val report = GameTelemetryEngine.analyze(
                                 gameType = AttendanceGameType.POPOUT_ANOMALY,
                                 interactions = interactions,
-                                totalTrials = 2
+                                totalTrials = 5
                             )
                             onComplete(report)
                         }
@@ -208,5 +142,4 @@ fun AttendanceGameContainer(
                 }
             }
         }
-    }
 }

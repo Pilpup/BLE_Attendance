@@ -76,6 +76,7 @@ import com.college.core.model.Role
 import com.college.core.model.User
 import com.college.core.network.SessionManager
 import com.college.feature.attendance.AttendanceDashboardCard
+import com.college.feature.attendance.game.AttendanceGameType
 import com.college.feature.attendance.network.AttendanceApiClient
 import com.college.feature.attendance.network.LoginRequest
 import com.college.feature.attendance.network.RegisterRequest
@@ -119,6 +120,8 @@ private fun darkTextFieldColors() = OutlinedTextFieldDefaults.colors(
 @Composable
 fun HomeScreen(
     user: User?,
+    selectedGame: AttendanceGameType? = null,
+    onSelectGame: (AttendanceGameType?) -> Unit = {},
     onNavigate: (String) -> Unit
 ) {
     var showAccountDialog by remember { mutableStateOf(false) }
@@ -295,6 +298,98 @@ fun HomeScreen(
                         fontWeight = FontWeight.Bold,
                         color = ObsidianTextPrimary
                     )
+                }
+            }
+        }
+
+        // ---- Debug Anti-Proxy Reflex Challenge Selector (HomeScreen) ----
+        Spacer(modifier = Modifier.height(14.dp))
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = ObsidianCard,
+            border = BorderStroke(1.dp, ObsidianBorder),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "REFLEX CHALLENGE (DEBUG)",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace,
+                        color = Color(0xFF38BDF8)
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0x2200F5A0),
+                        border = BorderStroke(1.dp, Color(0x6600F5A0))
+                    ) {
+                        Text(
+                            text = "10s DURATION",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Black,
+                            color = Color(0xFF00F5A0),
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Pick active anti-proxy challenge for attendance check-in:",
+                    fontSize = 12.sp,
+                    color = ObsidianTextSecondary
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Scrollable Pill Selector
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    val isAuto = selectedGame == null
+                    Surface(
+                        onClick = { onSelectGame(null) },
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isAuto) Color(0xFF00F5A0) else ObsidianCardAlt,
+                        border = BorderStroke(1.dp, if (isAuto) Color(0xFF00F5A0) else ObsidianBorderHighlight)
+                    ) {
+                        Text(
+                            text = "AUTO (Mesh Assigned)",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isAuto) Color.Black else ObsidianTextPrimary,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                        )
+                    }
+
+                    AttendanceGameType.entries.forEach { game ->
+                        val isSelected = selectedGame == game
+                        Surface(
+                            onClick = { onSelectGame(game) },
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isSelected) Color(0xFF00E5FF) else ObsidianCardAlt,
+                            border = BorderStroke(1.dp, if (isSelected) Color(0xFF00E5FF) else ObsidianBorderHighlight)
+                        ) {
+                            Text(
+                                text = "${game.id + 1}: ${game.displayName}",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isSelected) Color.Black else ObsidianTextPrimary,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
                 }
             }
         }

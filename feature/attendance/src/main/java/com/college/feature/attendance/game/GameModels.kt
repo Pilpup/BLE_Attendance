@@ -11,49 +11,49 @@ enum class AttendanceGameType(
     val displayName: String,
     val description: String,
     val instruction: String,
-    val targetDurationSeconds: Int = 3
+    val targetDurationSeconds: Int = 10
 ) {
     CHIMP_MEMORY(
         id = 0,
         displayName = "CHIMP MEMORY",
         description = "Visuospatial Working Memory",
-        instruction = "Remember tile positions, tap 1 ➔ 2 ➔ 3",
-        targetDurationSeconds = 3
+        instruction = "Remember tile positions, tap in ascending order",
+        targetDurationSeconds = 10
     ),
     STROOP_MATCH(
         id = 1,
         displayName = "STROOP MATCH",
         description = "Semantic Conflict Inhibition",
         instruction = "Swipe RIGHT if word matches color, LEFT if not",
-        targetDurationSeconds = 3
+        targetDurationSeconds = 10
     ),
     SUBITIZING_RUSH(
         id = 2,
         displayName = "SUBITIZING RUSH",
         description = "Parietal Visual Number Sense",
         instruction = "Swipe towards the side with MORE dots",
-        targetDurationSeconds = 3
+        targetDurationSeconds = 10
     ),
     ORB_VECTOR_FLICK(
         id = 3,
         displayName = "ORB VECTOR FLICK",
         description = "Spatial Target & Vector Coupling",
         instruction = "Touch the glowing orb and flick in arrow direction",
-        targetDurationSeconds = 3
+        targetDurationSeconds = 10
     ),
     CHUBB_CONTRAST(
         id = 4,
         displayName = "CHUBB CONTRAST",
         description = "V1 Lateral Contrast Illusion",
         instruction = "Swipe towards the sharper, clearer dot",
-        targetDurationSeconds = 3
+        targetDurationSeconds = 10
     ),
     POPOUT_ANOMALY(
         id = 5,
         displayName = "POP-OUT ANOMALY",
         description = "Pre-Attentive Feature Pop-Out",
         instruction = "Tap the broken ring among solid rings",
-        targetDurationSeconds = 2
+        targetDurationSeconds = 10
     );
 
     companion object {

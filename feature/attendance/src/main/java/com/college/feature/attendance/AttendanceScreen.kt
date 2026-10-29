@@ -481,8 +481,19 @@ private fun StudentSection(
 
     val haptic = LocalHapticFeedback.current
 
+    fun getExpectedTargets(game: AttendanceGameType?): Int = when (game ?: AttendanceGameType.CHIMP_MEMORY) {
+        AttendanceGameType.CHIMP_MEMORY -> 7
+        AttendanceGameType.STROOP_MATCH -> 8
+        AttendanceGameType.SUBITIZING_RUSH -> 6
+        AttendanceGameType.ORB_VECTOR_FLICK -> 7
+        AttendanceGameType.CHUBB_CONTRAST -> 6
+        AttendanceGameType.POPOUT_ANOMALY -> 5
+    }
+
     var targetsHit by remember { mutableIntStateOf(0) }
-    var totalTargetsSpawned by remember { mutableIntStateOf(3) }
+    var totalTargetsSpawned by remember(debugGameOverride) {
+        mutableIntStateOf(getExpectedTargets(debugGameOverride))
+    }
     var isGameOver by remember { mutableStateOf(false) }
     var hasProceededToNext by remember { mutableStateOf(false) }
 
@@ -496,10 +507,11 @@ private fun StudentSection(
     LaunchedEffect(studentPhase) {
         if (studentPhase == StudentPhase.PROBING_NEIGHBORS) {
             targetsHit = 0
-            totalTargetsSpawned = 3
+            val expected = getExpectedTargets(debugGameOverride)
+            totalTargetsSpawned = expected
             isGameOver = false
             hasProceededToNext = false
-            onChallengeResult(0, 3)
+            onChallengeResult(0, expected)
         } else if (studentPhase == StudentPhase.STANDBY || studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
             isGameOver = false
             hasProceededToNext = false
@@ -663,7 +675,6 @@ private fun StudentSection(
                         seedKey = "$detectedSessionId:$sessionSalt:$studentId",
                         neighborIds = deskNeighbours.map { it.peerId },
                         debugGameOverride = debugGameOverride,
-                        onDebugGameChange = onDebugGameChange,
                         onProgressUpdate = { hits, total ->
                             targetsHit = hits
                             totalTargetsSpawned = total
@@ -830,31 +841,6 @@ private fun StudentSection(
                                     )
                                 }
                             }
-                        }
-
-                        Spacer(modifier = Modifier.height(20.dp))
-
-                        // 4. Action Confirmation Button
-                        val isProxyFlagged = isProxy || isBot
-                        Button(
-                            onClick = {
-                                hasProceededToNext = true
-                                onNext()
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(50.dp),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isProxyFlagged) alertRed else Color(0xFF00F5A0)
-                            )
-                        ) {
-                            Text(
-                                text = if (isProxyFlagged) "Confirm & Proceed  ➔" else "Confirm Attendance  ➔",
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (isProxyFlagged) Color.White else Color.Black
-                            )
                         }
                     }
                 }

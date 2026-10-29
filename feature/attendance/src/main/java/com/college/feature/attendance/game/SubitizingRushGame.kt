@@ -66,21 +66,27 @@ fun SubitizingRushGame(
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
 
-    // 2 procedural trials: (leftCount, rightCount)
+    // 6 procedural trials (~10 seconds session): (leftCount, rightCount)
     data class SubitizingTrial(val leftCount: Int, val rightCount: Int, val leftHasMore: Boolean)
     val trials = remember(seedKey) {
         val seed = seedKey.hashCode().toLong().absoluteValue
         val rng = Random(seed)
         val list = mutableListOf<SubitizingTrial>()
-        // Round 1
-        val r1LeftIsMore = rng.nextBoolean()
-        val r1Counts = if (r1LeftIsMore) 5 to 2 else 2 to 5
-        list.add(SubitizingTrial(r1Counts.first, r1Counts.second, r1LeftIsMore))
-
-        // Round 2
-        val r2LeftIsMore = !r1LeftIsMore
-        val r2Counts = if (r2LeftIsMore) 4 to 2 else 2 to 4
-        list.add(SubitizingTrial(r2Counts.first, r2Counts.second, r2LeftIsMore))
+        val countPairs = listOf(
+            5 to 2, 2 to 5,
+            4 to 1, 1 to 4,
+            6 to 3, 3 to 6
+        )
+        for (i in 0 until 6) {
+            val pair = countPairs[i % countPairs.size]
+            val leftIsMore = rng.nextBoolean()
+            val counts = if (leftIsMore) {
+                maxOf(pair.first, pair.second) to minOf(pair.first, pair.second)
+            } else {
+                minOf(pair.first, pair.second) to maxOf(pair.first, pair.second)
+            }
+            list.add(SubitizingTrial(counts.first, counts.second, leftIsMore))
+        }
         list
     }
 

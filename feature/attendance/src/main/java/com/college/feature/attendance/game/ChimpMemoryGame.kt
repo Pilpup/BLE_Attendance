@@ -2,8 +2,6 @@ package com.college.feature.attendance.game
 
 import android.graphics.Paint
 import android.graphics.Typeface
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -21,8 +19,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,16 +40,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.Random
 import kotlin.math.absoluteValue
 
 /**
- * Game #1: Chimp Memory Sequence
- * Displays 3 numbers (1, 2, 3) on a 3x3 grid for 900ms.
- * Numbers then turn into blank frosted tiles.
- * Student must tap tiles in order: 1 ➔ 2 ➔ 3.
- *
- * Saccadic gaze shift between phones instantly wipes out the iconic visual buffer.
+ * Game #1: Chimp Memory Sequence (~10 Seconds Session)
+ * Round 1: 3 numbers (1, 2, 3) on 3x3 grid
+ * Round 2: 4 numbers (1, 2, 3, 4) on 3x3 grid
+ * Total targets: 7. Saccadic eye shifts between phones wipe out the iconic visual buffer.
  */
 @Composable
 fun ChimpMemoryGame(
@@ -62,31 +59,41 @@ fun ChimpMemoryGame(
 ) {
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
 
-    // Deterministically pick 3 distinct cells on 3x3 grid using seedKey
-    val targetCells = remember(seedKey) {
+    // 2 successive rounds: Round 1 has 3 numbers, Round 2 has 4 numbers (Total 7)
+    val roundConfigs = remember(seedKey) {
         val seed = seedKey.hashCode().toLong().absoluteValue
         val rng = Random(seed)
-        val cells = (0 until 9).toMutableList()
-        val picked = mutableListOf<Int>()
-        for (i in 0 until 3) {
-            val idx = rng.nextInt(cells.size)
-            picked.add(cells.removeAt(idx))
+
+        fun pickCells(count: Int): List<Int> {
+            val pool = (0 until 9).toMutableList()
+            val res = mutableListOf<Int>()
+            for (i in 0 until count) {
+                res.add(pool.removeAt(rng.nextInt(pool.size)))
+            }
+            return res
         }
-        picked // List of 3 cell indices (0..8) representing 1, 2, 3
+
+        listOf(pickCells(3), pickCells(4))
     }
 
-    // Game Phases: 0 = Memorize, 1 = Tap Blank Tiles, 2 = Complete
+    val totalTargets = 7 // 3 + 4
+    var currentRoundIndex by remember { mutableIntStateOf(0) } // 0 or 1
+    val targetCells = roundConfigs[currentRoundIndex]
+    val roundTargetCount = targetCells.size
+
+    // Phases: 0 = Memorize, 1 = Tap Blank Tiles, 2 = Complete
     var gamePhase by remember { mutableIntStateOf(0) }
-    var nextExpectedNumber by remember { mutableIntStateOf(1) } // 1, 2, 3
+    var nextExpectedNumber by remember { mutableIntStateOf(1) } // 1..roundTargetCount
     val tappedCells = remember { mutableStateListOf<Int>() }
-    val cellErrorStates = remember { mutableStateListOf<Int>() } // cells that failed
+    val cellErrorStates = remember { mutableStateListOf<Int>() }
     val interactions = remember { mutableStateListOf<GameInteractionRecord>() }
 
     var recallStartTimestamp by remember { mutableLongStateOf(0L) }
     var lastTapTimestamp by remember { mutableLongStateOf(0L) }
 
-    // Text paints pre-allocated to avoid allocation in draw loop
+    // Pre-allocated Android Paints
     val numberPaint = remember {
         Paint().apply {
             isAntiAlias = true
@@ -104,13 +111,17 @@ fun ChimpMemoryGame(
         }
     }
 
-    // Phase transition controller
-    LaunchedEffect(Unit) {
-        // Step 1: Memorization phase for 900ms
-        delay(900L)
+    // Memorization countdown per round
+    LaunchedEffect(currentRoundIndex) {
+        gamePhase = 0
+        tappedCells.clear()
+        cellErrorStates.clear()
+        nextExpectedNumber = 1
+        val memorizeDuration = if (currentRoundIndex == 0) 900L else 1100L
+        delay(memorizeDuration)
         recallStartTimestamp = System.currentTimeMillis()
         lastTapTimestamp = recallStartTimestamp
-        gamePhase = 1 // Switch to blank tiles
+        gamePhase = 1 // Switch to recall phase
     }
 
     Box(
@@ -130,30 +141,38 @@ fun ChimpMemoryGame(
         ) {
             // Header instruction
             Text(
+                text = "ROUND ${currentRoundIndex + 1} OF 2",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace,
+                color = TsodingOrbRenderer.CyanPulse
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
                 text = when (gamePhase) {
-                    0 -> "MEMORIZE 1 ➔ 2 ➔ 3"
-                    1 -> "TAP BLANK TILES: $nextExpectedNumber OF 3"
+                    0 -> "MEMORIZE 1 ➔ $roundTargetCount"
+                    1 -> "TAP BLANK TILES: $nextExpectedNumber OF $roundTargetCount"
                     else -> "COMPLETE"
                 },
-                fontSize = 15.sp,
+                fontSize = 14.sp,
                 fontWeight = FontWeight.Black,
                 letterSpacing = 1.sp,
                 fontFamily = FontFamily.Monospace,
                 color = when (gamePhase) {
-                    0 -> TsodingOrbRenderer.CyanPulse
+                    0 -> TsodingOrbRenderer.SolarOrange
                     1 -> TsodingOrbRenderer.EmeraldGreen
                     else -> Color.White
                 }
             )
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
             // 3x3 Canvas Grid
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .pointerInput(gamePhase) {
+                    .pointerInput(gamePhase, currentRoundIndex) {
                         if (gamePhase != 1) return@pointerInput
 
                         detectTapGestures { tapOffset ->
@@ -165,7 +184,7 @@ fun ChimpMemoryGame(
                             val cellW = (w - (paddingPx * (cols + 1))) / cols
                             val cellH = (h - (paddingPx * (rows + 1))) / rows
 
-                            // Determine which cell was tapped
+                            // Identify tapped cell
                             var tappedIndex = -1
                             for (r in 0 until rows) {
                                 for (c in 0 until cols) {
@@ -197,37 +216,53 @@ fun ChimpMemoryGame(
                                 tappedCells.add(tappedIndex)
                                 interactions.add(
                                     GameInteractionRecord(
-                                        trialIndex = nextExpectedNumber - 1,
+                                        trialIndex = interactions.size,
                                         latencyMs = latency,
                                         isCorrect = true,
                                         hesitationMs = hesitation,
-                                        stimulusKey = "CHIMP_NUM_$nextExpectedNumber"
+                                        stimulusKey = "CHIMP_R${currentRoundIndex + 1}_NUM_$nextExpectedNumber"
                                     )
                                 )
-                                onProgress(nextExpectedNumber, 3)
+                                val totalHits = interactions.count { it.isCorrect }
+                                onProgress(totalHits, totalTargets)
 
-                                if (nextExpectedNumber == 3) {
-                                    gamePhase = 2
-                                    onComplete(interactions.toList())
+                                if (nextExpectedNumber == roundTargetCount) {
+                                    // Round passed!
+                                    if (currentRoundIndex + 1 < roundConfigs.size) {
+                                        scope.launch {
+                                            delay(250L)
+                                            currentRoundIndex++
+                                        }
+                                    } else {
+                                        gamePhase = 2
+                                        onComplete(interactions.toList())
+                                    }
                                 } else {
                                     nextExpectedNumber++
                                 }
                             } else {
-                                // Wrong cell tapped!
+                                // Wrong cell tapped
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 cellErrorStates.add(tappedIndex)
                                 interactions.add(
                                     GameInteractionRecord(
-                                        trialIndex = nextExpectedNumber - 1,
+                                        trialIndex = interactions.size,
                                         latencyMs = latency,
                                         isCorrect = false,
                                         hesitationMs = hesitation,
-                                        stimulusKey = "CHIMP_ERR_NUM_$nextExpectedNumber"
+                                        stimulusKey = "CHIMP_ERR_R${currentRoundIndex + 1}_NUM_$nextExpectedNumber"
                                     )
                                 )
-                                // Complete game with failure to prevent endless loop
-                                gamePhase = 2
-                                onComplete(interactions.toList())
+                                // If error in round 1, advance to round 2 to keep full ~10s test running
+                                if (currentRoundIndex + 1 < roundConfigs.size) {
+                                    scope.launch {
+                                        delay(350L)
+                                        currentRoundIndex++
+                                    }
+                                } else {
+                                    gamePhase = 2
+                                    onComplete(interactions.toList())
+                                }
                             }
                         }
                     }
@@ -261,7 +296,6 @@ fun ChimpMemoryGame(
 
                             when {
                                 isError -> {
-                                    // Error flash red
                                     drawRoundRect(
                                         color = Color(0x33FF1744),
                                         topLeft = topLeft,
@@ -278,7 +312,6 @@ fun ChimpMemoryGame(
                                 }
 
                                 isTapped -> {
-                                    // Solved cell - solid glowing emerald
                                     drawRoundRect(
                                         color = Color(0x3300F5A0),
                                         topLeft = topLeft,
@@ -301,7 +334,6 @@ fun ChimpMemoryGame(
                                 }
 
                                 gamePhase == 0 && isTarget -> {
-                                    // Memorize phase - show vibrant glowing numbers
                                     TsodingOrbRenderer.drawGlowingOrb(
                                         drawScope = this,
                                         center = center,
@@ -331,7 +363,6 @@ fun ChimpMemoryGame(
                                 }
 
                                 gamePhase == 1 && isTarget -> {
-                                    // Recall phase - blank frosted tile with subtle border
                                     drawRoundRect(
                                         color = Color(0x22FFFFFF),
                                         topLeft = topLeft,
@@ -354,7 +385,6 @@ fun ChimpMemoryGame(
                                 }
 
                                 else -> {
-                                    // Empty background cell
                                     drawRoundRect(
                                         color = Color(0x0CFFFFFF),
                                         topLeft = topLeft,

@@ -141,41 +141,41 @@ object GameTelemetryEngine {
         // Evaluate by game archetype
         return when (gameType) {
             AttendanceGameType.CHIMP_MEMORY -> {
-                // Single student taps 1-2-3 with steady rhythm (gaps 200-500ms).
+                // Single student taps sequentially with steady rhythm.
                 // Proxy cheater looking back and forth has huge pause (gap > 1200ms) or misordered taps.
                 when {
-                    accuracy == 100 && maxGap <= 900L -> {
+                    accuracy >= 70 && maxGap <= 1100L -> {
                         FocusClassification.FOCUSED_SINGLE_DEVICE to
                                 "Fluid sequential recall (${meanLatency.toInt()}ms latency). Single-device verified."
                     }
-                    accuracy < 60 -> {
+                    accuracy < 55 -> {
                         FocusClassification.DIVIDED_ATTENTION_PROXY to
                                 "Memory trace wiped out during blank phase. Divided attention flagged."
                     }
-                    maxGap > 1200L -> {
+                    maxGap > 1300L -> {
                         FocusClassification.DIVIDED_ATTENTION_PROXY to
                                 "Severe gaze stall between numbers (${maxGap}ms gap). Dual-phone proxy flagged."
                     }
                     else -> {
                         FocusClassification.FOCUSED_SINGLE_DEVICE to
-                                "Sequence completed successfully (${accuracy}% accuracy)."
+                                "Sequence completed (${accuracy}% accuracy)."
                     }
                 }
             }
 
             AttendanceGameType.STROOP_MATCH -> {
-                // Single student resolves Stroop cards in 300-600ms.
-                // Dual-phone proxy suffers cross-device semantic interference (latency > 1200ms or wrong swipes).
+                // Single student resolves Stroop cards in 300-650ms.
+                // Dual-phone proxy suffers cross-device semantic interference (latency > 1150ms or wrong swipes).
                 when {
-                    accuracy >= 66 && meanLatency <= 850f -> {
+                    accuracy >= 62 && meanLatency <= 900f -> {
                         FocusClassification.FOCUSED_SINGLE_DEVICE to
                                 "Strong cognitive inhibition (${meanLatency.toInt()}ms). Single-device verified."
                     }
-                    accuracy < 60 -> {
+                    accuracy < 50 -> {
                         FocusClassification.DIVIDED_ATTENTION_PROXY to
                                 "Semantic conflict resolution failure under divided attention."
                     }
-                    meanLatency > 1100f -> {
+                    meanLatency > 1150f -> {
                         FocusClassification.DIVIDED_ATTENTION_PROXY to
                                 "Excessive cognitive hesitation (${meanLatency.toInt()}ms). Saccadic delay flagged."
                     }
@@ -187,10 +187,10 @@ object GameTelemetryEngine {
             }
 
             AttendanceGameType.SUBITIZING_RUSH -> {
-                // Subitizing happens in < 350ms in foveal focus.
+                // Subitizing happens in < 400ms in foveal focus.
                 // Cheater in peripheral vision experiences crowding and fails or takes > 1000ms.
                 when {
-                    accuracy == 100 && meanLatency <= 850f -> {
+                    accuracy >= 66 && meanLatency <= 900f -> {
                         FocusClassification.FOCUSED_SINGLE_DEVICE to
                                 "Instant visual number sense (${meanLatency.toInt()}ms). Single-device verified."
                     }
@@ -198,7 +198,7 @@ object GameTelemetryEngine {
                         FocusClassification.DIVIDED_ATTENTION_PROXY to
                                 "Peripheral crowding failure. Gaze was not on device."
                     }
-                    meanLatency > 1000f -> {
+                    meanLatency > 1050f -> {
                         FocusClassification.DIVIDED_ATTENTION_PROXY to
                                 "Subitizing window exceeded (${meanLatency.toInt()}ms). Serial counting delay."
                     }
@@ -210,11 +210,11 @@ object GameTelemetryEngine {
             }
 
             AttendanceGameType.ORB_VECTOR_FLICK -> {
-                // Single student touches orb and executes clean vector flick (< 30 deg error, latency < 750ms).
+                // Single student touches orb and executes clean vector flick (< 35 deg error, latency < 800ms).
                 // Proxy cheater taps statically without flicking, or has massive angle error (> 50 deg).
                 val avgAngleError = interactions.map { it.vectorDeviationDeg }.average().toFloat()
                 when {
-                    hits >= 2 && avgAngleError <= 35f && meanLatency <= 850f -> {
+                    hits >= 4 && avgAngleError <= 38f && meanLatency <= 900f -> {
                         FocusClassification.FOCUSED_SINGLE_DEVICE to
                                 "Precise vector execution (${avgAngleError.toInt()}° err, ${meanLatency.toInt()}ms). Single-device verified."
                     }
@@ -222,7 +222,7 @@ object GameTelemetryEngine {
                         FocusClassification.DIVIDED_ATTENTION_PROXY to
                                 "Erratic flick vector (${avgAngleError.toInt()}° deviation). Cross-device interference."
                     }
-                    hits == 0 || meanLatency > 1100f -> {
+                    hits <= 2 || meanLatency > 1150f -> {
                         FocusClassification.DIVIDED_ATTENTION_PROXY to
                                 "Failed directional vector lock. Static tap or proxy hesitation flagged."
                     }
@@ -234,10 +234,10 @@ object GameTelemetryEngine {
             }
 
             AttendanceGameType.CHUBB_CONTRAST -> {
-                // Foveal contrast perception is instant (300-600ms).
+                // Foveal contrast perception is fast (300-650ms).
                 // Peripheral vision flattens contrast into muddy wash.
                 when {
-                    accuracy == 100 && meanLatency <= 850f -> {
+                    accuracy >= 66 && meanLatency <= 900f -> {
                         FocusClassification.FOCUSED_SINGLE_DEVICE to
                                 "Foveal contrast illusion perceived (${meanLatency.toInt()}ms). Single-device verified."
                     }
@@ -245,7 +245,7 @@ object GameTelemetryEngine {
                         FocusClassification.DIVIDED_ATTENTION_PROXY to
                                 "Contrast illusion collapsed in peripheral vision. Dual-phone proxy flagged."
                     }
-                    meanLatency > 1050f -> {
+                    meanLatency > 1100f -> {
                         FocusClassification.DIVIDED_ATTENTION_PROXY to
                                 "Prolonged saccadic latency (${meanLatency.toInt()}ms) on visual contrast."
                     }
@@ -257,18 +257,18 @@ object GameTelemetryEngine {
             }
 
             AttendanceGameType.POPOUT_ANOMALY -> {
-                // Pre-attentive parallel pop-out happens in < 450ms.
+                // Pre-attentive parallel pop-out happens in < 500ms.
                 // Cheater looking across screens forced into serial scan (> 1100ms).
                 when {
-                    hits >= 1 && meanLatency <= 700f -> {
+                    hits >= 3 && meanLatency <= 750f -> {
                         FocusClassification.FOCUSED_SINGLE_DEVICE to
                                 "Pre-attentive pop-out triggered (${meanLatency.toInt()}ms). Single-device verified."
                     }
-                    hits == 0 -> {
+                    hits <= 1 -> {
                         FocusClassification.DIVIDED_ATTENTION_PROXY to
                                 "Failed to acquire feature pop-out anomaly within attentional window."
                     }
-                    meanLatency > 1150f -> {
+                    meanLatency > 1200f -> {
                         FocusClassification.DIVIDED_ATTENTION_PROXY to
                                 "Serial search latency (${meanLatency.toInt()}ms). Divided attention flagged."
                     }

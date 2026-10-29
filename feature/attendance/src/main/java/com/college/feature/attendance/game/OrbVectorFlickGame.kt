@@ -94,10 +94,14 @@ fun OrbVectorFlickGame(
         val positions = listOf(
             0.50f to 0.40f,
             0.30f to 0.60f,
-            0.70f to 0.50f
+            0.70f to 0.50f,
+            0.40f to 0.45f,
+            0.60f to 0.65f,
+            0.35f to 0.35f,
+            0.55f to 0.55f
         )
 
-        for (i in 0 until 3) {
+        for (i in 0 until 7) {
             val dir = directions[rng.nextInt(directions.size)]
             val pos = positions[i % positions.size]
             list.add(

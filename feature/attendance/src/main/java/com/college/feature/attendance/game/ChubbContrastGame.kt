@@ -72,9 +72,12 @@ fun ChubbContrastGame(
         val seed = seedKey.hashCode().toLong().absoluteValue
         val rng = Random(seed)
         val list = mutableListOf<ContrastTrial>()
-        val r1Left = rng.nextBoolean()
-        list.add(ContrastTrial(brighterOnLeft = r1Left))
-        list.add(ContrastTrial(brighterOnLeft = !r1Left))
+        var lastLeft = rng.nextBoolean()
+        for (i in 0 until 6) {
+            val left = if (i % 2 == 1) !lastLeft else rng.nextBoolean()
+            lastLeft = left
+            list.add(ContrastTrial(brighterOnLeft = left))
+        }
         list
     }
 
