@@ -94,8 +94,8 @@ import com.college.feature.attendance.network.AttendanceSessionResponse
 import com.college.feature.attendance.network.CourseResponse
 import com.college.feature.attendance.network.RegisterRequest
 import com.college.feature.attendance.ui.theme.*
-import com.college.feature.attendance.game.AttendanceGameContainer
-import com.college.feature.attendance.game.AttendanceGameType
+import com.college.feature.attendance.game.StroopMatchGame
+import com.college.feature.attendance.game.GameTelemetryEngine
 import com.college.feature.attendance.telemetry.BehavioralTelemetryEngine
 import com.college.feature.attendance.telemetry.CognitiveFocusReport
 import com.college.feature.attendance.telemetry.ExpiredTargetEvent
@@ -286,8 +286,6 @@ fun AttendanceScreen(
                     challengeScore = viewModel.challengeScore,
                     challengeTotalTargets = viewModel.challengeTotalTargets,
                     lastFocusReport = viewModel.lastFocusReport,
-                    debugGameOverride = viewModel.debugGameOverride,
-                    onDebugGameChange = { viewModel.debugGameOverride = it },
                     onChallengeResult = { hit, total -> viewModel.recordChallengeResult(hit, total) },
                     onBehavioralReport = { report -> viewModel.recordBehavioralReport(report) },
                     onStartScanning = callbacks.onStartStudentScanning,
@@ -466,8 +464,6 @@ private fun StudentSection(
     challengeScore: Int = 0,
     challengeTotalTargets: Int = 0,
     lastFocusReport: CognitiveFocusReport? = null,
-    debugGameOverride: AttendanceGameType? = null,
-    onDebugGameChange: (AttendanceGameType?) -> Unit = {},
     onChallengeResult: (hit: Int, total: Int) -> Unit = { _, _ -> },
     onBehavioralReport: (CognitiveFocusReport) -> Unit = {},
     onStartScanning: () -> Unit,
@@ -479,21 +475,9 @@ private fun StudentSection(
     val isVerified = studentPhase == StudentPhase.VERIFIED_PRESENT
     val isUnverified = studentPhase == StudentPhase.UNVERIFIED_FLAGGED
 
-    val haptic = LocalHapticFeedback.current
-
-    fun getExpectedTargets(game: AttendanceGameType?): Int = when (game ?: AttendanceGameType.CHIMP_MEMORY) {
-        AttendanceGameType.CHIMP_MEMORY -> 7
-        AttendanceGameType.STROOP_MATCH -> 8
-        AttendanceGameType.SUBITIZING_RUSH -> 6
-        AttendanceGameType.ORB_VECTOR_FLICK -> 7
-        AttendanceGameType.CHUBB_CONTRAST -> 6
-        AttendanceGameType.POPOUT_ANOMALY -> 5
-    }
-
+    val stroopTotalCards = 8
     var targetsHit by remember { mutableIntStateOf(0) }
-    var totalTargetsSpawned by remember(debugGameOverride) {
-        mutableIntStateOf(getExpectedTargets(debugGameOverride))
-    }
+    var totalTargetsSpawned by remember { mutableIntStateOf(stroopTotalCards) }
     var isGameOver by remember { mutableStateOf(false) }
     var hasProceededToNext by remember { mutableStateOf(false) }
 
@@ -507,11 +491,10 @@ private fun StudentSection(
     LaunchedEffect(studentPhase) {
         if (studentPhase == StudentPhase.PROBING_NEIGHBORS) {
             targetsHit = 0
-            val expected = getExpectedTargets(debugGameOverride)
-            totalTargetsSpawned = expected
+            totalTargetsSpawned = stroopTotalCards
             isGameOver = false
             hasProceededToNext = false
-            onChallengeResult(0, expected)
+            onChallengeResult(0, stroopTotalCards)
         } else if (studentPhase == StudentPhase.STANDBY || studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
             isGameOver = false
             hasProceededToNext = false
@@ -670,18 +653,17 @@ private fun StudentSection(
             val viewportH = maxHeight
             when {
                 studentPhase == StudentPhase.PROBING_NEIGHBORS && !isGameOver -> {
-                    AttendanceGameContainer(
+                    StroopMatchGame(
                         modifier = Modifier.fillMaxSize(),
                         seedKey = "$detectedSessionId:$sessionSalt:$studentId",
-                        neighborIds = deskNeighbours.map { it.peerId },
-                        debugGameOverride = debugGameOverride,
-                        onProgressUpdate = { hits, total ->
+                        onProgress = { hits, total ->
                             targetsHit = hits
                             totalTargetsSpawned = total
                             onChallengeResult(hits, total)
                         },
-                        onComplete = { report ->
+                        onComplete = { interactions ->
                             isGameOver = true
+                            val report = GameTelemetryEngine.analyze(interactions, totalTrials = 8)
                             targetsHit = report.hits
                             totalTargetsSpawned = report.totalSpawns
                             onBehavioralReport(report)

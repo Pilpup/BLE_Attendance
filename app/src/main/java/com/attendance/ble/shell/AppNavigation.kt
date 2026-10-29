@@ -50,8 +50,6 @@ fun AppNavigation(
         Destination.HOME -> {
             HomeScreen(
                 user = user,
-                selectedGame = viewModel.debugGameOverride,
-                onSelectGame = { viewModel.debugGameOverride = it },
                 onNavigate = { route ->
                     destination = when {
                         route.startsWith(AttendanceDashboardCard.NAV_ROUTE) -> {
