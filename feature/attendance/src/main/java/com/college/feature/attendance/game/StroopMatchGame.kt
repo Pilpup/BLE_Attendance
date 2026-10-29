@@ -246,24 +246,15 @@ fun StroopMatchGame(
                 )
             }
 
-            // Central Interactive Card
+            // Central Interactive Color Text (no enclosing island card)
             if (currentCardIndex < cards.size) {
                 val currentCard = cards[currentCardIndex]
                 val currentOffset = cardOffsetX.value
 
-                Surface(
-                    shape = RoundedCornerShape(24.dp),
-                    color = Color(0xFF0B1712),
-                    border = androidx.compose.foundation.BorderStroke(
-                        2.dp,
-                        when {
-                            currentOffset > 80f -> TsodingOrbRenderer.EmeraldGreen
-                            currentOffset < -80f -> TsodingOrbRenderer.SolarOrange
-                            else -> Color(0x3300F5A0)
-                        }
-                    ),
+                Box(
                     modifier = Modifier
-                        .size(width = 280.dp, height = 220.dp)
+                        .fillMaxWidth()
+                        .height(260.dp)
                         .offset { IntOffset(currentOffset.roundToInt(), 0) }
                         .rotate(currentOffset * 0.04f)
                         .draggable(
@@ -282,24 +273,20 @@ fun StroopMatchGame(
                                     cardOffsetX.animateTo(0f, tween(150))
                                 }
                             }
-                        )
+                        ),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = currentCard.text,
-                            fontSize = 42.sp,
-                            fontWeight = FontWeight.Black,
-                            fontFamily = FontFamily.Monospace,
-                            letterSpacing = 2.sp,
-                            color = currentCard.textColor
-                        )
-                    }
+                    Text(
+                        text = currentCard.text,
+                        fontSize = 54.sp,
+                        fontWeight = FontWeight.Black,
+                        fontFamily = FontFamily.Monospace,
+                        letterSpacing = 4.sp,
+                        color = currentCard.textColor
+                    )
                 }
             } else {
-                Spacer(modifier = Modifier.height(220.dp))
+                Spacer(modifier = Modifier.height(260.dp))
             }
 
             // Bottom Directional Action Guides (Tap or Swipe)
