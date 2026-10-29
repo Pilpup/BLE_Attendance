@@ -94,9 +94,8 @@ import com.college.feature.attendance.network.AttendanceSessionResponse
 import com.college.feature.attendance.network.CourseResponse
 import com.college.feature.attendance.network.RegisterRequest
 import com.college.feature.attendance.ui.theme.*
-import com.college.feature.attendance.rhythm.AttendanceBeatmap
-import com.college.feature.attendance.rhythm.OsuRhythmChallenge
-import com.college.feature.attendance.rhythm.RhythmTelemetryEngine
+import com.college.feature.attendance.game.AttendanceGameContainer
+import com.college.feature.attendance.game.AttendanceGameType
 import com.college.feature.attendance.telemetry.BehavioralTelemetryEngine
 import com.college.feature.attendance.telemetry.CognitiveFocusReport
 import com.college.feature.attendance.telemetry.ExpiredTargetEvent
@@ -112,9 +111,6 @@ import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
 
-/**
- * Callbacks required by the attendance screen from the host activity.
- */
 data class AttendanceScreenCallbacks(
     val onStartTeacherSession: () -> Unit,
     val onStopTeacherSession: () -> Unit,
@@ -126,12 +122,6 @@ data class AttendanceScreenCallbacks(
     val onRequestPermissions: () -> Unit
 )
 
-/**
- * Redesigned Attendance Interface with Obsidian Dark aesthetic:
- * - Adapts cleanly to Student (Beacon radar & peer mesh discovery)
- *   and Teacher (Course broadcasting & live cloud audit).
- * - Fast, minimal, high-contrast, clutter-free.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AttendanceScreen(
@@ -296,6 +286,8 @@ fun AttendanceScreen(
                     challengeScore = viewModel.challengeScore,
                     challengeTotalTargets = viewModel.challengeTotalTargets,
                     lastFocusReport = viewModel.lastFocusReport,
+                    debugGameOverride = viewModel.debugGameOverride,
+                    onDebugGameChange = { viewModel.debugGameOverride = it },
                     onChallengeResult = { hit, total -> viewModel.recordChallengeResult(hit, total) },
                     onBehavioralReport = { report -> viewModel.recordBehavioralReport(report) },
                     onStartScanning = callbacks.onStartStudentScanning,
@@ -321,9 +313,6 @@ fun AttendanceScreen(
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// STUDENT SECTION (HUMAN ATTENTION CHALLENGE & BLE MESH)
-// ─────────────────────────────────────────────────────────────────────────────
 private data class ReflexTarget(
     val id: Int,
     val relX: Float,
@@ -477,6 +466,8 @@ private fun StudentSection(
     challengeScore: Int = 0,
     challengeTotalTargets: Int = 0,
     lastFocusReport: CognitiveFocusReport? = null,
+    debugGameOverride: AttendanceGameType? = null,
+    onDebugGameChange: (AttendanceGameType?) -> Unit = {},
     onChallengeResult: (hit: Int, total: Int) -> Unit = { _, _ -> },
     onBehavioralReport: (CognitiveFocusReport) -> Unit = {},
     onStartScanning: () -> Unit,
@@ -491,7 +482,7 @@ private fun StudentSection(
     val haptic = LocalHapticFeedback.current
 
     var targetsHit by remember { mutableIntStateOf(0) }
-    var totalTargetsSpawned by remember { mutableIntStateOf(AttendanceBeatmap.objects.size) }
+    var totalTargetsSpawned by remember { mutableIntStateOf(3) }
     var isGameOver by remember { mutableStateOf(false) }
     var hasProceededToNext by remember { mutableStateOf(false) }
 
@@ -505,10 +496,10 @@ private fun StudentSection(
     LaunchedEffect(studentPhase) {
         if (studentPhase == StudentPhase.PROBING_NEIGHBORS) {
             targetsHit = 0
-            totalTargetsSpawned = AttendanceBeatmap.objects.size
+            totalTargetsSpawned = 3
             isGameOver = false
             hasProceededToNext = false
-            onChallengeResult(0, totalTargetsSpawned)
+            onChallengeResult(0, 3)
         } else if (studentPhase == StudentPhase.STANDBY || studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
             isGameOver = false
             hasProceededToNext = false
@@ -667,17 +658,19 @@ private fun StudentSection(
             val viewportH = maxHeight
             when {
                 studentPhase == StudentPhase.PROBING_NEIGHBORS && !isGameOver -> {
-                    OsuRhythmChallenge(
+                    AttendanceGameContainer(
                         modifier = Modifier.fillMaxSize(),
                         seedKey = "$detectedSessionId:$sessionSalt:$studentId",
+                        neighborIds = deskNeighbours.map { it.peerId },
+                        debugGameOverride = debugGameOverride,
+                        onDebugGameChange = onDebugGameChange,
                         onProgressUpdate = { hits, total ->
                             targetsHit = hits
                             totalTargetsSpawned = total
                             onChallengeResult(hits, total)
                         },
-                        onComplete = { interactionList ->
+                        onComplete = { report ->
                             isGameOver = true
-                            val report = RhythmTelemetryEngine.analyze(interactionList)
                             targetsHit = report.hits
                             totalTargetsSpawned = report.totalSpawns
                             onBehavioralReport(report)
@@ -687,115 +680,92 @@ private fun StudentSection(
                 }
 
                 isGameOver && !hasProceededToNext -> {
-                    // Player Score & Rating Display
+                    // Cleaned Up Modern Score & Verification Board
                     val accuracy = lastFocusReport?.accuracyPercentage ?: if (totalTargetsSpawned > 0) (targetsHit * 100) / totalTargetsSpawned else 0
-                    val rating = when {
-                        accuracy >= 90 -> "PERFECT"
-                        accuracy >= 75 -> "GREAT"
-                        accuracy >= 55 -> "GOOD"
-                        else -> "TRY AGAIN"
-                    }
-                    val ratingColor = when {
-                        accuracy >= 90 -> Color(0xFF00F5A0)
-                        accuracy >= 75 -> Color(0xFF38BDF8)
-                        accuracy >= 55 -> Color(0xFFF59E0B)
-                        else -> Color(0xFFEF4444)
+                    val isProxy = lastFocusReport?.classification == FocusClassification.DIVIDED_ATTENTION_PROXY
+                    val isBot = lastFocusReport?.classification == FocusClassification.AUTOMATED_SCRIPT
+                    val isVerifiedHuman = lastFocusReport?.classification == FocusClassification.FOCUSED_SINGLE_DEVICE ||
+                            (lastFocusReport == null && accuracy >= 60)
+
+                    val statusColor = when {
+                        isVerifiedHuman -> Color(0xFF00F5A0)
+                        isProxy || isBot -> Color(0xFFEF4444)
+                        else -> Color(0xFFF59E0B)
                     }
 
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
                             .verticalScroll(rememberScrollState())
-                            .padding(horizontal = 20.dp, vertical = 16.dp),
+                            .padding(horizontal = 24.dp, vertical = 20.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
+                        // 1. Status Pill
                         Surface(
                             shape = RoundedCornerShape(20.dp),
-                            color = ratingColor.copy(alpha = 0.12f),
-                            border = BorderStroke(1.5.dp, ratingColor)
+                            color = statusColor.copy(alpha = 0.12f),
+                            border = BorderStroke(1.5.dp, statusColor)
                         ) {
-                            Text(
-                                text = rating,
-                                fontSize = 22.sp,
-                                fontWeight = FontWeight.Black,
-                                letterSpacing = 2.sp,
-                                color = ratingColor,
-                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
-                            )
+                            Row(
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isVerifiedHuman) Icons.Default.CheckCircle else Icons.Default.Warning,
+                                    contentDescription = null,
+                                    tint = statusColor,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = when {
+                                        isVerifiedHuman -> "SINGLE-DEVICE HUMAN VERIFIED"
+                                        isProxy -> "DIVIDED ATTENTION (PROXY DETECTED)"
+                                        isBot -> "AUTOMATION SCRIPT DETECTED"
+                                        else -> "ATTENTION INCOMPLETE"
+                                    },
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Black,
+                                    letterSpacing = 1.sp,
+                                    color = statusColor
+                                )
+                            }
                         }
-                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // 2. Score Summary
                         Text(
-                            text = "$targetsHit / $totalTargetsSpawned HITS",
-                            fontSize = 30.sp,
+                            text = "$targetsHit / $totalTargetsSpawned PASSED",
+                            fontSize = 32.sp,
                             fontWeight = FontWeight.Black,
                             fontFamily = FontFamily.Monospace,
                             color = textPrimary
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "ACCURACY ($accuracy%)",
+                            text = "ACCURACY: $accuracy%",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 1.sp,
                             color = textMuted
                         )
 
-                        // Behavioral Anti-Proxy Verification Card
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // 3. Compact Behavioral Metrics Card
                         if (lastFocusReport != null) {
-                            Spacer(modifier = Modifier.height(14.dp))
-                            val isProxy = lastFocusReport.classification == FocusClassification.DIVIDED_ATTENTION_PROXY
-                            val isBot = lastFocusReport.classification == FocusClassification.AUTOMATED_SCRIPT
-                            val isFocused = lastFocusReport.classification == FocusClassification.FOCUSED_SINGLE_DEVICE
-
-                            val badgeColor = when {
-                                isFocused -> Color(0xFF00F5A0)
-                                isProxy || isBot -> Color(0xFFEF4444)
-                                else -> Color(0xFFF59E0B)
-                            }
-                            val badgeBg = badgeColor.copy(alpha = 0.10f)
-
                             Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = badgeBg,
-                                border = BorderStroke(1.dp, badgeColor.copy(alpha = 0.45f)),
+                                shape = RoundedCornerShape(16.dp),
+                                color = Color(0x18FFFFFF),
+                                border = BorderStroke(1.dp, Color(0x28FFFFFF)),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Column(
-                                    modifier = Modifier.padding(12.dp),
+                                    modifier = Modifier.padding(14.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = when {
-                                                isFocused -> Icons.Default.CheckCircle
-                                                isProxy || isBot -> Icons.Default.Warning
-                                                else -> Icons.Default.Security
-                                            },
-                                            contentDescription = null,
-                                            tint = badgeColor,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Text(
-                                            text = when (lastFocusReport.classification) {
-                                                FocusClassification.FOCUSED_SINGLE_DEVICE -> "SINGLE-DEVICE HUMAN VERIFIED"
-                                                FocusClassification.DIVIDED_ATTENTION_PROXY -> "DIVIDED ATTENTION DETECTED (PROXY)"
-                                                FocusClassification.AUTOMATED_SCRIPT -> "AUTOMATION / BOT PATTERN"
-                                                FocusClassification.INATTENTIVE -> "INATTENTIVE / UNVERIFIED"
-                                            },
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.Black,
-                                            letterSpacing = 0.5.sp,
-                                            color = badgeColor
-                                        )
-                                    }
-
-                                    Spacer(modifier = Modifier.height(8.dp))
-
-                                    // Behavioral Telemetry Metrics
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceEvenly
@@ -803,29 +773,13 @@ private fun StudentSection(
                                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                             Text(
                                                 text = "${lastFocusReport.meanLatencyMs.toInt()} ms",
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 15.sp,
+                                                fontWeight = FontWeight.Black,
                                                 fontFamily = FontFamily.Monospace,
                                                 color = textPrimary
                                             )
                                             Text(
-                                                text = "TIMING SYNC",
-                                                fontSize = 9.sp,
-                                                fontWeight = FontWeight.SemiBold,
-                                                color = textMuted
-                                            )
-                                        }
-
-                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                            Text(
-                                                text = String.format(java.util.Locale.US, "%.2f", lastFocusReport.latencyOscillationIndex),
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                fontFamily = FontFamily.Monospace,
-                                                color = if (lastFocusReport.latencyOscillationIndex > 0.50f) Color(0xFFEF4444) else textPrimary
-                                            )
-                                            Text(
-                                                text = "SWITCH INDEX",
+                                                text = "REACTION TIME",
                                                 fontSize = 9.sp,
                                                 fontWeight = FontWeight.SemiBold,
                                                 color = textMuted
@@ -835,10 +789,10 @@ private fun StudentSection(
                                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                             Text(
                                                 text = "${(lastFocusReport.focusIndex * 100).toInt()}%",
-                                                fontSize = 13.sp,
-                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 15.sp,
+                                                fontWeight = FontWeight.Black,
                                                 fontFamily = FontFamily.Monospace,
-                                                color = badgeColor
+                                                color = statusColor
                                             )
                                             Text(
                                                 text = "FOCUS INDEX",
@@ -847,23 +801,41 @@ private fun StudentSection(
                                                 color = textMuted
                                             )
                                         }
+
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            val stability = if (lastFocusReport.latencyOscillationIndex <= 0.40f) "OPTIMAL" else "VARIED"
+                                            Text(
+                                                text = stability,
+                                                fontSize = 15.sp,
+                                                fontWeight = FontWeight.Black,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = if (stability == "OPTIMAL") Color(0xFF00F5A0) else Color(0xFFF59E0B)
+                                            )
+                                            Text(
+                                                text = "STABILITY",
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = textMuted
+                                            )
+                                        }
                                     }
 
-                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Spacer(modifier = Modifier.height(10.dp))
                                     Text(
                                         text = lastFocusReport.diagnosticReason,
-                                        fontSize = 10.sp,
+                                        fontSize = 11.sp,
                                         color = textMuted,
                                         textAlign = TextAlign.Center,
-                                        lineHeight = 13.sp
+                                        lineHeight = 15.sp
                                     )
                                 }
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(14.dp))
-                        val isProxyFlagged = lastFocusReport?.classification == FocusClassification.DIVIDED_ATTENTION_PROXY ||
-                                lastFocusReport?.classification == FocusClassification.AUTOMATED_SCRIPT
+                        Spacer(modifier = Modifier.height(20.dp))
+
+                        // 4. Action Confirmation Button
+                        val isProxyFlagged = isProxy || isBot
                         Button(
                             onClick = {
                                 hasProceededToNext = true
@@ -871,17 +843,17 @@ private fun StudentSection(
                             },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(48.dp),
-                            shape = RoundedCornerShape(12.dp),
+                                .height(50.dp),
+                            shape = RoundedCornerShape(14.dp),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isProxyFlagged) alertRed else Color(0xFF059669)
+                                containerColor = if (isProxyFlagged) alertRed else Color(0xFF00F5A0)
                             )
                         ) {
                             Text(
-                                text = if (isProxyFlagged) "Confirm & Proceed  ➜" else "Confirm Attendance  ➜",
+                                text = if (isProxyFlagged) "Confirm & Proceed  ➔" else "Confirm Attendance  ➔",
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = Color.White
+                                color = if (isProxyFlagged) Color.White else Color.Black
                             )
                         }
                     }

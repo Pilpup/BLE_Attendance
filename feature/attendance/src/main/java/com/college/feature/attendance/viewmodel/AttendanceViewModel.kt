@@ -142,6 +142,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var challengeScore by mutableIntStateOf(0)
     var challengeTotalTargets by mutableIntStateOf(0)
     var lastFocusReport by mutableStateOf<com.college.feature.attendance.telemetry.CognitiveFocusReport?>(null)
+    var debugGameOverride by mutableStateOf<com.college.feature.attendance.game.AttendanceGameType?>(null)
     val challengeScorePercentage: Int
         get() = if (challengeTotalTargets > 0) (challengeScore * 100) / challengeTotalTargets else 0
     val isChallengePassed: Boolean
