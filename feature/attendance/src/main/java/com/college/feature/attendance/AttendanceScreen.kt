@@ -600,8 +600,8 @@ private fun StudentSection(
             }
         }
 
-        // Error Notice (if any)
-        if (studentStatusMessage != null) {
+        // Error Notice (if any) - suppress during game and score screen
+        if (studentStatusMessage != null && !isGameOver && studentPhase != StudentPhase.PROBING_NEIGHBORS) {
             Surface(
                 shape = RoundedCornerShape(10.dp),
                 color = alertRedBg,
@@ -673,13 +673,13 @@ private fun StudentSection(
                 }
 
                 isGameOver && !hasProceededToNext -> {
-                    // Minimal Gamer Score Board: gitgud / Good / Excellent + Score
+                    // Minimal Gamer Score Board: Git Gud (Red) / Good (Orange) / Excellent (Green) + Score
                     val total = totalTargetsSpawned.coerceAtLeast(1)
                     val ratio = targetsHit.toFloat() / total
                     val (ratingText, ratingColor) = when {
-                        ratio >= 0.80f -> "Excellent" to Color(0xFF00F5A0)
-                        ratio >= 0.50f -> "Good" to Color(0xFF00E5FF)
-                        else -> "gitgud" to Color(0xFFFF9100)
+                        ratio >= 0.80f -> "Excellent" to Color(0xFF00F5A0)  // Green
+                        ratio >= 0.50f -> "Good" to Color(0xFFFF9100)       // Orange
+                        else -> "Git Gud" to Color(0xFFFF1744)              // Red
                     }
 
                     Column(
@@ -691,7 +691,7 @@ private fun StudentSection(
                     ) {
                         Text(
                             text = ratingText,
-                            fontSize = 32.sp,
+                            fontSize = 36.sp,
                             fontWeight = FontWeight.Black,
                             letterSpacing = 1.sp,
                             color = ratingColor
@@ -701,7 +701,7 @@ private fun StudentSection(
 
                         Text(
                             text = "$targetsHit / $totalTargetsSpawned",
-                            fontSize = 44.sp,
+                            fontSize = 48.sp,
                             fontWeight = FontWeight.Black,
                             fontFamily = FontFamily.Monospace,
                             color = textPrimary

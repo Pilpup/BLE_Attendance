@@ -1,5 +1,6 @@
 package com.college.feature.attendance.game
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -75,23 +76,39 @@ fun StroopMatchGame(
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
 
-    // 4 standard primary colors
+    // Rich vibrant colors for high-conflict Stroop testing
     val colorTokens = remember {
         listOf(
             "RED" to Color(0xFFFF1744),
             "BLUE" to Color(0xFF00E5FF),
             "GREEN" to Color(0xFF00F5A0),
-            "AMBER" to Color(0xFFFF9100)
+            "AMBER" to Color(0xFFFF9100),
+            "PURPLE" to Color(0xFFD500F9),
+            "YELLOW" to Color(0xFFFFEA00),
+            "PINK" to Color(0xFFFF4081)
         )
     }
 
-    // Generate 3 procedural trials from seedKey
+    // Dynamic background palettes that shift on every card to confuse the user
+    val bgPalettes = remember {
+        listOf(
+            listOf(Color(0xFF22050B), Color(0xFF0D0204), Color(0xFF190308)), // Crimson hue
+            listOf(Color(0xFF021622), Color(0xFF010A10), Color(0xFF041E2E)), // Deep Cyan hue
+            listOf(Color(0xFF051C0F), Color(0xFF020E07), Color(0xFF082614)), // Forest Emerald hue
+            listOf(Color(0xFF221602), Color(0xFF0E0901), Color(0xFF2A1C03)), // Deep Amber hue
+            listOf(Color(0xFF1C0324), Color(0xFF0C0110), Color(0xFF260430)), // Deep Purple hue
+            listOf(Color(0xFF220316), Color(0xFF0E0109), Color(0xFF2D041D)), // Deep Magenta/Pink hue
+            listOf(Color(0xFF201E03), Color(0xFF0F0E01), Color(0xFF2B2804))  // Deep Gold hue
+        )
+    }
+
+    // Generate 12 procedural trials from seedKey (15 seconds total session)
     data class StroopCard(val text: String, val textColor: Color, val isMatch: Boolean)
     val cards = remember(seedKey) {
         val seed = seedKey.hashCode().toLong().absoluteValue
         val rng = Random(seed)
         val list = mutableListOf<StroopCard>()
-        for (i in 0 until 8) {
+        for (i in 0 until 12) {
             val shouldMatch = rng.nextBoolean()
             val textIdx = rng.nextInt(colorTokens.size)
             val colorIdx = if (shouldMatch) textIdx else {
@@ -117,6 +134,12 @@ fun StroopMatchGame(
 
     // Card drag offset for fluid swipe feel
     val cardOffsetX = remember { Animatable(0f) }
+
+    // Dynamic background colors that interpolate on card transitions
+    val currentBg = bgPalettes[currentCardIndex % bgPalettes.size]
+    val bgAnimColor1 by animateColorAsState(targetValue = currentBg[0], animationSpec = tween(400), label = "bgTop")
+    val bgAnimColor2 by animateColorAsState(targetValue = currentBg[1], animationSpec = tween(400), label = "bgMid")
+    val bgAnimColor3 by animateColorAsState(targetValue = currentBg[2], animationSpec = tween(400), label = "bgBottom")
 
     fun processSwipe(directionRight: Boolean) {
         if (isTransitioning || currentCardIndex >= cards.size) return
@@ -158,16 +181,16 @@ fun StroopMatchGame(
         }
     }
 
-    // Auto-advance on 1400ms timeout if player hesitated too long (proxy stall)
+    // Auto-advance on 1250ms timeout if player hesitated too long (12 cards * 1.25s = 15s session)
     LaunchedEffect(currentCardIndex) {
         cardSpawnTimestamp = System.currentTimeMillis()
-        delay(1400L)
+        delay(1250L)
         if (!isTransitioning && currentCardIndex < cards.size) {
             // Timeout registered as miss
             interactions.add(
                 GameInteractionRecord(
                     trialIndex = currentCardIndex,
-                    latencyMs = 1400L,
+                    latencyMs = 1250L,
                     isCorrect = false,
                     stimulusKey = "STROOP_TIMEOUT"
                 )
@@ -188,7 +211,7 @@ fun StroopMatchGame(
             .fillMaxSize()
             .background(
                 Brush.verticalGradient(
-                    listOf(Color(0xFF040A07), Color(0xFF020604), Color(0xFF07120C))
+                    listOf(bgAnimColor1, bgAnimColor2, bgAnimColor3)
                 )
             )
             .padding(16.dp),

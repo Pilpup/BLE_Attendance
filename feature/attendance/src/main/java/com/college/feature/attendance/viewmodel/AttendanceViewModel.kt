@@ -159,11 +159,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     fun recordBehavioralReport(report: com.college.feature.attendance.telemetry.CognitiveFocusReport) {
         lastFocusReport = report
-        if (report.classification == com.college.feature.attendance.telemetry.FocusClassification.DIVIDED_ATTENTION_PROXY ||
-            report.classification == com.college.feature.attendance.telemetry.FocusClassification.AUTOMATED_SCRIPT
-        ) {
-            studentStatusMessage = report.diagnosticReason
-        }
     }
 
     // Top 3 desk neighbours with median RSSI >= -90 dBm (calibrated for classroom RF attenuation)
@@ -826,7 +821,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             StudentPhase.VERIFIED_PRESENT
         } else {
             if (studentStatusMessage == null) {
-                studentStatusMessage = lastFocusReport?.diagnosticReason ?: "Focus verification requirements not met"
+                studentStatusMessage = "Attendance verification requirements not met"
             }
             StudentPhase.UNVERIFIED_FLAGGED
         }
