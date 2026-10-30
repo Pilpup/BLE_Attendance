@@ -14,7 +14,7 @@ object GameTelemetryEngine {
 
     fun analyze(
         interactions: List<GameInteractionRecord>,
-        totalTrials: Int = 8
+        totalTrials: Int = 12
     ): CognitiveFocusReport {
         if (interactions.isEmpty()) {
             return CognitiveFocusReport(
