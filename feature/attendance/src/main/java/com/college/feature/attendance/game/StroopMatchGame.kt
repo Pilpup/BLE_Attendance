@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -57,8 +58,6 @@ import java.util.Random
 import kotlin.math.absoluteValue
 import kotlin.math.roundToInt
 
-private const val SELECT_WINDOW_MS = 2000L
-
 private fun weirdifyCase(word: String, rng: Random): String {
     val chars = word.lowercase().toCharArray()
     var hasUpper = false
@@ -77,24 +76,32 @@ private fun weirdifyCase(word: String, rng: Random): String {
 }
 
 /**
- * Stroop Match Game
- * - 12 trials with 65% wrong (mismatch) and 35% right (match) ratio
- * - 12 rich basic colors
- * - Shuffled weird casing, fonts, font weights, sizes, and rotation tilts
- * - Controlled text position changes (moderate, clean roaming)
- * - Fixed MATCH (right) and MISMATCH (left) positions at the bottom
+ * Stroop Match Game with Tetris Bag Generator and High-Proximity Defense Mode.
+ * - Tetris 12-Bag: colors are pre-shuffled once into an immutable array (no color repeats, zero clumping).
+ * - Calibrated 35% match / 65% mismatch ratio (8 mismatches, 4 matches).
+ * - High-Proximity Defense Mode (activated when peers are within -45 to -30 dBm):
+ *     1. Reduced select window: 1100ms flash sprint (breaks cross-device gaze shifts).
+ *     2. Opposing button polarity based on student ID hash (Left=MATCH vs Left=MISMATCH).
+ *     3. Increased incongruence (83% mismatch).
  */
 @Composable
 fun StroopMatchGame(
     seedKey: String,
     onProgress: (hitCount: Int, totalTrials: Int) -> Unit,
     onComplete: (interactions: List<GameInteractionRecord>) -> Unit,
+    isUltraCloseProximity: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
 
-    // 1. Comprehensive basic color palette (12 distinct, high-contrast colors)
+    // Select window: 2000ms normal mode, 1100ms in ultra-close proximity defense mode
+    val selectWindowMs = if (isUltraCloseProximity) 1100L else 2000L
+
+    // Opposing button polarity for ultra-close neighbors to prevent identical dual-thumb swipes
+    val invertButtons = isUltraCloseProximity && (seedKey.hashCode().absoluteValue % 2 != 0)
+
+    // 12 distinct, high-contrast basic colors
     val colorTokens = remember {
         listOf(
             "RED" to Color(0xFFFF1744),
@@ -112,7 +119,7 @@ fun StroopMatchGame(
         )
     }
 
-    // Dynamic background palettes that animate on every card to confuse peripheral vision
+    // Dynamic background palettes that animate on card transitions to confuse peripheral vision
     val bgPalettes = remember {
         listOf(
             listOf(Color(0xFF22050B), Color(0xFF0D0204), Color(0xFF190308)), // Crimson
@@ -142,16 +149,29 @@ fun StroopMatchGame(
         val textRelOffsetY: Dp
     )
 
-    // Generate 12 procedural trials with calibrated 35% match / 65% mismatch ratio
-    val cards = remember(seedKey) {
+    // Tetris Bag Pre-Shuffled Generation (computed once, played sequentially from array)
+    val cards = remember(seedKey, isUltraCloseProximity) {
         val seed = seedKey.hashCode().toLong().absoluteValue
         val rng = Random(seed)
 
-        // Exactly 4 matches (33.3% ~ 35%) and 8 mismatches (66.7% ~ 65%)
-        val matchPlan = mutableListOf(
-            true, true, true, true,
-            false, false, false, false, false, false, false, false
-        )
+        // 1. Color Bag: shuffle all 12 basic colors once (guarantees every color appears once, zero clumping)
+        val colorIndices = (0 until colorTokens.size).toMutableList()
+        colorIndices.shuffle(rng)
+
+        // 2. Match/Mismatch Bag:
+        // Normal: 4 matches (35%) / 8 mismatches (65%)
+        // Ultra-close defense: 2 matches (17%) / 10 mismatches (83%)
+        val matchPlan = if (isUltraCloseProximity) {
+            mutableListOf(
+                true, true,
+                false, false, false, false, false, false, false, false, false, false
+            )
+        } else {
+            mutableListOf(
+                true, true, true, true,
+                false, false, false, false, false, false, false, false
+            )
+        }
         matchPlan.shuffle(rng)
 
         val fontFamilies = listOf(
@@ -173,7 +193,7 @@ fun StroopMatchGame(
         val list = mutableListOf<StroopCard>()
         for (i in 0 until 12) {
             val shouldMatch = matchPlan[i]
-            val textIdx = rng.nextInt(colorTokens.size)
+            val textIdx = colorIndices[i] // Pre-shuffled Tetris bag draw
             val colorIdx = if (shouldMatch) textIdx else {
                 var c = rng.nextInt(colorTokens.size)
                 while (c == textIdx) c = rng.nextInt(colorTokens.size)
@@ -194,7 +214,7 @@ fun StroopMatchGame(
                     fontWeight = fontWeights[rng.nextInt(fontWeights.size)],
                     letterSpacing = 1 + rng.nextInt(5), // 1.sp to 5.sp
                     rotationTilt = (rng.nextFloat() * 12f - 6f), // -6° to +6°
-                    // Controlled, moderate text shift (noticeable, but not excessive)
+                    // Controlled, moderate text shift (noticeable, clean roaming)
                     textRelOffsetX = (rng.nextInt(111) - 55).dp, // -55dp to +55dp
                     textRelOffsetY = (rng.nextInt(121) - 60).dp  // -60dp to +60dp
                 )
@@ -258,19 +278,19 @@ fun StroopMatchGame(
     // Animated countdown for the select window
     val cardProgress = remember { Animatable(1f) }
 
-    // Auto-advance on SELECT_WINDOW_MS (2000ms) timeout if player hesitated too long
+    // Auto-advance on selectWindowMs timeout if player hesitated too long
     LaunchedEffect(currentCardIndex) {
         cardSpawnTimestamp = System.currentTimeMillis()
         cardProgress.snapTo(1f)
         launch {
-            cardProgress.animateTo(0f, tween(SELECT_WINDOW_MS.toInt()))
+            cardProgress.animateTo(0f, tween(selectWindowMs.toInt()))
         }
-        delay(SELECT_WINDOW_MS)
+        delay(selectWindowMs)
         if (!isTransitioning && currentCardIndex < cards.size) {
             interactions.add(
                 GameInteractionRecord(
                     trialIndex = currentCardIndex,
-                    latencyMs = SELECT_WINDOW_MS,
+                    latencyMs = selectWindowMs,
                     isCorrect = false,
                     stimulusKey = "STROOP_TIMEOUT"
                 )
@@ -318,6 +338,35 @@ fun StroopMatchGame(
                     fontFamily = FontFamily.Monospace,
                     color = TsodingOrbRenderer.CyanPulse
                 )
+
+                if (isUltraCloseProximity) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0x33FF9100),
+                        border = BorderStroke(1.dp, TsodingOrbRenderer.SolarOrange)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Radar,
+                                contentDescription = null,
+                                tint = TsodingOrbRenderer.SolarOrange,
+                                modifier = Modifier.size(12.dp)
+                            )
+                            Text(
+                                text = "DENSE RADAR",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 0.5.sp,
+                                color = TsodingOrbRenderer.SolarOrange
+                            )
+                        }
+                    }
+                }
+
                 Text(
                     text = "DOES WORD MATCH COLOR?",
                     fontSize = 11.sp,
@@ -375,11 +424,13 @@ fun StroopMatchGame(
                             onDragEnd = {
                                 val dx = cardOffsetX.value
                                 if (dx > 45f) {
-                                    // Flicked Right -> MATCH
-                                    processChoice(userSaidMatch = true, flingTargetX = 1300f)
+                                    // Flicked Right -> If inverted, right is MISMATCH; otherwise right is MATCH
+                                    val choseMatch = !invertButtons
+                                    processChoice(userSaidMatch = choseMatch, flingTargetX = 1300f)
                                 } else if (dx < -45f) {
-                                    // Flicked Left -> MISMATCH
-                                    processChoice(userSaidMatch = false, flingTargetX = -1300f)
+                                    // Flicked Left -> If inverted, left is MATCH; otherwise left is MISMATCH
+                                    val choseMatch = invertButtons
+                                    processChoice(userSaidMatch = choseMatch, flingTargetX = -1300f)
                                 } else {
                                     scope.launch {
                                         cardOffsetX.animateTo(0f, tween(150))
@@ -400,7 +451,19 @@ fun StroopMatchGame(
                 )
             }
 
-            // Fixed Position Bottom Action Buttons: MISMATCH (Left) and MATCH (Right)
+            // Fixed Position Bottom Action Buttons: (Left & Right)
+            // Normal: Left = MISMATCH, Right = MATCH
+            // Inverted (Ultra-Close Defense): Left = MATCH, Right = MISMATCH
+            val leftIsMatch = invertButtons
+            val leftColor = if (leftIsMatch) TsodingOrbRenderer.EmeraldGreen else TsodingOrbRenderer.SolarOrange
+            val leftIcon = if (leftIsMatch) Icons.Default.Check else Icons.Default.Close
+            val leftLabel = if (leftIsMatch) "MATCH" else "MISMATCH"
+
+            val rightIsMatch = !invertButtons
+            val rightColor = if (rightIsMatch) TsodingOrbRenderer.EmeraldGreen else TsodingOrbRenderer.SolarOrange
+            val rightIcon = if (rightIsMatch) Icons.Default.Check else Icons.Default.Close
+            val rightLabel = if (rightIsMatch) "MATCH" else "MISMATCH"
+
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -409,12 +472,12 @@ fun StroopMatchGame(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                // Left: MISMATCH (Fixed position)
+                // Left Action Button
                 Surface(
-                    onClick = { processChoice(userSaidMatch = false, flingTargetX = -1300f) },
+                    onClick = { processChoice(userSaidMatch = leftIsMatch, flingTargetX = -1300f) },
                     shape = RoundedCornerShape(18.dp),
-                    color = TsodingOrbRenderer.SolarOrange.copy(alpha = 0.16f),
-                    border = BorderStroke(1.5.dp, TsodingOrbRenderer.SolarOrange.copy(alpha = 0.65f)),
+                    color = leftColor.copy(alpha = 0.16f),
+                    border = BorderStroke(1.5.dp, leftColor.copy(alpha = 0.65f)),
                     modifier = Modifier.size(width = 150.dp, height = 54.dp)
                 ) {
                     Row(
@@ -425,28 +488,28 @@ fun StroopMatchGame(
                         horizontalArrangement = Arrangement.Center
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Close,
+                            imageVector = leftIcon,
                             contentDescription = null,
-                            tint = TsodingOrbRenderer.SolarOrange,
+                            tint = leftColor,
                             modifier = Modifier.size(20.dp)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "MISMATCH",
+                            text = leftLabel,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Black,
                             letterSpacing = 1.sp,
-                            color = TsodingOrbRenderer.SolarOrange
+                            color = leftColor
                         )
                     }
                 }
 
-                // Right: MATCH (Fixed position)
+                // Right Action Button
                 Surface(
-                    onClick = { processChoice(userSaidMatch = true, flingTargetX = 1300f) },
+                    onClick = { processChoice(userSaidMatch = rightIsMatch, flingTargetX = 1300f) },
                     shape = RoundedCornerShape(18.dp),
-                    color = TsodingOrbRenderer.EmeraldGreen.copy(alpha = 0.16f),
-                    border = BorderStroke(1.5.dp, TsodingOrbRenderer.EmeraldGreen.copy(alpha = 0.65f)),
+                    color = rightColor.copy(alpha = 0.16f),
+                    border = BorderStroke(1.5.dp, rightColor.copy(alpha = 0.65f)),
                     modifier = Modifier.size(width = 150.dp, height = 54.dp)
                 ) {
                     Row(
@@ -457,17 +520,17 @@ fun StroopMatchGame(
                         horizontalArrangement = Arrangement.Center
                     ) {
                         Text(
-                            text = "MATCH",
+                            text = rightLabel,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Black,
                             letterSpacing = 1.sp,
-                            color = TsodingOrbRenderer.EmeraldGreen
+                            color = rightColor
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Icon(
-                            imageVector = Icons.Default.Check,
+                            imageVector = rightIcon,
                             contentDescription = null,
-                            tint = TsodingOrbRenderer.EmeraldGreen,
+                            tint = rightColor,
                             modifier = Modifier.size(20.dp)
                         )
                     }

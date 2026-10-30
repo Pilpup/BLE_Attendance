@@ -475,11 +475,15 @@ private fun StudentSection(
     val isVerified = studentPhase == StudentPhase.VERIFIED_PRESENT
     val isUnverified = studentPhase == StudentPhase.UNVERIFIED_FLAGGED
 
-    val stroopTotalCards = 8
+    val stroopTotalCards = 12
     var targetsHit by remember { mutableIntStateOf(0) }
     var totalTargetsSpawned by remember { mutableIntStateOf(stroopTotalCards) }
     var isGameOver by remember { mutableStateOf(false) }
     var hasProceededToNext by remember { mutableStateOf(false) }
+
+    // Proximity detection: devices closer than -45 dBm are considered ultra-close (10-25cm desk cluster)
+    val maxPeerRssi = deskNeighbours.maxOfOrNull { it.medianRssi } ?: -100
+    val isUltraCloseProximity = maxPeerRssi >= -45
 
     val liveAccuracy: Int = remember(targetsHit, totalTargetsSpawned) {
         if (totalTargetsSpawned > 0) (targetsHit * 100) / totalTargetsSpawned else 0
@@ -656,6 +660,7 @@ private fun StudentSection(
                     StroopMatchGame(
                         modifier = Modifier.fillMaxSize(),
                         seedKey = "$detectedSessionId:$sessionSalt:$studentId",
+                        isUltraCloseProximity = isUltraCloseProximity,
                         onProgress = { hits, total ->
                             targetsHit = hits
                             totalTargetsSpawned = total
@@ -663,7 +668,7 @@ private fun StudentSection(
                         },
                         onComplete = { interactions ->
                             isGameOver = true
-                            val report = GameTelemetryEngine.analyze(interactions, totalTrials = 8)
+                            val report = GameTelemetryEngine.analyze(interactions, totalTrials = totalTargetsSpawned.coerceAtLeast(12))
                             targetsHit = report.hits
                             totalTargetsSpawned = report.totalSpawns
                             onBehavioralReport(report)
