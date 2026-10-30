@@ -12,8 +12,10 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -110,6 +112,8 @@ private fun weirdifyCase(word: String, rng: Random): String {
  * - Bounded position shifts for the color text within central area
  * - Non-colliding dynamic MATCH and MISMATCH targets with swipe and direct tap
  */
+private const val SELECT_WINDOW_MS = 2000L
+
 @Composable
 fun StroopMatchGame(
     seedKey: String,
@@ -230,8 +234,8 @@ fun StroopMatchGame(
                     fontWeight = fontWeights[rng.nextInt(fontWeights.size)],
                     letterSpacing = 1 + rng.nextInt(5), // 1.sp to 5.sp
                     rotationTilt = (rng.nextFloat() * 14f - 7f), // -7° to +7°
-                    textRelOffsetX = (rng.nextInt(71) - 35).dp, // -35dp to +35dp inside central rectangle
-                    textRelOffsetY = (rng.nextInt(51) - 25).dp, // -25dp to +25dp inside central rectangle
+                    textRelOffsetX = (rng.nextInt(181) - 90).dp, // -90dp to +90dp (large horizontal shift)
+                    textRelOffsetY = (rng.nextInt(221) - 110).dp, // -110dp to +110dp (large vertical shift)
                     matchSlot = matchSlot,
                     mismatchSlot = mismatchSlot,
                     matchJitterX = (rng.nextInt(15) - 7).dp,
@@ -300,15 +304,22 @@ fun StroopMatchGame(
         }
     }
 
-    // Auto-advance on 1250ms timeout if player hesitated too long (12 cards * 1.25s = 15s session)
+    // Animated countdown for the select window
+    val cardProgress = remember { Animatable(1f) }
+
+    // Auto-advance on SELECT_WINDOW_MS (2000ms) timeout if player hesitated too long
     LaunchedEffect(currentCardIndex) {
         cardSpawnTimestamp = System.currentTimeMillis()
-        delay(1250L)
+        cardProgress.snapTo(1f)
+        launch {
+            cardProgress.animateTo(0f, tween(SELECT_WINDOW_MS.toInt()))
+        }
+        delay(SELECT_WINDOW_MS)
         if (!isTransitioning && currentCardIndex < cards.size) {
             interactions.add(
                 GameInteractionRecord(
                     trialIndex = currentCardIndex,
-                    latencyMs = 1250L,
+                    latencyMs = SELECT_WINDOW_MS,
                     isCorrect = false,
                     stimulusKey = "STROOP_TIMEOUT"
                 )
@@ -337,29 +348,56 @@ fun StroopMatchGame(
             )
             .padding(16.dp)
     ) {
-        // Top Indicator (Card X of 12)
-        Row(
+        // Top Indicator (Card X of 12) + Visual Select Window Progress Line
+        androidx.compose.foundation.layout.Column(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
                 .padding(top = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text(
-                text = "CARD ${currentCardIndex + 1} OF ${cards.size}",
-                fontSize = 13.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace,
-                color = TsodingOrbRenderer.CyanPulse
-            )
-            Text(
-                text = "DOES WORD MATCH COLOR?",
-                fontSize = 11.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.sp,
-                color = Color(0xAAFFFFFF)
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "CARD ${currentCardIndex + 1} OF ${cards.size}",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    color = TsodingOrbRenderer.CyanPulse
+                )
+                Text(
+                    text = "DOES WORD MATCH COLOR?",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp,
+                    color = Color(0xAAFFFFFF)
+                )
+            }
+
+            // Real-time Select Window Bar
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(3.dp)
+                    .background(Color(0x22FFFFFF), RoundedCornerShape(2.dp))
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(fraction = cardProgress.value.coerceIn(0f, 1f))
+                        .fillMaxHeight()
+                        .background(
+                            when {
+                                cardProgress.value > 0.45f -> TsodingOrbRenderer.CyanPulse
+                                cardProgress.value > 0.2f -> TsodingOrbRenderer.SolarOrange
+                                else -> TsodingOrbRenderer.CrimsonAlert
+                            },
+                            RoundedCornerShape(2.dp)
+                        )
+                )
+            }
         }
 
         if (currentCardIndex < cards.size) {
@@ -389,7 +427,7 @@ fun StroopMatchGame(
                                 val dx = cardOffsetX.value
                                 val dy = cardOffsetY.value
                                 val dragDist = sqrt(dx * dx + dy * dy)
-                                if (dragDist > 65f) {
+                                if (dragDist > 40f) {
                                     val matchVector = getSlotDirection(currentCard.matchSlot)
                                     val mismatchVector = getSlotDirection(currentCard.mismatchSlot)
                                     val matchDot = dx * matchVector.first + dy * matchVector.second
@@ -473,26 +511,26 @@ private fun BoxScope.TargetSlotButton(
     }
 
     val (baseX, baseY) = when (slot) {
-        TargetSlot.TOP_LEFT -> 6.dp to 50.dp
-        TargetSlot.TOP_RIGHT -> (-6).dp to 50.dp
+        TargetSlot.TOP_LEFT -> 6.dp to 54.dp
+        TargetSlot.TOP_RIGHT -> (-6).dp to 54.dp
         TargetSlot.BOTTOM_LEFT -> 6.dp to (-12).dp
         TargetSlot.BOTTOM_RIGHT -> (-6).dp to (-12).dp
     }
 
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(16.dp),
-        color = accentColor.copy(alpha = 0.15f),
-        border = BorderStroke(1.5.dp, accentColor.copy(alpha = 0.60f)),
+        shape = RoundedCornerShape(18.dp),
+        color = accentColor.copy(alpha = 0.16f),
+        border = BorderStroke(1.5.dp, accentColor.copy(alpha = 0.65f)),
         modifier = Modifier
             .align(alignment)
             .offset(x = baseX + jitterX, y = baseY + jitterY)
-            .size(width = 132.dp, height = 48.dp)
+            .size(width = 150.dp, height = 54.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 10.dp),
+                .padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
@@ -500,12 +538,12 @@ private fun BoxScope.TargetSlotButton(
                 imageVector = icon,
                 contentDescription = null,
                 tint = accentColor,
-                modifier = Modifier.size(18.dp)
+                modifier = Modifier.size(20.dp)
             )
-            Spacer(modifier = Modifier.width(6.dp))
+            Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = label,
-                fontSize = 12.sp,
+                fontSize = 14.sp,
                 fontWeight = FontWeight.Black,
                 letterSpacing = 1.sp,
                 color = accentColor
