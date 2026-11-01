@@ -847,6 +847,34 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         onStopBroadcasting?.invoke()
     }
 
+    // Reset student attendance session back to standby
+    fun resetStudentSession() {
+        studentTimer?.cancel()
+        studentTimer = null
+        studentDiscoverySecondsRemaining = 0
+        auditPollingJob?.cancel()
+        auditPollingJob = null
+        discoveredPeers.clear()
+        studentStatusMessage = null
+        challengeScore = 0
+        challengeTotalTargets = 0
+        lastFocusReport = null
+        capturedFaceBase64 = null
+        faceProxyDetected = false
+        ultrasonicProximityDetected = false
+        coLocatedPeerId = null
+        ultrasonicSnrDb = 0.0
+        testedUltrasonicPeers.clear()
+        auditedRecord = null
+        ultrasonicWasTriggered = false
+        isRefreshingAudit = false
+        detectedSessionId = "----"
+        detectedSessionSalt = "------"
+        studentPhase = StudentPhase.STANDBY
+        onStopScanning?.invoke()
+        onStopBroadcasting?.invoke()
+    }
+
     // Student proceeds past attention score screen
     fun proceedStudentToNext() {
         studentTimer?.cancel()
@@ -866,7 +894,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             submitMyNeighborsToCloud(keepRadioActive = false)
         } else {
             studentPhase = StudentPhase.WAITING_FOR_AUDIT
-            studentStatusMessage = "Check-in submitted! Waiting for teacher to finalize attendance..."
+            studentStatusMessage = null
             submitMyNeighborsToCloud(keepRadioActive = false)
             val sessId = detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: ""
             if (sessId.isNotBlank()) {
