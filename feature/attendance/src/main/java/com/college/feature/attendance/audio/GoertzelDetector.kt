@@ -8,16 +8,38 @@ import kotlin.math.max
 // Detects isolated ultrasonic spectral energy and evaluates Signal-to-Noise Ratio
 object GoertzelDetector {
 
+    @Volatile
+    private var cachedHannWindow: DoubleArray? = null
+
+    // Returns a Hann window scaled by 2.0 to preserve calibrated peak signal amplitude
+    private fun getOrCreateHannWindow(size: Int): DoubleArray {
+        val existing = cachedHannWindow
+        if (existing != null && existing.size == size) return existing
+        val win = DoubleArray(size) { i ->
+            val hann = 0.5 * (1.0 - cos(2.0 * PI * i / (size - 1)))
+            2.0 * hann
+        }
+        cachedHannWindow = win
+        return win
+    }
+
     // Computes energy at a specific target frequency using the Goertzel algorithm (O(N) operations)
-    fun computeFrequencyPower(samples: ShortArray, targetFreqHz: Double, sampleRate: Int): Double {
+    fun computeFrequencyPower(
+        samples: ShortArray,
+        targetFreqHz: Double,
+        sampleRate: Int,
+        applyWindow: Boolean = false
+    ): Double {
         val normalizedFreq = 2.0 * PI * targetFreqHz / sampleRate
         val coeff = 2.0 * cos(normalizedFreq)
+        val window = if (applyWindow && samples.isNotEmpty()) getOrCreateHannWindow(samples.size) else null
 
         var sPrev = 0.0
         var sPrev2 = 0.0
 
-        for (sample in samples) {
-            val s0 = sample.toDouble() + (coeff * sPrev) - sPrev2
+        for (i in samples.indices) {
+            val sampleVal = if (window != null) samples[i] * window[i] else samples[i].toDouble()
+            val s0 = sampleVal + (coeff * sPrev) - sPrev2
             sPrev2 = sPrev
             sPrev = s0
         }
@@ -43,7 +65,7 @@ object GoertzelDetector {
         return dist.coerceIn(3.0, 250.0)
     }
 
-    // Evaluates whether a candidate ultrasonic chirp exceeds ambient background noise and calculates distance
+    // Evaluates ultrasonic chirp and SNR in a single pass over audio samples using Hann windowing
     fun evaluateChirp(
         samples: ShortArray,
         targetFreqHz: Double = UltrasonicToneSynthesizer.DEFAULT_FREQUENCY_HZ,
@@ -61,15 +83,54 @@ object GoertzelDetector {
             )
         }
 
-        val targetPower = computeFrequencyPower(samples, targetFreqHz, sampleRate)
+        // Hann window suppresses sidelobe leakage into adjacent guard bands
+        val window = getOrCreateHannWindow(samples.size)
+
+        // Precompute filter coefficients for target and 4 guard bands (18.4 - 20.0 kHz)
+        val f0Coeff = 2.0 * cos(2.0 * PI * targetFreqHz / sampleRate)
+        val g1Coeff = 2.0 * cos(2.0 * PI * 18400.0 / sampleRate)
+        val g2Coeff = 2.0 * cos(2.0 * PI * 18800.0 / sampleRate)
+        val g3Coeff = 2.0 * cos(2.0 * PI * 19600.0 / sampleRate)
+        val g4Coeff = 2.0 * cos(2.0 * PI * 20000.0 / sampleRate)
+
+        var s0Prev = 0.0; var s0Prev2 = 0.0
+        var g1Prev = 0.0; var g1Prev2 = 0.0
+        var g2Prev = 0.0; var g2Prev2 = 0.0
+        var g3Prev = 0.0; var g3Prev2 = 0.0
+        var g4Prev = 0.0; var g4Prev2 = 0.0
+
+        // Single pass over memory: updates all 5 frequencies simultaneously
+        for (i in samples.indices) {
+            val x = samples[i] * window[i]
+
+            val s0 = x + (f0Coeff * s0Prev) - s0Prev2
+            s0Prev2 = s0Prev
+            s0Prev = s0
+
+            val s1 = x + (g1Coeff * g1Prev) - g1Prev2
+            g1Prev2 = g1Prev
+            g1Prev = s1
+
+            val s2 = x + (g2Coeff * g2Prev) - g2Prev2
+            g2Prev2 = g2Prev
+            g2Prev = s2
+
+            val s3 = x + (g3Coeff * g3Prev) - g3Prev2
+            g3Prev2 = g3Prev
+            g3Prev = s3
+
+            val s4 = x + (g4Coeff * g4Prev) - g4Prev2
+            g4Prev2 = g4Prev
+            g4Prev = s4
+        }
+
+        val targetPower = (s0Prev * s0Prev) + (s0Prev2 * s0Prev2) - (f0Coeff * s0Prev * s0Prev2)
+        val g1 = (g1Prev * g1Prev) + (g1Prev2 * g1Prev2) - (g1Coeff * g1Prev * g1Prev2)
+        val g2 = (g2Prev * g2Prev) + (g2Prev2 * g2Prev2) - (g2Coeff * g2Prev * g2Prev2)
+        val g3 = (g3Prev * g3Prev) + (g3Prev2 * g3Prev2) - (g3Coeff * g3Prev * g3Prev2)
+        val g4 = (g4Prev * g4Prev) + (g4Prev2 * g4Prev2) - (g4Coeff * g4Prev * g4Prev2)
+
         val powerLevelDb = 10.0 * log10(max(targetPower, 1.0))
-
-        // In-band guard frequencies strictly within standard mobile microphone active response (18.4 - 20.0 kHz)
-        val g1 = computeFrequencyPower(samples, 18400.0, sampleRate)
-        val g2 = computeFrequencyPower(samples, 18800.0, sampleRate)
-        val g3 = computeFrequencyPower(samples, 19600.0, sampleRate)
-        val g4 = computeFrequencyPower(samples, 20000.0, sampleRate)
-
         val noiseBaseline = ((g1 + g2 + g3 + g4) / 4.0).coerceAtLeast(1.0)
         val snrDb = 10.0 * log10(max(targetPower, 1.0) / noiseBaseline)
 
