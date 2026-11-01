@@ -1,13 +1,15 @@
 package com.college.feature.attendance.telemetry
 
+import androidx.compose.runtime.Immutable
 import com.google.gson.annotations.SerializedName
 
 // Telemetry record captured on each physical screen tap
+@Immutable
 data class TapEvent(
     val targetId: Int,
     val tapTimeMillis: Long,
     val spawnTimeMillis: Long,
-    val latencyMs: Long,
+    val latencyMs: Long = (tapTimeMillis - spawnTimeMillis).coerceAtLeast(0L),
     val targetRelX: Float,
     val targetRelY: Float,
     val touchOffsetX: Float = 0f,
@@ -16,6 +18,7 @@ data class TapEvent(
 )
 
 // Record of a target that expired without being tapped
+@Immutable
 data class ExpiredTargetEvent(
     val targetId: Int,
     val spawnTimeMillis: Long,
@@ -36,10 +39,14 @@ enum class FocusClassification {
     AUTOMATED_SCRIPT,
 
     @SerializedName("INATTENTIVE")
-    INATTENTIVE
+    INATTENTIVE;
+
+    val isPassing: Boolean get() = this == FOCUSED_SINGLE_DEVICE
+    val isMaliciousProxy: Boolean get() = this == DIVIDED_ATTENTION_PROXY || this == AUTOMATED_SCRIPT
 }
 
 // Cognitive telemetry report summarizing response metrics and classification
+@Immutable
 data class CognitiveFocusReport(
     val totalTaps: Int,
     val totalSpawns: Int,
@@ -58,4 +65,7 @@ data class CognitiveFocusReport(
     val focusIndex: Float,
     val classification: FocusClassification,
     val diagnosticReason: String
-)
+) {
+    val isPassing: Boolean get() = classification.isPassing
+    val isMaliciousProxy: Boolean get() = classification.isMaliciousProxy
+}
