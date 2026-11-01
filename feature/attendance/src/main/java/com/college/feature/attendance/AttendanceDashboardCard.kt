@@ -1,5 +1,6 @@
 package com.college.feature.attendance
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,19 +13,25 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.FactCheck
 import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.college.core.model.Role
 import com.college.core.model.User
 import com.college.core.ui.DashboardCard
+import com.college.feature.attendance.ui.theme.cardBg
+import com.college.feature.attendance.ui.theme.cardBorder
+import com.college.feature.attendance.ui.theme.childPurple
+import com.college.feature.attendance.ui.theme.childPurpleBg
+import com.college.feature.attendance.ui.theme.primaryBlue
+import com.college.feature.attendance.ui.theme.primaryBlueBg
+import com.college.feature.attendance.ui.theme.textPrimary
+import com.college.feature.attendance.ui.theme.textSecondary
 
 // Dashboard card entry point for the attendance feature
 object AttendanceDashboardCard : DashboardCard {
@@ -39,17 +46,17 @@ object AttendanceDashboardCard : DashboardCard {
 
     @Composable
     override fun Content(user: User, onNavigate: (String) -> Unit) {
-        val actionLabel = when {
-            user.canTakeAttendance() -> "Take Attendance"
-            user.hasRole(Role.STUDENT) -> "Check In"
-            else -> "Browse"
+        val subtitle = when {
+            user.canTakeAttendance() -> "Host classroom beacon · Automated mesh audit"
+            user.hasRole(Role.STUDENT) -> "Check in to active class session"
+            else -> "Classroom attendance portal"
         }
 
         Surface(
             onClick = { onNavigate(NAV_ROUTE) },
             shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 1.dp,
+            color = cardBg,
+            border = BorderStroke(1.dp, cardBorder),
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
@@ -59,27 +66,47 @@ object AttendanceDashboardCard : DashboardCard {
                 Box(
                     modifier = Modifier
                         .size(48.dp)
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), CircleShape),
+                        .background(primaryBlueBg, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         Icons.AutoMirrored.Filled.FactCheck,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
+                        tint = primaryBlue
                     )
                 }
-                Column(modifier = Modifier.padding(start = 14.dp).weight(1f)) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 14.dp)
+                ) {
                     Text(
                         text = "Classroom Attendance",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = textPrimary
                     )
                     Text(
-                        text = actionLabel,
+                        text = subtitle,
                         fontSize = 13.sp,
-                        color = Color(0xFF64748B)
+                        color = textSecondary
                     )
+                    if (user.canTakeAttendance()) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = childPurpleBg,
+                            border = BorderStroke(0.5.dp, childPurple.copy(alpha = 0.5f)),
+                            modifier = Modifier.padding(top = 6.dp)
+                        ) {
+                            Text(
+                                text = "Instructor Console Access",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = childPurple,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
                 }
             }
         }

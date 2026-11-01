@@ -26,17 +26,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.FactCheck
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Radar
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.TouchApp
+import androidx.compose.ui.graphics.graphicsLayer
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
@@ -76,7 +74,6 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
-import kotlinx.coroutines.delay
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import com.college.core.model.Role
@@ -123,7 +120,6 @@ fun AttendanceScreen(
     val finalizedRecords = viewModel.finalizedRecords
     val isCloudSyncing = viewModel.isCloudSyncing
     val cloudStatusMessage = viewModel.cloudStatusMessage
-    val selectedCourse = viewModel.selectedCourse
     val onSelectCourse: (CourseResponse) -> Unit = { viewModel.selectedCourse = it }
 
     val studentId = viewModel.studentId
@@ -245,11 +241,9 @@ fun AttendanceScreen(
                     finalizedRecords = finalizedRecords,
                     isCloudSyncing = isCloudSyncing,
                     cloudStatusMessage = cloudStatusMessage,
-                    selectedCourse = selectedCourse,
                     onSelectCourse = onSelectCourse,
                     onStartSession = callbacks.onStartTeacherSession,
                     onStopSession = callbacks.onStopTeacherSession,
-                    onShareAttendance = callbacks.onShareAttendance,
                     onResetSession = callbacks.onResetSession,
                     onVerifyStudent = { rec -> viewModel.markStudentVerified(rec.bleDeviceId) },
                     teacherViewMode = viewModel.teacherViewMode,
@@ -258,8 +252,7 @@ fun AttendanceScreen(
                     isLoadingHistory = viewModel.isLoadingHistory,
                     onLoadHistory = { viewModel.loadSessionHistory() },
                     selectedSessionForDetails = viewModel.selectedSessionForDetails,
-                    onSelectSessionForDetails = { viewModel.selectedSessionForDetails = it },
-                    onBackFromDetails = { viewModel.selectedSessionForDetails = null }
+                    onSelectSessionForDetails = { viewModel.selectedSessionForDetails = it }
                 )
 
                 user.hasRole(Role.STUDENT) -> StudentSection(
@@ -412,19 +405,19 @@ private fun StudentSection(
                 Surface(
                     shape = RoundedCornerShape(20.dp),
                     color = when {
-                        isVerified -> Color(0x2800F5A0)
-                        isDividedAttention -> Color(0x28FF1744)
-                        isUnverified -> Color(0x28F59E0B)
-                        isScanning -> Color(0x2000F5A0)
+                        isVerified -> neonMintBg
+                        isDividedAttention -> crimsonRedBg
+                        isUnverified -> solarAmberBg
+                        isScanning -> neonMintSubtle
                         else -> logBg
                     },
                     border = BorderStroke(
                         1.dp,
                         when {
-                            isVerified -> Color(0xFF00F5A0)
-                            isDividedAttention -> Color(0xFFFF1744)
-                            isUnverified -> Color(0xFFF59E0B)
-                            isScanning -> Color(0xFF00F5A0)
+                            isVerified -> neonMint
+                            isDividedAttention -> crimsonRed
+                            isUnverified -> solarAmber
+                            isScanning -> neonMint
                             else -> cardBorder
                         }
                     )
@@ -440,10 +433,10 @@ private fun StudentSection(
                                 .clip(CircleShape)
                                 .background(
                                     when {
-                                        isVerified -> Color(0xFF00F5A0)
-                                        isDividedAttention -> Color(0xFFFF1744)
-                                        isUnverified -> Color(0xFFF59E0B)
-                                        isScanning -> Color(0xFF00F5A0)
+                                        isVerified -> neonMint
+                                        isDividedAttention -> crimsonRed
+                                        isUnverified -> solarAmber
+                                        isScanning -> neonMint
                                         else -> textMuted
                                     }
                                 )
@@ -460,10 +453,10 @@ private fun StudentSection(
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = when {
-                                isVerified -> Color(0xFF00F5A0)
-                                isDividedAttention -> Color(0xFFFF1744)
-                                isUnverified -> Color(0xFFF59E0B)
-                                isScanning -> Color(0xFF00F5A0)
+                                isVerified -> neonMint
+                                isDividedAttention -> crimsonRed
+                                isUnverified -> solarAmber
+                                isScanning -> neonMint
                                 else -> textMuted
                             }
                         )
@@ -487,9 +480,9 @@ private fun StudentSection(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.Radar,
+                        imageVector = Icons.Default.Sensors,
                         contentDescription = null,
-                        tint = Color(0xFF00F5A0),
+                        tint = neonMint,
                         modifier = Modifier.size(16.dp)
                     )
                     Text(
@@ -546,7 +539,7 @@ private fun StudentSection(
                         )
                     )
                 )
-                .border(1.dp, Color(0x3300F5A0), RoundedCornerShape(16.dp))
+                .border(1.dp, neonMintGlow, RoundedCornerShape(16.dp))
         ) {
             when {
                 studentPhase == StudentPhase.PROBING_NEIGHBORS && !isGameOver -> {
@@ -581,8 +574,8 @@ private fun StudentSection(
                     // Live Biometric Camera HUD Badge
                     Surface(
                         shape = RoundedCornerShape(20.dp),
-                        color = if (liveFaceSharpness > 40.0) Color(0x3300F5A0) else Color(0x33FFA000),
-                        border = BorderStroke(1.dp, if (liveFaceSharpness > 40.0) Color(0xFF00F5A0) else Color(0xFFFFA000)),
+                        color = if (liveFaceSharpness > 40.0) neonMintGlow else solarAmberBg,
+                        border = BorderStroke(1.dp, if (liveFaceSharpness > 40.0) neonMint else solarAmber),
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .padding(12.dp)
@@ -595,14 +588,14 @@ private fun StudentSection(
                             Icon(
                                 imageVector = Icons.Default.Face,
                                 contentDescription = null,
-                                tint = if (liveFaceSharpness > 40.0) Color(0xFF00F5A0) else Color(0xFFFFA000),
+                                tint = if (liveFaceSharpness > 40.0) neonMint else solarAmber,
                                 modifier = Modifier.size(14.dp)
                             )
                             Text(
                                 text = if (liveFaceSharpness > 40.0) "Face Locked (${liveFaceSharpness.toInt()})" else "Scanning Face...",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = if (liveFaceSharpness > 40.0) Color(0xFF00F5A0) else Color(0xFFFFA000)
+                                color = if (liveFaceSharpness > 40.0) neonMint else solarAmber
                             )
                         }
                     }
@@ -616,10 +609,10 @@ private fun StudentSection(
                     val total = totalTargetsSpawned.coerceAtLeast(1)
                     val ratio = targetsHit.toFloat() / total
                     val (ratingText, ratingColor) = when {
-                        isCheaterCaught -> "nice try lil bro" to Color(0xFFFF1744)
-                        ratio >= 0.80f -> "Excellent" to Color(0xFF00F5A0)
-                        ratio >= 0.55f -> "Good" to Color(0xFFFF9100)
-                        else -> "Git Gud" to Color(0xFFFF1744)
+                        isCheaterCaught -> "nice try lil bro" to crimsonRed
+                        ratio >= 0.80f -> "Excellent" to neonMint
+                        ratio >= 0.55f -> "Good" to warningOrange
+                        else -> "Git Gud" to crimsonRed
                     }
 
                     Column(
@@ -642,8 +635,8 @@ private fun StudentSection(
                             Spacer(modifier = Modifier.height(8.dp))
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
-                                color = Color(0x28FF1744),
-                                border = BorderStroke(1.dp, Color(0xFFFF1744))
+                                color = crimsonRedBg,
+                                border = BorderStroke(1.dp, crimsonRed)
                             ) {
                                 Text(
                                     text = if (activeReport?.classification == FocusClassification.DIVIDED_ATTENTION_PROXY) {
@@ -654,7 +647,7 @@ private fun StudentSection(
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Black,
                                     letterSpacing = 1.sp,
-                                    color = Color(0xFFFF1744),
+                                    color = crimsonRed,
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
                                 )
                             }
@@ -709,9 +702,9 @@ private fun StudentSection(
                         verticalArrangement = Arrangement.Center
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Radar,
+                            imageVector = Icons.Default.Sensors,
                             contentDescription = null,
-                            tint = Color(0xFF00F5A0),
+                            tint = neonMint,
                             modifier = Modifier.size(48.dp)
                         )
                         Spacer(modifier = Modifier.height(10.dp))
@@ -720,7 +713,7 @@ private fun StudentSection(
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Black,
                             letterSpacing = 0.5.sp,
-                            color = Color(0xFF00F5A0)
+                            color = neonMint
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
@@ -746,13 +739,13 @@ private fun StudentSection(
                                 .size(56.dp)
                                 .clip(CircleShape)
                                 .background(Color(0xFF0B2117))
-                                .border(1.5.dp, Color(0xFF00F5A0).copy(alpha = 0.5f), CircleShape),
+                                .border(1.5.dp, neonMint.copy(alpha = 0.5f), CircleShape),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Default.TouchApp,
                                 contentDescription = null,
-                                tint = Color(0xFF00F5A0),
+                                tint = neonMint,
                                 modifier = Modifier.size(28.dp)
                             )
                         }
@@ -791,8 +784,8 @@ private fun StudentSection(
                 containerColor = when {
                     showNextButton -> Color(0xFF059669)
                     isScanning -> alertRed
-                    isDividedAttention -> Color(0xFFFF1744)
-                    isUnverified -> Color(0xFFD97706)
+                    isDividedAttention -> crimsonRed
+                    isUnverified -> warningOrange
                     isVerified -> Color(0xFF059669)
                     else -> Color(0xFF059669)
                 }
@@ -820,9 +813,9 @@ private fun StudentSection(
                         imageVector = when {
                             isScanning -> Icons.Default.Close
                             isDividedAttention -> Icons.Default.Warning
-                            isUnverified -> Icons.Default.Radar
+                            isUnverified -> Icons.Default.Sensors
                             isVerified -> Icons.Default.Check
-                            else -> Icons.Default.Radar
+                            else -> Icons.Default.Sensors
                         },
                         contentDescription = null,
                         modifier = Modifier.size(20.dp)
@@ -892,8 +885,8 @@ private fun AntiProxyDefenseResultsScreen(
         // Overall verification status header banner
         Surface(
             shape = RoundedCornerShape(14.dp),
-            color = if (isVerified) Color(0x1800F5A0) else Color(0x18FF1744),
-            border = BorderStroke(1.dp, if (isVerified) Color(0x6600F5A0) else Color(0x66FF1744)),
+            color = if (isVerified) neonMintBg else crimsonRedBg,
+            border = BorderStroke(1.dp, if (isVerified) neonMintGlow else crimsonRedGlow),
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
@@ -904,7 +897,7 @@ private fun AntiProxyDefenseResultsScreen(
                 Icon(
                     imageVector = if (isVerified) Icons.Default.CheckCircle else Icons.Default.Warning,
                     contentDescription = null,
-                    tint = if (isVerified) Color(0xFF00F5A0) else Color(0xFFFF1744),
+                    tint = if (isVerified) neonMint else crimsonRed,
                     modifier = Modifier.size(36.dp)
                 )
                 Column {
@@ -919,7 +912,7 @@ private fun AntiProxyDefenseResultsScreen(
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Black,
                         letterSpacing = 0.5.sp,
-                        color = if (isVerified) Color(0xFF00F5A0) else Color(0xFFFF1744)
+                        color = if (isVerified) neonMint else crimsonRed
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
@@ -1018,15 +1011,15 @@ private fun LayerAuditCard(
     thumbnail: androidx.compose.ui.graphics.ImageBitmap? = null
 ) {
     val badgeColor = when (isPassed) {
-        true -> Color(0xFF00F5A0)
-        false -> Color(0xFFFF1744)
+        true -> neonMint
+        false -> crimsonRed
         null -> Color(0xFF00E5FF)
     }
 
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = Color(0xFF0B1410),
-        border = BorderStroke(1.dp, Color(0x3300F5A0)),
+        border = BorderStroke(1.dp, neonMintGlow),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
@@ -1125,11 +1118,25 @@ private fun getDisplayRollNo(rec: AttendanceRecordItem): String {
 }
 
 private fun compareRollNumbers(a: String, b: String): Int {
-    val aDigits = a.filter { it.isDigit() }
-    val bDigits = b.filter { it.isDigit() }
-    val aNum = aDigits.toLongOrNull()
-    val bNum = bDigits.toLongOrNull()
-    return if (aNum != null && bNum != null && aNum != bNum) {
+    var aNum = 0L
+    var hasADigit = false
+    for (i in 0 until a.length) {
+        val c = a[i]
+        if (c in '0'..'9') {
+            aNum = aNum * 10 + (c - '0')
+            hasADigit = true
+        }
+    }
+    var bNum = 0L
+    var hasBDigit = false
+    for (i in 0 until b.length) {
+        val c = b[i]
+        if (c in '0'..'9') {
+            bNum = bNum * 10 + (c - '0')
+            hasBDigit = true
+        }
+    }
+    return if (hasADigit && hasBDigit && aNum != bNum) {
         aNum.compareTo(bNum)
     } else {
         a.compareTo(b, ignoreCase = true)
@@ -1150,7 +1157,6 @@ private fun getDisplayStudentName(rec: AttendanceRecordItem): String {
 }
 
 // Teacher dashboard management view supporting session launch and history
-@Suppress("UNUSED_PARAMETER")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TeacherSection(
@@ -1159,11 +1165,9 @@ private fun TeacherSection(
     finalizedRecords: List<AttendanceRecordItem>,
     isCloudSyncing: Boolean,
     cloudStatusMessage: String?,
-    selectedCourse: CourseResponse?,
     onSelectCourse: (CourseResponse) -> Unit,
     onStartSession: () -> Unit,
     onStopSession: () -> Unit,
-    onShareAttendance: () -> Unit,
     onResetSession: () -> Unit,
     onVerifyStudent: (AttendanceRecordItem) -> Unit,
     teacherViewMode: TeacherViewMode,
@@ -1172,14 +1176,23 @@ private fun TeacherSection(
     isLoadingHistory: Boolean,
     onLoadHistory: () -> Unit,
     selectedSessionForDetails: AttendanceSessionResponse? = null,
-    onSelectSessionForDetails: (AttendanceSessionResponse) -> Unit = {},
-    onBackFromDetails: () -> Unit = {}
+    onSelectSessionForDetails: (AttendanceSessionResponse) -> Unit = {}
 ) {
     if (finalizedRecords.isNotEmpty()) {
-        // Audit results overview displayed after session completion
-        val verifiedCount = finalizedRecords.count { getRecordAuditStatus(it) == "Verified" }
-        val unverifiedCount = finalizedRecords.count { getRecordAuditStatus(it) == "Unverified" }
-        val flaggedCount = finalizedRecords.count { getRecordAuditStatus(it) == "Flagged" }
+        // Audit results overview displayed after session completion (memoized single-pass count)
+        val (verifiedCount, unverifiedCount, flaggedCount) = remember(finalizedRecords) {
+            var v = 0
+            var u = 0
+            var f = 0
+            for (i in finalizedRecords.indices) {
+                when (getRecordAuditStatus(finalizedRecords[i])) {
+                    "Verified" -> v++
+                    "Unverified" -> u++
+                    "Flagged" -> f++
+                }
+            }
+            Triple(v, u, f)
+        }
 
         Column(
             modifier = Modifier.fillMaxSize(),
@@ -1324,9 +1337,11 @@ private fun TeacherSection(
                 }
             }
 
-            // Attendance list strictly sorted in ascending order by student roll number
-            val sortedList = finalizedRecords.sortedWith { r1, r2 ->
-                compareRollNumbers(getDisplayRollNo(r1), getDisplayRollNo(r2))
+            // Attendance list strictly sorted in ascending order by student roll number (memoized)
+            val sortedList = remember(finalizedRecords) {
+                finalizedRecords.sortedWith { r1, r2 ->
+                    compareRollNumbers(getDisplayRollNo(r1), getDisplayRollNo(r2))
+                }
             }
 
             if (sortedList.isEmpty()) {
@@ -1488,8 +1503,9 @@ private fun TeacherSection(
                     Box(
                         modifier = Modifier
                             .size(8.dp)
+                            .graphicsLayer { alpha = pulseAlpha }
                             .clip(CircleShape)
-                            .background(successGreen.copy(alpha = pulseAlpha))
+                            .background(successGreen)
                     )
                     Text(
                         text = "TAKING ATTENDANCE",
@@ -1503,7 +1519,7 @@ private fun TeacherSection(
 
             Spacer(modifier = Modifier.height(28.dp))
 
-            // High-Tech Pulsing Radar Aura & Circular Progress Countdown (lifted up directly under pill)
+            // Pulsing Beacon Aura & Circular Progress Countdown
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1556,13 +1572,13 @@ private fun TeacherSection(
 
                     // Outer pulsing wave rings
                     drawCircle(
-                        color = Color(0xFF00F5A0).copy(alpha = wave1Alpha),
+                        color = neonMint.copy(alpha = wave1Alpha),
                         radius = baseRadius * wave1Scale,
                         center = centerOffset,
                         style = Stroke(width = 2.dp.toPx())
                     )
                     drawCircle(
-                        color = Color(0xFF00F5A0).copy(alpha = wave2Alpha),
+                        color = neonMint.copy(alpha = wave2Alpha),
                         radius = baseRadius * wave2Scale,
                         center = centerOffset,
                         style = Stroke(width = 1.5.dp.toPx())
@@ -1586,9 +1602,9 @@ private fun TeacherSection(
                     drawArc(
                         brush = Brush.sweepGradient(
                             listOf(
-                                Color(0xFF00F5A0),
+                                neonMint,
                                 Color(0xFF3B82F6),
-                                Color(0xFF00F5A0)
+                                neonMint
                             )
                         ),
                         startAngle = -90f,
@@ -1702,13 +1718,13 @@ private fun TeacherSection(
                                 Box(
                                     modifier = Modifier
                                         .size(54.dp)
-                                        .background(Color(0xFF1E3A8A), CircleShape),
+                                        .background(primaryBlueBg, CircleShape),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.AutoMirrored.Filled.FactCheck,
                                         contentDescription = "Take Attendance",
-                                        tint = Color(0xFF60A5FA),
+                                        tint = primaryBlue,
                                         modifier = Modifier.size(28.dp)
                                     )
                                 }
@@ -1742,13 +1758,13 @@ private fun TeacherSection(
                                 Box(
                                     modifier = Modifier
                                         .size(54.dp)
-                                        .background(Color(0xFF064E3B), CircleShape),
+                                        .background(successGreenBg, CircleShape),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.History,
                                         contentDescription = "Older Sessions",
-                                        tint = Color(0xFF34D399),
+                                        tint = successGreen,
                                         modifier = Modifier.size(28.dp)
                                     )
                                 }
@@ -2102,7 +2118,6 @@ private fun TakeAttendanceSelectionView(
     }
 }
 
-@Composable
 private fun formatSessionDate(raw: String?): String {
     if (raw.isNullOrBlank()) return "Past session"
     val trimmed = raw.trim()
@@ -2111,7 +2126,7 @@ private fun formatSessionDate(raw: String?): String {
         val timePart = if (trimmed.length >= 16 && trimmed[10] == 'T') {
             trimmed.substring(11, 16)
         } else ""
-        return if (timePart.isNotEmpty()) datePart + " " + timePart else datePart
+        return if (timePart.isNotEmpty()) "$datePart $timePart" else datePart
     }
     return trimmed
 }
@@ -2223,16 +2238,26 @@ private fun OlderSessionsView(
 private fun SessionDetailScreen(
     session: AttendanceSessionResponse
 ) {
-    val details = getSessionAcademicDetails(session)
+    val details = remember(session) { getSessionAcademicDetails(session) }
     val records = session.records ?: emptyList()
     val sortedRecords = remember(records) {
         records.sortedWith { r1, r2 ->
             compareRollNumbers(getDisplayRollNo(r1), getDisplayRollNo(r2))
         }
     }
-    val verifiedCount = sortedRecords.count { getRecordAuditStatus(it) == "Verified" }
-    val unverifiedCount = sortedRecords.count { getRecordAuditStatus(it) == "Unverified" }
-    val flaggedCount = sortedRecords.count { getRecordAuditStatus(it) == "Flagged" }
+    val (verifiedCount, unverifiedCount, flaggedCount) = remember(sortedRecords) {
+        var v = 0
+        var u = 0
+        var f = 0
+        for (i in sortedRecords.indices) {
+            when (getRecordAuditStatus(sortedRecords[i])) {
+                "Verified" -> v++
+                "Unverified" -> u++
+                "Flagged" -> f++
+            }
+        }
+        Triple(v, u, f)
+    }
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -2474,14 +2499,18 @@ private data class SessionAcademicDetails(
     val topicCovered: String
 )
 
+private val SEMESTER_REGEX_1 = Regex("Semester\\s*\\d", RegexOption.IGNORE_CASE)
+private val SEMESTER_REGEX_2 = Regex("Sem\\s*\\d", RegexOption.IGNORE_CASE)
+private val UNIT_REGEX = Regex("Unit\\s*\\d", RegexOption.IGNORE_CASE)
+
 private fun getSessionAcademicDetails(session: AttendanceSessionResponse): SessionAcademicDetails {
     val courseProg = session.courseProgram
         ?: if (session.courseCode?.contains("BCA", ignoreCase = true) == true) "BCA"
         else if (session.courseCode?.contains("B-Tech", ignoreCase = true) == true || session.courseCode?.contains("BTECH", ignoreCase = true) == true) "B-Tech"
         else session.courseCode?.takeIf { it.isNotBlank() } ?: "B-Tech"
     val sem = session.semester
-        ?: Regex("Semester\\s*\\d", RegexOption.IGNORE_CASE).find(session.courseCode ?: "")?.value
-        ?: Regex("Sem\\s*\\d", RegexOption.IGNORE_CASE).find(session.courseCode ?: "")?.value
+        ?: SEMESTER_REGEX_1.find(session.courseCode ?: "")?.value
+        ?: SEMESTER_REGEX_2.find(session.courseCode ?: "")?.value
         ?: if (session.courseCode?.isNotBlank() == true) session.courseCode else "Semester 1"
     val clsType = session.classType ?: when {
         session.courseName?.contains("Extra", ignoreCase = true) == true -> "Extra"
@@ -2490,7 +2519,7 @@ private fun getSessionAcademicDetails(session: AttendanceSessionResponse): Sessi
     }
     val batch = session.batchType ?: if (session.courseName?.contains("Lab", ignoreCase = true) == true) "Lab" else "Lecture"
     val unit = session.unit
-        ?: Regex("Unit\\s*\\d", RegexOption.IGNORE_CASE).find(session.courseName ?: "")?.value
+        ?: UNIT_REGEX.find(session.courseName ?: "")?.value
         ?: "Unit 1"
     val topic = session.topicCovered ?: run {
         val raw = session.courseName ?: ""
@@ -2841,67 +2870,6 @@ private fun AuthServerDialog(
                 onDismiss()
             }) {
                 Text("Close", color = textSecondary)
-            }
-        }
-    )
-}
-
-// Dialog for defining and creating a new course entry
-@Composable
-private fun AddCourseDialog(
-    onDismiss: () -> Unit,
-    onConfirm: (code: String, name: String) -> Unit
-) {
-    var code by remember { mutableStateOf("") }
-    var name by remember { mutableStateOf("") }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = cardBg,
-        titleContentColor = textPrimary,
-        title = { Text("Create Course", fontWeight = FontWeight.Bold, fontSize = 18.sp) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = code,
-                    onValueChange = { code = it },
-                    label = { Text("Course Code (e.g. CS401)") },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = primaryBlue,
-                        unfocusedBorderColor = cardBorder,
-                        focusedTextColor = textPrimary,
-                        unfocusedTextColor = textPrimary
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Course Name") },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = primaryBlue,
-                        unfocusedBorderColor = cardBorder,
-                        focusedTextColor = textPrimary,
-                        unfocusedTextColor = textPrimary
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = { onConfirm(code.trim().uppercase(), name.trim()) },
-                enabled = code.isNotBlank() && name.isNotBlank(),
-                colors = ButtonDefaults.buttonColors(containerColor = primaryBlue)
-            ) {
-                Text("Create")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel", color = textSecondary)
             }
         }
     )
