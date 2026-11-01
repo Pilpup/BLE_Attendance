@@ -3,10 +3,13 @@ package com.college.feature.attendance.camera
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.util.Log
 import android.util.Size
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
@@ -19,6 +22,9 @@ class PassiveFaceCaptureManager(
     private val context: Context,
     private val lifecycleOwner: LifecycleOwner
 ) {
+    companion object {
+        private const val TAG = "PassiveFaceCapture"
+    }
 
     private val isCapturing = AtomicBoolean(false)
     private var cameraProvider: ProcessCameraProvider? = null
@@ -31,18 +37,17 @@ class PassiveFaceCaptureManager(
     val isRunning: Boolean get() = isCapturing.get()
 
     // Starts sampling without a preview
-    @Suppress("DEPRECATION")
     fun startCapture(onScoreUpdate: ((Double) -> Unit)?) {
         startCapture(onScoreUpdate, null)
     }
 
     // Binds front-facing camera to lifecycle and starts sampling frames
-    @Suppress("DEPRECATION")
     fun startCapture(
         onScoreUpdate: ((Double) -> Unit)?,
         previewSurfaceProvider: Preview.SurfaceProvider?
     ) {
-        if (isCapturing.get()) {
+        // Prevent concurrent or duplicate initialization
+        if (!isCapturing.compareAndSet(false, true)) {
             return
         }
 
@@ -53,11 +58,17 @@ class PassiveFaceCaptureManager(
         ) == PackageManager.PERMISSION_GRANTED
 
         if (!hasPermission) {
+            isCapturing.set(false)
             return
         }
 
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
         cameraProviderFuture.addListener({
+            // Abort if capture was cancelled while provider was loading
+            if (!isCapturing.get()) {
+                return@addListener
+            }
+
             try {
                 val provider = cameraProviderFuture.get()
                 cameraProvider = provider
@@ -65,13 +76,24 @@ class PassiveFaceCaptureManager(
                 // Verify front camera sensor is available on device
                 val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
                 if (!provider.hasCamera(cameraSelector)) {
+                    isCapturing.set(false)
                     return@addListener
                 }
+
+                // Modern 640x480 resolution selector for CameraX 1.3+
+                val resolutionSelector = ResolutionSelector.Builder()
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            Size(640, 480),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                        )
+                    )
+                    .build()
 
                 // Configure non-blocking frame analysis pipeline
                 imageAnalysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .setTargetResolution(Size(640, 480))
+                    .setResolutionSelector(resolutionSelector)
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                     .build()
 
@@ -97,10 +119,9 @@ class PassiveFaceCaptureManager(
                 } else {
                     provider.bindToLifecycle(lifecycleOwner, cameraSelector, imageAnalysis)
                 }
-
-                isCapturing.set(true)
             } catch (e: Exception) {
-                android.util.Log.e("PassiveFaceCaptureManager", "Camera start error: ${e.message}", e)
+                Log.e(TAG, "Camera start error: ${e.message}", e)
+                stopCamera()
             }
         }, ContextCompat.getMainExecutor(context))
     }
@@ -113,23 +134,12 @@ class PassiveFaceCaptureManager(
 
     // Unbinds camera, processes best candidate frame, and returns Base64 encoded payload
     fun stopAndExtract(): String? {
-        if (!isCapturing.getAndSet(false)) {
+        if (!isCapturing.get()) {
             return null
         }
-
-        analyzer?.setPaused(true)
-
-        try {
-            cameraProvider?.unbindAll()
-            cameraExecutor?.shutdown()
-            cameraExecutor = null
-        } catch (_: Exception) {}
-
-        val bestCandidate = analyzer?.getBestCandidate() ?: return null
-        val base64Result = FaceImageProcessor.processCandidate(bestCandidate)
-        analyzer?.reset()
-        analyzer = null
-
+        val bestCandidate = analyzer?.getBestCandidate()
+        val base64Result = bestCandidate?.let { FaceImageProcessor.processCandidate(it) }
+        stopCamera()
         return base64Result
     }
 
@@ -149,12 +159,12 @@ class PassiveFaceCaptureManager(
 
         analyzer?.reset()
         analyzer = null
+        imageAnalysis = null
+        previewUseCase = null
     }
 
     // Releases all hardware and memory resources
     fun release() {
         stopCamera()
-        analyzer?.release()
-        analyzer = null
     }
 }
