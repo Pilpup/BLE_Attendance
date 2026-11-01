@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -39,20 +40,55 @@ from app.schemas.attendance import (
     SessionCreateRequest,
     SessionFinalizeRequest,
     SubmitNeighborsRequest,
+    FaceLabCheckRequest,
+    FaceLabCheckResponse,
+    FaceLabCompareRequest,
+    FaceLabCompareResponse,
 )
+from app.services.face_engine import face_registry
 from app.services.graph_engine import audit_classroom_mesh
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
 
 async def _resolve_session(session_id: str, db: AsyncSession) -> Optional[AttendanceSession]:
     """Resolves an AttendanceSession by UUID or 4-char session token."""
+    load_opts = selectinload(AttendanceSession.records)
+
+    # Auto-provision active session for standalone debug testing
+    if session_id.upper() in ("AUTO-101", "DEMO", "DEBUG-1"):
+        debug_token = session_id.upper()
+        debug_res = await db.execute(
+            select(AttendanceSession).options(load_opts).where(AttendanceSession.session_token == debug_token)
+        )
+        debug_sess = debug_res.scalars().first()
+        if not debug_sess:
+            teacher, course = await _get_or_create_mock_context(db)
+            debug_sess = AttendanceSession(
+                id=uuid.uuid4(),
+                course_id=course.id,
+                teacher_id=teacher.id,
+                session_token=debug_token,
+                session_salt="DEMO1",
+                status="ACTIVE",
+                started_at=datetime.now(timezone.utc),
+            )
+            db.add(debug_sess)
+            await db.commit()
+            await db.refresh(debug_sess)
+        else:
+            debug_sess.status = "ACTIVE"
+            debug_sess.session_salt = "DEMO1"
+            debug_sess.started_at = datetime.now(timezone.utc)
+            await db.commit()
+            await db.refresh(debug_sess)
+        return debug_sess
+
     target_uuid = None
     try:
         target_uuid = uuid.UUID(session_id)
     except ValueError:
         pass
 
-    load_opts = selectinload(AttendanceSession.records)
     if target_uuid:
         query = (
             select(AttendanceSession)
@@ -366,7 +402,8 @@ async def cancel_attendance_session(
         session_obj.course_code = course_obj.course_code
         session_obj.course_name = course_obj.course_name
 
-    logger.info(f"[Audit Finalized] Session: {session_obj.id}, Verified: {session_obj.total_verified}, Spoofers: {session_obj.total_spoofers}, Total Records: {len(audit_results)}")
+    face_registry.clear_session(str(session_obj.id))
+    logger.info(f"[Session Cancelled] Session: {session_obj.id}")
     return session_obj
 
 
@@ -435,9 +472,9 @@ async def finalize_attendance_session(
         session_obj.course_code = course_obj.course_code
         session_obj.course_name = course_obj.course_name
 
-    logger.info(f"[Audit Finalized] Session: {session_obj.id}, Verified: {session_obj.total_verified}, Spoofers: {session_obj.total_spoofers}, Total Records: {len(audit_results)}")
+    face_registry.clear_session(str(session_obj.id))
+    logger.info(f"[Audit Finalized] Session: {session_obj.id}, Verified: {session_obj.total_verified}, Spoofers: {session_obj.total_spoofers}, Total Records: {len(payload.records)}")
     return session_obj
-
 
 @router.post(
     "/sessions/{session_id}/submit-neighbors",
@@ -514,6 +551,121 @@ async def submit_student_neighbors(
 
     normalized_neighbors = [n[-4:].upper() if len(n) >= 4 else n.upper() for n in payload.neighbors]
 
+    # Face deduplication check (Layer 3: Camera Face Biometric Deduplication)
+    face_check_result = None
+    if payload.face_image_base64:
+        raw_roll = (current_user.roll_number if current_user else None) or payload.student_id or student_key
+        face_check_result = face_registry.register_and_check(
+            session_id=str(session_obj.id),
+            student_key=student_key,
+            roll_number=raw_roll,
+            face_base64=payload.face_image_base64,
+        )
+
+        if face_check_result.is_duplicate:
+            # Retroactively flag earlier matched student
+            if face_check_result.matched_student_key:
+                matched_rec_res = await db.execute(
+                    select(AttendanceRecord).where(
+                        AttendanceRecord.session_id == session_obj.id,
+                        AttendanceRecord.ble_device_id == face_check_result.matched_student_key,
+                    )
+                )
+                matched_rec = matched_rec_res.scalars().first()
+                if matched_rec:
+                    matched_rec.status = "DUPLICATE_FACE_PROXY"
+                    matched_rec.verification_method = "FACE_BIOMETRIC_MATCH"
+                    matched_rec.remarks = f"Proxy match with {raw_roll} ({student_key})"
+                else:
+                    db.add(
+                        AttendanceRecord(
+                            id=uuid.uuid4(),
+                            session_id=session_obj.id,
+                            student_id=None,
+                            ble_device_id=face_check_result.matched_student_key,
+                            status="DUPLICATE_FACE_PROXY",
+                            verification_method="FACE_BIOMETRIC_MATCH",
+                            affinity_score=0.00,
+                            reported_neighbors=[],
+                            remarks=f"Proxy match with {raw_roll} ({student_key})",
+                            recorded_at=datetime.now(timezone.utc),
+                        )
+                    )
+
+            # Flag current submitter device
+            current_rec_res = await db.execute(
+                select(AttendanceRecord).where(
+                    AttendanceRecord.session_id == session_obj.id,
+                    AttendanceRecord.ble_device_id == student_key,
+                )
+            )
+            current_rec = current_rec_res.scalars().first()
+            if current_rec:
+                current_rec.status = "DUPLICATE_FACE_PROXY"
+                current_rec.verification_method = "FACE_BIOMETRIC_MATCH"
+                current_rec.remarks = face_check_result.remarks
+            else:
+                db.add(
+                    AttendanceRecord(
+                        id=uuid.uuid4(),
+                        session_id=session_obj.id,
+                        student_id=current_user.id if current_user else None,
+                        ble_device_id=student_key,
+                        status="DUPLICATE_FACE_PROXY",
+                        verification_method="FACE_BIOMETRIC_MATCH",
+                        affinity_score=0.00,
+                        reported_neighbors=normalized_neighbors,
+                        remarks=face_check_result.remarks,
+                        recorded_at=datetime.now(timezone.utc),
+                    )
+                )
+
+            await db.commit()
+
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Biometric proxy rejected: {face_check_result.remarks}",
+            )
+
+    # Ultrasonic proximity check (Layer 4: Ultrasonic Acoustic Handshake)
+    if payload.ultrasonic_proximity_detected:
+        peer_key = payload.co_located_peer_id or "UNKNOWN"
+        remarks = f"Ultrasonic proximity rejected: Co-located on same desk (< 25 cm) with {peer_key}"
+        logger.warning(f"[Layer 4 Ultrasonic Proxy] {student_key} co-located with {peer_key}")
+
+        current_rec_res = await db.execute(
+            select(AttendanceRecord).where(
+                AttendanceRecord.session_id == session_obj.id,
+                AttendanceRecord.ble_device_id == student_key,
+            )
+        )
+        current_rec = current_rec_res.scalars().first()
+        if current_rec:
+            current_rec.status = "CO_LOCATED_SAME_DESK_PROXY"
+            current_rec.verification_method = "ULTRASONIC_ACOUSTIC_MATCH"
+            current_rec.remarks = remarks
+        else:
+            db.add(
+                AttendanceRecord(
+                    id=uuid.uuid4(),
+                    session_id=session_obj.id,
+                    student_id=current_user.id if current_user else None,
+                    ble_device_id=student_key,
+                    status="CO_LOCATED_SAME_DESK_PROXY",
+                    verification_method="ULTRASONIC_ACOUSTIC_MATCH",
+                    affinity_score=0.00,
+                    reported_neighbors=normalized_neighbors,
+                    remarks=remarks,
+                    recorded_at=datetime.now(timezone.utc),
+                )
+            )
+        await db.commit()
+
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=remarks,
+        )
+
     # Persist student check-in in database (multi-worker safe, crash resilient)
     existing_stmt = select(SessionSubmission).where(
         SessionSubmission.session_id == target_session_id,
@@ -563,6 +715,8 @@ async def submit_student_neighbors(
         "status": "success",
         "student": student_key,
         "recorded_neighbors": normalized_neighbors,
+        "face_verified": True if payload.face_image_base64 else None,
+        "face_diagnostic": face_check_result.remarks if face_check_result else None,
     }
 
 
@@ -615,6 +769,18 @@ async def audit_and_finalize_session(
 
     for item in audit_results:
         device_id = item["ble_device_id"].upper()
+
+        # Check if device is already flagged as a proxy or spoofer
+        prior_res = await db.execute(
+            select(AttendanceRecord).where(
+                AttendanceRecord.session_id == session_obj.id,
+                AttendanceRecord.ble_device_id == device_id,
+            )
+        )
+        prior_rec = prior_res.scalars().first()
+        if prior_rec and prior_rec.status in ("DUPLICATE_FACE_PROXY", "SPOOFER_REJECTED"):
+            continue
+
         if item["status"] == "VERIFIED_PRESENT":
             verified_count += 1
         elif item["status"] == "SPOOFER_REJECTED":
@@ -646,17 +812,15 @@ async def audit_and_finalize_session(
     session_obj.status = "COMPLETED"
     session_obj.ended_at = datetime.now(timezone.utc)
     session_obj.total_verified = verified_count
-    session_obj.total_spoofers = spoofer_count
 
-    # Count ALL spoofers on the session, including remote submissions blocked by
-    # the Layer 2 salt guard (those are staged directly as SPOOFER_REJECTED records).
+    # Count ALL spoofers and proxy violators on the session
     spoofer_res = await db.execute(
         select(func.count()).select_from(AttendanceRecord).where(
             AttendanceRecord.session_id == session_obj.id,
-            AttendanceRecord.status == "SPOOFER_REJECTED",
+            AttendanceRecord.status.in_(["SPOOFER_REJECTED", "DUPLICATE_FACE_PROXY"]),
         )
     )
-    session_obj.total_spoofers = spoofer_res.scalar()
+    session_obj.total_spoofers = spoofer_res.scalar() or 0
 
     await db.commit()
     await db.refresh(session_obj)
@@ -666,6 +830,7 @@ async def audit_and_finalize_session(
         session_obj.course_code = course_obj.course_code
         session_obj.course_name = course_obj.course_name
 
+    face_registry.clear_session(str(session_obj.id))
     logger.info(f"[Audit Finalized] Session: {session_obj.id}, Verified: {session_obj.total_verified}, Spoofers: {session_obj.total_spoofers}, Total Records: {len(audit_results)}")
     return session_obj
 
@@ -698,6 +863,25 @@ async def get_session_details(
                     r.student_name = u.full_name
 
     return session_obj
+
+
+# Returns pairs of duplicate faces detected in this session for instructor audit
+@router.get("/sessions/{session_id}/flagged-faces")
+async def get_flagged_faces(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_teacher),
+):
+    session_obj = await _resolve_session(session_id, db)
+    if not session_obj:
+        raise HTTPException(status_code=404, detail="Attendance session not found")
+
+    flagged = face_registry.get_flagged_pairs(str(session_obj.id))
+    return {
+        "session_id": str(session_obj.id),
+        "count": len(flagged),
+        "flagged_pairs": flagged,
+    }
 
 
 # Teacher Record Override Endpoint
@@ -735,3 +919,46 @@ async def override_attendance_record(
     await db.commit()
     await db.refresh(record_obj)
     return record_obj
+
+
+# Face Biometric Diagnostic Lab Endpoints
+@router.post("/lab/face-check", response_model=FaceLabCheckResponse)
+async def lab_face_check(payload: FaceLabCheckRequest):
+    """Checks whether an uploaded image contains a real human face via OpenCV YuNet."""
+    try:
+        clean_b64 = payload.face_image_base64
+        if "," in clean_b64:
+            clean_b64 = clean_b64.split(",", 1)[1]
+        raw_bytes = base64.b64decode(clean_b64)
+        has_face, _, remarks = face_registry.engine.extract_face_and_embedding(raw_bytes)
+        return FaceLabCheckResponse(has_face=has_face, remarks=remarks)
+    except Exception as e:
+        return FaceLabCheckResponse(has_face=False, remarks=f"Processing error: {e}")
+
+
+@router.post("/lab/face-compare", response_model=FaceLabCompareResponse)
+async def lab_face_compare(payload: FaceLabCompareRequest):
+    """Compares two face images using OpenCV YuNet face detection and SFace deep facial embeddings."""
+    try:
+        clean_a = payload.image_a_base64.split(",", 1)[1] if "," in payload.image_a_base64 else payload.image_a_base64
+        clean_b = payload.image_b_base64.split(",", 1)[1] if "," in payload.image_b_base64 else payload.image_b_base64
+        bytes_a = base64.b64decode(clean_a)
+        bytes_b = base64.b64decode(clean_b)
+
+        has_face_a, has_face_b, similarity, is_duplicate, remarks = face_registry.engine.compare_two_images(bytes_a, bytes_b)
+        return FaceLabCompareResponse(
+            has_face_a=has_face_a,
+            has_face_b=has_face_b,
+            similarity_score=similarity,
+            is_duplicate=is_duplicate,
+            remarks=remarks
+        )
+    except Exception as e:
+        return FaceLabCompareResponse(
+            has_face_a=False,
+            has_face_b=False,
+            similarity_score=0.0,
+            is_duplicate=False,
+            remarks=f"Comparison error: {e}"
+        )
+

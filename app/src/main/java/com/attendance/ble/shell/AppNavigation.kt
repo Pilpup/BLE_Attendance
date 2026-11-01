@@ -63,6 +63,7 @@ fun AppNavigation(
                             Destination.ATTENDANCE
                         }
                         route == LibraryDashboardCard.NAV_ROUTE -> Destination.LIBRARY
+                        route == "feature_security_lab" -> Destination.SECURITY_LAB
                         else -> Destination.HOME
                     }
                 },
@@ -91,7 +92,9 @@ fun AppNavigation(
             AttendanceScreen(
                 user = user,
                 viewModel = viewModel,
-                callbacks = callbacks,
+                callbacks = callbacks.copy(
+                    onOpenSecurityLab = { destination = Destination.SECURITY_LAB }
+                ),
                 onBack = handleBack
             )
         } else {
@@ -106,7 +109,19 @@ fun AppNavigation(
         } else {
             destination = Destination.HOME
         }
+
+        Destination.SECURITY_LAB -> if (user != null) {
+            BackHandler(enabled = true) {
+                destination = Destination.HOME
+            }
+            com.college.feature.attendance.lab.SecurityLabScreen(
+                viewModel = viewModel,
+                onBack = { destination = Destination.HOME }
+            )
+        } else {
+            destination = Destination.HOME
+        }
     }
 }
 
-private enum class Destination { HOME, ATTENDANCE, LIBRARY }
+private enum class Destination { HOME, ATTENDANCE, LIBRARY, SECURITY_LAB }

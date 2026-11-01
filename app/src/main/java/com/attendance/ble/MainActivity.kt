@@ -17,8 +17,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
 import com.attendance.ble.shell.AppNavigation
-import com.attendance.ble.ui.theme.P3VoidBlack
-import com.attendance.ble.ui.theme.PersonaTheme
 import androidx.core.view.WindowInsetsControllerCompat
 import com.college.feature.attendance.AttendanceScreenCallbacks
 import com.college.feature.attendance.ble.BleAdvertiser

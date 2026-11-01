@@ -20,15 +20,16 @@ import com.college.feature.attendance.network.AttendanceSessionResponse
 import com.college.feature.attendance.network.CourseCreateRequest
 import com.college.feature.attendance.network.CourseResponse
 import com.college.feature.attendance.network.LoginRequest
-import com.college.feature.attendance.network.LoginResponse
 import com.college.feature.attendance.network.MeshAuditRunRequest
-import com.college.feature.attendance.network.OtpSentResponse
 import com.college.feature.attendance.network.RegisterRequest
 import com.college.feature.attendance.network.ResendOtpRequest
 import com.college.feature.attendance.network.SessionCreateRequest
 import com.college.feature.attendance.network.SubmitNeighborsRequest
 import com.college.feature.attendance.network.TokenResponse
 import com.college.feature.attendance.network.VerifyOtpRequest
+import com.college.feature.attendance.audio.AcousticStatisticalSummary
+import com.college.feature.attendance.audio.EnsembleVerdict
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -61,23 +62,14 @@ enum class TeacherViewMode {
     OLDER_SESSIONS
 }
 
-/**
- * The attendance engine, now self-contained inside :feature:attendance.
- *
- * Step 4C simplification: identity & mode come exclusively from
- * :core:network's [SessionManager] (populated by the shell/login), NOT from
- * local auth state. JWT headers are attached by [AuthInterceptor] through
- * [AttendanceApiClient]; this class never touches tokens directly.
- * Prefs stay only for app-restart restore (server_url, roll_number, and a
- * token mirror used to re-hydrate the in-memory session).
- */
+// Manages classroom attendance session state, BLE discovery, and cloud synchronization
 class AttendanceViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = application.getSharedPreferences("ble_attendance_prefs", Context.MODE_PRIVATE)
 
-    // Retrofit surface from the shared-session engine (:core:network's AuthInterceptor)
+    // Retrofit service handle
     private val api get() = AttendanceApiClient.service
 
-    // ---- Identity & mode (derived from the active SessionManager session) ----
+    // Current user identity and role derived from active session
     val isTeacherMode: Boolean
         get() = SessionManager.default.currentUser?.canTakeAttendance() == true
     val isLoggedIn: Boolean
@@ -87,65 +79,62 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     val currentUserRole: String
         get() = SessionManager.default.currentUser?.primaryRole?.name ?: "STUDENT"
 
-    // BLE-local roll id: seeded from the backend profile at login, or a random
-    // local id for guest/mock usage inside the shell.
+    // Device roll number used for BLE broadcast packets
     val defaultLocalId: String = UUID.randomUUID().toString().replace("-", "").take(4).uppercase()
     var currentRollNumber: String by mutableStateOf(defaultLocalId)
     val studentId: String get() = currentRollNumber
-    // Exactly 4 characters for fixed-width BLE packets
     val studentShortId: String get() = currentRollNumber.takeLast(4).padStart(4, '0').uppercase()
 
     var isAuthLoading: Boolean by mutableStateOf(false)
     var authErrorText: String? by mutableStateOf(null)
     var showAuthDialog: Boolean by mutableStateOf(false)
 
-    // Courses for Teacher
+    // Course selection for teachers
     var availableCourses by mutableStateOf<List<CourseResponse>>(emptyList())
     var selectedCourse by mutableStateOf<CourseResponse?>(null)
     var isLoadingCourses by mutableStateOf(false)
 
-    // BLE session state
+    // Active BLE session state and countdown timer
     var isSessionActive by mutableStateOf(false)
     var sessionId by mutableStateOf("----")
     var sessionSalt by mutableStateOf("------")
     var remainingSeconds by mutableIntStateOf(0)
 
-    // Teacher navigation view mode & history state
+    // Teacher navigation and history
     var teacherViewMode by mutableStateOf(TeacherViewMode.MENU)
     var pastSessions by mutableStateOf<List<AttendanceSessionResponse>>(emptyList())
     var isLoadingHistory by mutableStateOf(false)
     var selectedSessionForDetails by mutableStateOf<AttendanceSessionResponse?>(null)
 
-    // Backend cloud session state
+    // Cloud session state and sync messaging
     var backendSessionId: String? by mutableStateOf(null)
     var finalizedRecords by mutableStateOf<List<AttendanceRecordItem>>(emptyList())
     var isCloudSyncing: Boolean by mutableStateOf(false)
     var cloudStatusMessage: String? by mutableStateOf(null)
-    // Shown on the student's screen when the server rejects their check-in (salt mismatch)
     var studentStatusMessage: String? by mutableStateOf(null)
 
-    // Compact 13-byte teacher beacon
+    // Beacon broadcast payload
     val currentBroadcastToken: String
         get() = if (isSessionActive) "S:$sessionId:$sessionSalt" else "IDLE"
 
-    // Radio power settings
+    // Radio advertising configuration
     val teacherAdvMode = AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY
     val teacherTxPower = AdvertiseSettings.ADVERTISE_TX_POWER_HIGH
 
-    // Student scanning state
+    // Student scanning state and discovered peers
     var studentPhase by mutableStateOf(StudentPhase.STANDBY)
     var detectedSessionId by mutableStateOf("----")
     var detectedSessionSalt by mutableStateOf("------")
     val discoveredPeers = mutableStateMapOf<String, PeerData>()
 
-    // Interactive Human Attention Challenge & Behavioral Telemetry State
+    // Interactive reflex challenge state and telemetry
     var challengeScore by mutableIntStateOf(0)
     var challengeTotalTargets by mutableIntStateOf(0)
     var lastFocusReport by mutableStateOf<com.college.feature.attendance.telemetry.CognitiveFocusReport?>(null)
     val challengeScorePercentage: Int
         get() = if (challengeTotalTargets > 0) (challengeScore * 100) / challengeTotalTargets else 0
     val isChallengePassed: Boolean
-        get() = (challengeTotalTargets == 0 || challengeScorePercentage >= 60) &&
+        get() = (challengeTotalTargets == 0 || challengeScorePercentage >= 55) &&
                 (lastFocusReport == null || (
                     lastFocusReport?.classification != com.college.feature.attendance.telemetry.FocusClassification.DIVIDED_ATTENTION_PROXY &&
                     lastFocusReport?.classification != com.college.feature.attendance.telemetry.FocusClassification.AUTOMATED_SCRIPT &&
@@ -161,14 +150,46 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         lastFocusReport = report
     }
 
-    // Top 3 desk neighbours with median RSSI >= -90 dBm (calibrated for classroom RF attenuation)
+    var capturedFaceBase64 by mutableStateOf<String?>(null)
+
+    // Layer 3 and Layer 4 anti-proxy state flags
+    var faceProxyDetected by mutableStateOf(false)
+        private set
+    var ultrasonicProximityDetected by mutableStateOf(false)
+        private set
+    var coLocatedPeerId by mutableStateOf<String?>(null)
+        private set
+    var ultrasonicSnrDb by mutableStateOf(0.0)
+        private set
+
+    val proximityManager by lazy {
+        com.college.feature.attendance.audio.UltrasonicProximityManager(application.applicationContext)
+    }
+    private val testedUltrasonicPeers = mutableSetOf<String>()
+
+    // Standalone developer debug mode flag (disabled by default in production)
+    var isDebugMode by mutableStateOf(false)
+
+    // Resets session anti-proxy state
+    fun resetSessionSecurityState() {
+        capturedFaceBase64 = null
+        studentStatusMessage = null
+        faceProxyDetected = false
+        ultrasonicProximityDetected = false
+        coLocatedPeerId = null
+        ultrasonicSnrDb = 0.0
+        testedUltrasonicPeers.clear()
+        studentPhase = StudentPhase.STANDBY
+    }
+
+    // Top 3 nearest desk neighbors with signal strength above threshold
     val topDeskNeighbours: List<PeerData>
         get() = discoveredPeers.values
             .filter { it.medianRssi >= -90 }
             .sortedByDescending { it.medianRssi }
             .take(3)
 
-    // Activity radio callbacks (wired by the host Activity in :app)
+    // Radio callbacks bound by host activity
     var onStartBroadcasting: ((token: String, txPower: Int) -> Unit)? = null
     var onStopBroadcasting: (() -> Unit)? = null
     var onStartScanning: (() -> Unit)? = null
@@ -184,10 +205,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             ?: prefs.getString("roll_number", defaultLocalId)
             ?: defaultLocalId
         val savedUrl = prefs.getString("server_url", null)
-        if (!savedUrl.isNullOrBlank() && !savedUrl.contains("10.0.2.2")) {
+        if (!savedUrl.isNullOrBlank() && !savedUrl.contains("10.0.2.2") && !savedUrl.contains("onrender.com") && !savedUrl.contains(":8000")) {
             AttendanceApiClient.baseUrl = savedUrl
         } else {
-            AttendanceApiClient.baseUrl = "https://ble-attendance-api-dbf1.onrender.com/"
+            AttendanceApiClient.baseUrl = "http://10.115.186.134:53317/"
             prefs.edit().putString("server_url", AttendanceApiClient.baseUrl).apply()
         }
         hydrateSessionFromPrefs()
@@ -543,20 +564,23 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     fun submitMyNeighborsToCloud(keepRadioActive: Boolean = false) {
         val sessId = detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: return
         val neighborIds = topDeskNeighbours.map { it.peerId }
+        val facePayload = capturedFaceBase64
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val req = SubmitNeighborsRequest(
                     studentId = studentShortId,
                     neighbors = neighborIds,
-                    sessionSalt = detectedSessionSalt.takeIf { it != "------" }
+                    sessionSalt = detectedSessionSalt.takeIf { it != "------" },
+                    faceImageBase64 = facePayload,
+                    ultrasonicProximityDetected = ultrasonicProximityDetected,
+                    coLocatedPeerId = coLocatedPeerId
                 )
                 // AuthInterceptor adds the bearer token when a session is active;
-                // guest students simply submit anonymously.
                 val res = api.submitNeighbors(sessId, req)
                 withContext(Dispatchers.Main) {
                     if (res.isSuccessful) {
                         if (!keepRadioActive && studentDiscoverySecondsRemaining == 0) {
-                            studentPhase = if (isChallengePassed && topDeskNeighbours.isNotEmpty()) {
+                            studentPhase = if (isChallengePassed && !faceProxyDetected && !ultrasonicProximityDetected) {
                                 StudentPhase.VERIFIED_PRESENT
                             } else {
                                 StudentPhase.UNVERIFIED_FLAGGED
@@ -567,23 +591,25 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             onStopBroadcasting?.invoke()
                         }
                     } else if (res.code() == 403) {
-                        // Server rejected this check-in: beacon salt mismatch (remote submission attempt) — show the banter
+                        // Handle server rejection caused by session salt mismatch, duplicate face, or ultrasonic proxy
                         val detail = try { res.errorBody()?.string() } catch (_: Exception) { null }
                         val extracted = Regex("\"detail\"\\s*:\\s*\"(.*?)\"").find(detail ?: "")?.groupValues?.get(1)
-                        studentStatusMessage = extracted ?: "Nice try lil bro"
-                        studentPhase = StudentPhase.STANDBY
+                        if (extracted?.contains("Biometric", ignoreCase = true) == true || extracted?.contains("Duplicate face", ignoreCase = true) == true) {
+                            faceProxyDetected = true
+                        }
+                        if (extracted?.contains("Ultrasonic", ignoreCase = true) == true || extracted?.contains("desk", ignoreCase = true) == true) {
+                            ultrasonicProximityDetected = true
+                        }
+                        studentStatusMessage = extracted ?: "Biometric / Salt / Ultrasonic check rejected"
+                        studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                         onStopScanning?.invoke()
                         onStopBroadcasting?.invoke()
                     } else {
-                        // Offline or non-200: fallback to local discovery complete
-                        // Student is verified via pure in-degree graph witnessing from online classmates
-                        if (!keepRadioActive && studentDiscoverySecondsRemaining == 0) {
-                            studentPhase = if (isChallengePassed && topDeskNeighbours.isNotEmpty()) {
-                                StudentPhase.VERIFIED_PRESENT
-                            } else {
-                                StudentPhase.UNVERIFIED_FLAGGED
-                            }
-                        }
+                        // Server response 404/500/etc
+                        val errDetail = try { res.errorBody()?.string() } catch (_: Exception) { null }
+                        val extracted = Regex("\"detail\"\\s*:\\s*\"(.*?)\"").find(errDetail ?: "")?.groupValues?.get(1)
+                        studentStatusMessage = extracted ?: "Attendance server error (${res.code()})"
+                        studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                         if (!keepRadioActive) {
                             onStopScanning?.invoke()
                             onStopBroadcasting?.invoke()
@@ -591,17 +617,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     }
                     Unit
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    // Offline fallback: BLE discovery was complete, near-field whisper was emitted.
-                    // Student will be verified via pure in-degree graph witnessing from online desk neighbors.
-                    if (!keepRadioActive && studentDiscoverySecondsRemaining == 0) {
-                        studentPhase = if (isChallengePassed && topDeskNeighbours.isNotEmpty()) {
-                            StudentPhase.VERIFIED_PRESENT
-                        } else {
-                            StudentPhase.UNVERIFIED_FLAGGED
-                        }
-                    }
+                    studentStatusMessage = "Connection failed: Please verify classroom Wi-Fi connection"
+                    studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                     if (!keepRadioActive) {
                         onStopScanning?.invoke()
                         onStopBroadcasting?.invoke()
@@ -783,21 +802,35 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Student scanning start
     fun startStudentScanning() {
-        studentPhase = StudentPhase.PROBING_NEIGHBORS
-        if (detectedSessionId == "----" || detectedSessionId.isEmpty()) {
-            detectedSessionId = "AUTO-101"
-        }
         discoveredPeers.clear()
-        val p1 = PeerData("PEER-A1").apply { rssiSamples.add(-65) }
-        val p2 = PeerData("PEER-B2").apply { rssiSamples.add(-70) }
-        discoveredPeers["PEER-A1"] = p1
-        discoveredPeers["PEER-B2"] = p2
         studentStatusMessage = null
         challengeScore = 0
         challengeTotalTargets = 0
         lastFocusReport = null
-        onStartScanning?.invoke()
-        startStudentDiscoveryWindow()
+        capturedFaceBase64 = null
+        faceProxyDetected = false
+        ultrasonicProximityDetected = false
+        coLocatedPeerId = null
+        ultrasonicSnrDb = 0.0
+        testedUltrasonicPeers.clear()
+
+        if (isDebugMode) {
+            // Debug mode: Auto-initialize session so student can test reflex game and face capture immediately
+            detectedSessionId = "AUTO-101"
+            detectedSessionSalt = "DEMO1"
+            discoveredPeers["PEER-A1"] = PeerData("PEER-A1").apply { rssiSamples.add(-65) }
+            discoveredPeers["PEER-B2"] = PeerData("PEER-B2").apply { rssiSamples.add(-72) }
+
+            studentPhase = StudentPhase.PROBING_NEIGHBORS
+            startStudentDiscoveryWindow()
+            onStartScanning?.invoke()
+        } else {
+            // Real classroom mode: Listen for teacher BLE beacon broadcast
+            detectedSessionId = "----"
+            detectedSessionSalt = "------"
+            studentPhase = StudentPhase.LISTENING_FOR_TEACHER
+            onStartScanning?.invoke()
+        }
     }
 
     // Student scanning stop
@@ -815,13 +848,17 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         studentTimer?.cancel()
         studentTimer = null
         studentDiscoverySecondsRemaining = 0
-        studentPhase = if (isChallengePassed && topDeskNeighbours.isNotEmpty()) {
-            StudentPhase.VERIFIED_PRESENT
-        } else if (isChallengePassed) {
+        val isDividedProxy = lastFocusReport?.classification == com.college.feature.attendance.telemetry.FocusClassification.DIVIDED_ATTENTION_PROXY
+        studentPhase = if (isChallengePassed && !faceProxyDetected && !ultrasonicProximityDetected) {
             StudentPhase.VERIFIED_PRESENT
         } else {
             if (studentStatusMessage == null) {
-                studentStatusMessage = "Attendance verification requirements not met"
+                studentStatusMessage = when {
+                    faceProxyDetected -> "Biometric proxy rejected: Duplicate face detected in session"
+                    ultrasonicProximityDetected -> "Ultrasonic proximity rejected: Co-located on same desk (< 25 cm) with $coLocatedPeerId"
+                    isDividedProxy -> lastFocusReport?.diagnosticReason ?: "Divided attention proxy detected"
+                    else -> "Attendance verification requirements not met"
+                }
             }
             StudentPhase.UNVERIFIED_FLAGGED
         }
@@ -856,27 +893,26 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }.start()
     }
 
-    // Process incoming BLE packet
+    // Processes incoming BLE advertising packets for beacon and peer discovery
     fun onPacketReceived(rssi: Int, messageText: String) {
         val cleanMsg = messageText.trim()
 
-        // Teacher does not process BLE packets
         if (isTeacherMode) return
 
-        // Student hearing teacher beacon (S:<SessionID>:<Salt>)
+        // Check for teacher beacon packet format (S:<SessionID>:<Salt>)
         val isBeacon = cleanMsg.startsWith("S:") || cleanMsg.startsWith("SESSION:")
         if (isBeacon && studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
             val parts = cleanMsg.split(":")
-            if (parts.size >= 3) {
+            if (parts.size >= 2) {
                 detectedSessionId = parts[1]
-                detectedSessionSalt = parts[2]
+                detectedSessionSalt = if (parts.size >= 3) parts[2] else ""
                 studentPhase = StudentPhase.PROBING_NEIGHBORS
                 startStudentDiscoveryWindow()
             }
             return
         }
 
-        // Student hearing peer probe (8 bytes: [SessionID (4)][PeerID (4)])
+        // Check for student peer discovery packet
         val isPeerProbe = (cleanMsg.length == 8 || (cleanMsg.length > 8 && cleanMsg.startsWith(detectedSessionId)))
                 && !cleanMsg.startsWith("S:") && !cleanMsg.startsWith("SESSION:")
         val canReceiveProbe = studentPhase == StudentPhase.PROBING_NEIGHBORS ||
@@ -885,10 +921,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 studentPhase == StudentPhase.UNVERIFIED_FLAGGED
 
         if (isPeerProbe && canReceiveProbe && detectedSessionId != "----") {
-            // Drop packet if it came from another classroom
+            // Verify packet matches active session ID
             if (cleanMsg.startsWith(detectedSessionId)) {
-                val peerId = cleanMsg.substring(4, 8)
-                if (peerId != studentShortId) {
+                val peerId = cleanMsg.removePrefix(detectedSessionId).takeLast(4)
+                if (peerId.isNotEmpty() && peerId != studentShortId) {
                     val existing = discoveredPeers[peerId]
                     if (existing != null) {
                         val updatedSamples = existing.rssiSamples.toMutableList().apply { add(rssi) }
@@ -897,16 +933,65 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         val newPeer = PeerData(peerId)
                         newPeer.rssiSamples.add(rssi)
                         discoveredPeers[peerId] = newPeer
-                        // If previously flagged unverified, promote immediately upon discovering a neighbor!
-                        if (studentPhase == StudentPhase.UNVERIFIED_FLAGGED) {
+
+                        // Promote to verified if peer discovered and challenge passed
+                        if (studentPhase == StudentPhase.UNVERIFIED_FLAGGED && isChallengePassed && !ultrasonicProximityDetected && !faceProxyDetected) {
                             studentPhase = StudentPhase.VERIFIED_PRESENT
                         }
-                        // Immediately sync updated neighbor list to cloud
+
+                        // Push updated peer list to server
                         submitMyNeighborsToCloud(keepRadioActive = true)
+                    }
+
+                    // Trigger Layer 4 ultrasonic handshake if peer is in physical vicinity (RSSI >= -70 dBm)
+                    if (rssi >= -70 && !testedUltrasonicPeers.contains(peerId)) {
+                        testedUltrasonicPeers.add(peerId)
+                        triggerUltrasonicProximityHandshake(peerId)
                     }
                 }
             }
             return
+        }
+    }
+
+    // Layer 4 ultrasonic proximity handshake using multi-burst statistical consensus
+    private fun triggerUltrasonicProximityHandshake(peerId: String) {
+        viewModelScope.launch(Dispatchers.Default) {
+            val isEmitter = studentShortId < peerId
+            if (isEmitter) {
+                // Emitter transmits rapid 12-burst pulse train, then listens for peer return train
+                proximityManager.emitBurstSequence(count = 12, intervalMs = 120L)
+                kotlinx.coroutines.delay(1600L)
+
+                proximityManager.collectBurstEnsemble(listenDurationMs = 1800L) { summary ->
+                    handleEnsembleSummary(summary, peerId)
+                }
+            } else {
+                // Listener listens first for peer's burst train, then transmits return burst train
+                proximityManager.collectBurstEnsemble(listenDurationMs = 1800L) { summary ->
+                    handleEnsembleSummary(summary, peerId)
+                }
+                kotlinx.coroutines.delay(200L)
+                proximityManager.emitBurstSequence(count = 12, intervalMs = 120L)
+            }
+        }
+    }
+
+    // Handles statistical ensemble results: only flags when consensus confirms physical same-desk co-location
+    private fun handleEnsembleSummary(summary: AcousticStatisticalSummary, peerId: String) {
+        viewModelScope.launch(Dispatchers.Main) {
+            if (summary.verdict == EnsembleVerdict.CONFIRMED_SAME_DESK) {
+                // Statistical consensus confirms co-location on same desk (< 25 cm, >= 65% Green)
+                ultrasonicProximityDetected = true
+                coLocatedPeerId = peerId
+                ultrasonicSnrDb = summary.trimmedMeanPowerDb
+                studentStatusMessage = "Ultrasonic proximity rejected: Co-located on same desk (${summary.estimatedDistanceCm.roundToInt()} cm, ${summary.greenPercentage}% Green) with $peerId"
+                studentPhase = StudentPhase.UNVERIFIED_FLAGGED
+                submitMyNeighborsToCloud(keepRadioActive = true)
+            } else {
+                // Discarded outliers confirmed natural separation (next bench or distant)
+                android.util.Log.i("AttendanceViewModel", "Ultrasonic separation verified for $peerId: ${summary.estimatedDistanceCm.roundToInt()} cm (${summary.bluePercentage}% Blue)")
+            }
         }
     }
 }

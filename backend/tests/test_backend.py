@@ -490,4 +490,126 @@ async def test_expired_otp_purging_and_cleanup():
             assert rec is None
 
 
+# Verifies face engine preprocessing and embedding extraction
+def test_face_matching_engine():
+    import io
+    import numpy as np
+    from PIL import Image
+    from app.services.face_engine import FaceMatchingEngine
+
+    engine = FaceMatchingEngine()
+
+    img = Image.new("RGB", (100, 100), color=(120, 80, 200))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    raw_bytes = buf.getvalue()
+
+    embedding = engine.extract_embedding(raw_bytes)
+    assert embedding.shape == (128,)
+    norm = np.linalg.norm(embedding)
+    assert abs(norm - 1.0) < 1e-4
+
+    sim_self = engine.compute_similarity(embedding, embedding)
+    assert abs(sim_self - 1.0) < 1e-4
+
+
+# Verifies session face deduplication and privacy purging
+def test_session_face_registry():
+    import base64
+    import io
+    from PIL import Image
+    from httpx import AsyncClient, ASGITransport
+    from app.services.face_engine import SessionFaceRegistry
+
+    registry = SessionFaceRegistry()
+
+    img_a = Image.new("RGB", (100, 100), color=(255, 0, 0))
+    buf_a = io.BytesIO()
+    img_a.save(buf_a, format="JPEG")
+    b64_a = base64.b64encode(buf_a.getvalue()).decode("utf-8")
+
+    # First student in session
+    res_a = registry.register_and_check("session_101", "STUA", "22BCSE101", b64_a)
+    assert res_a.is_duplicate is False
+
+    # Second student with identical face image (proxy attempt)
+    res_b = registry.register_and_check("session_101", "STUB", "22BCSE102", b64_a)
+    assert res_b.is_duplicate is True
+    assert res_b.matched_student_key == "STUA"
+
+    flagged = registry.get_flagged_pairs("session_101")
+    assert len(flagged) == 1
+    assert flagged[0]["student_a_key"] == "STUA"
+    assert flagged[0]["student_b_key"] == "STUB"
+
+    # Purge session data
+    registry.clear_session("session_101")
+    assert len(registry.get_flagged_pairs("session_101")) == 0
+
+
+# Verifies debug session auto-provisioning and duplicate face detection via API endpoint
+@pytest.mark.anyio
+async def test_debug_session_auto_provision_and_duplicate_rejection():
+    import base64
+    import io
+    from PIL import Image
+    from httpx import AsyncClient, ASGITransport
+
+    img = Image.new("RGB", (100, 100), color=(180, 140, 120))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    b64_img = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # First student check-in to auto-provisioned debug session AUTO-101
+        res1 = await client.post(
+            "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
+            json={
+                "student_id": "STUD1",
+                "neighbors": ["PEER-A1", "PEER-B2"],
+                "session_salt": "DEMO1",
+                "face_image_base64": b64_img,
+            },
+        )
+        assert res1.status_code == 200
+
+        # Second student check-in with the exact same face image (proxy attempt)
+        res2 = await client.post(
+            "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
+            json={
+                "student_id": "STUD2",
+                "neighbors": ["PEER-A1", "PEER-B2"],
+                "session_salt": "DEMO1",
+                "face_image_base64": b64_img,
+            },
+        )
+        assert res2.status_code == 403
+        assert "Biometric proxy rejected" in res2.json()["detail"]
+
+
+# Verifies Layer 4: Ultrasonic Proximity Handshake proxy rejection
+@pytest.mark.anyio
+async def test_ultrasonic_proximity_rejection():
+    from httpx import AsyncClient, ASGITransport
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Student submits with ultrasonic proximity detected to another peer on same desk
+        res = await client.post(
+            "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
+            json={
+                "student_id": "STUD3",
+                "neighbors": ["STUD4"],
+                "session_salt": "DEMO1",
+                "ultrasonic_proximity_detected": True,
+                "co_located_peer_id": "STUD4",
+            },
+        )
+        assert res.status_code == 403
+        assert "Ultrasonic proximity rejected" in res.json()["detail"]
+        assert "STUD4" in res.json()["detail"]
+
+
+
 

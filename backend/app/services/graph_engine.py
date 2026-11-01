@@ -1,14 +1,14 @@
 from typing import Dict, List, Optional
 
 
-# social mesh graph topology engine
+# Social mesh graph topology engine
 def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
     direct_mutuals: Dict[str, List[str]] = {}
     bridge_map: Dict[str, Optional[str]] = {}
     verified_set: set[str] = set()
     results: List[dict] = []
 
-    # Step 1: Direct mutual pairs (A in P(B) and B in P(A)) -> Affinity 1.00
+    # Identify direct mutual peer pairs where both devices reported each other
     for student_id, claimed_neighbors in reports.items():
         mutual_peers = [
             peer for peer in claimed_neighbors
@@ -18,7 +18,7 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
         if len(mutual_peers) > 0:
             verified_set.add(student_id)
 
-    # Step 2: Triadic closure set intersection via verified bridge -> Affinity 0.50
+    # Resolve triadic closure for unverified nodes connected to at least two verified peers
     changed = True
     while changed:
         changed = False
@@ -30,7 +30,7 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
                     bridge_map[student_id] = next(iter(shared_bridges))
                     changed = True
 
-    # Step 3: Final classification & affinity scoring
+    # Classify presence status and compute affinity scores based on topology
     for student_id, claimed_neighbors in reports.items():
         mutuals = direct_mutuals.get(student_id, [])
 
@@ -80,8 +80,7 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
             "mutuals": mutuals,
         })
 
-    # Step 4: Pure In-Degree Social Graph Witnessing for Offline Students
-    # Any peer mentioned in a verified student's desk neighbors who did not submit a report directly
+    # Perform in-degree peer witnessing for offline students reported by verified peers
     witness_map: Dict[str, List[str]] = {}
     for reporter_id in verified_set:
         for neighbor in reports.get(reporter_id, []):
@@ -90,7 +89,7 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
 
     for offline_id, witnesses in witness_map.items():
         if len(witnesses) >= 2:
-            # Verified via >= 2 independent verified classmates (Tamper-proof against buddy punching)
+            # Verified via multiple independent classmate witnesses
             results.append({
                 "ble_device_id": offline_id,
                 "status": "VERIFIED_PRESENT",
@@ -102,8 +101,7 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
                 "mutuals": witnesses,
             })
         else:
-            # Single witness (Edge/corner desk student or potential buddy-punch attempt)
-            # Surfaced for Teacher Manual Override
+            # Single witness requiring teacher manual verification
             results.append({
                 "ble_device_id": offline_id,
                 "status": "ISOLATED_FLAGGED",

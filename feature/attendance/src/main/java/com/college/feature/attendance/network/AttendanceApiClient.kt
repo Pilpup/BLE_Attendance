@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit
 object AttendanceApiClient {
 
     // Live Render cloud backend; switchable from the in-app Server dialog.
-    var baseUrl: String = "https://ble-attendance-api-dbf1.onrender.com/"
+    var baseUrl: String = "http://10.115.186.134:53317/"
         set(value) {
             field = if (value.endsWith("/")) value else "$value/"
             retrofitInstance = null
@@ -36,7 +36,7 @@ object AttendanceApiClient {
                         .addInterceptor(AuthInterceptor(SessionManager.default))
                         .addInterceptor(
                             HttpLoggingInterceptor().apply {
-                                level = HttpLoggingInterceptor.Level.BODY
+                                level = HttpLoggingInterceptor.Level.HEADERS
                             }
                         )
                         .connectTimeout(60, TimeUnit.SECONDS)

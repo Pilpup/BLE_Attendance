@@ -16,21 +16,16 @@ class BleScanner(
     private val onScanningChanged: (Boolean) -> Unit,
     private val onPacketReceived: (rssi: Int, latencyMs: Double, messageText: String) -> Unit
 ) {
-    // grabs main bluetooth controller
-    // by lazy - only run this code and wake up hardware when I ask for it
+    // Bluetooth system service and scanner handles
     private val bluetoothManager get() = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-
-    // get() will now ask android for fresh connection every time
-    // Scanner
     private val bleScanner get() = bluetoothManager.adapter?.bluetoothLeScanner
 
+    // Starts low-latency BLE scan filtered by classroom service UUID
     fun startScanning() {
-        // ignore all the other peripherals, wake up only when it finds our TEST_UUID in service data
         val filter = ScanFilter.Builder()
             .setServiceData(ParcelUuid(BleConstants.TEST_UUID), null)
             .build()
 
-        // continuous scanning
         val settings = ScanSettings.Builder()
             .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
             .build()
@@ -52,6 +47,7 @@ class BleScanner(
 
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    // Stops active BLE scanning
     fun stopScanning() {
         try {
             bleScanner?.stopScan(scanCallback)
@@ -61,39 +57,30 @@ class BleScanner(
         onScanningChanged(false)
     }
 
+    // Callback processing incoming BLE scan results
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             super.onScanResult(callbackType, result)
 
-            // signal strength (dbm)
             val rssi = result.rssi
-
-            // calculate latency:
-            // time when antenna recieved the packets
             val antennaTime = result.timestampNanos
-
-            // current OS clock time
             val osTime = SystemClock.elapsedRealtimeNanos()
-
-            // 1ms = 1,000,000ns
-            // .0 at the end - do floating division
             val latencyMs = (osTime - antennaTime) / 1_000_000.0
 
-            // Search packet for labeled TEST_UUID
+            // Extract service data payload for the classroom UUID
             val scanRecord = result.scanRecord ?: return
             val serviceDataBytes = scanRecord.getServiceData(ParcelUuid(BleConstants.TEST_UUID))
                 ?: scanRecord.serviceData?.entries?.firstOrNull {
                     it.key.uuid == BleConstants.TEST_UUID
                 }?.value
 
-            // If the packet has no matching service data, it is ambient BLE noise / hardware filter leakage.
-            // Drop it immediately instead of passing "No data" to the app.
             if (serviceDataBytes == null || serviceDataBytes.isEmpty()) {
                 return
             }
 
             val messageText = String(serviceDataBytes, Charsets.UTF_8)
 
+            // Dispatch received packet to the main thread
             mainHandler.post {
                 onPacketReceived(rssi, latencyMs, messageText)
             }

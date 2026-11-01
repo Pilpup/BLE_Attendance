@@ -79,4 +79,14 @@ interface AttendanceApiService {
     suspend fun getSessionDetails(
         @Path("sessionId") sessionId: String
     ): Response<AttendanceSessionResponse>
+
+    @POST("api/v1/attendance/lab/face-check")
+    suspend fun checkLabFace(
+        @Body body: FaceLabCheckRequest
+    ): Response<FaceLabCheckResponse>
+
+    @POST("api/v1/attendance/lab/face-compare")
+    suspend fun compareLabFaces(
+        @Body body: FaceLabCompareRequest
+    ): Response<FaceLabCompareResponse>
 }

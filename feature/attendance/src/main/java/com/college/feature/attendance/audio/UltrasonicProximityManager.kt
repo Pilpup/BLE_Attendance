@@ -1,0 +1,503 @@
+package com.college.feature.attendance.audio
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.content.Context
+import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioManager
+import android.media.AudioRecord
+import android.media.MediaRecorder
+import androidx.core.content.ContextCompat
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
+import android.os.Handler
+import android.os.Looper
+
+// Manages ultrasonic acoustic transmission and detection for physical desk co-location
+class UltrasonicProximityManager(private val context: Context) {
+
+    private val isListening = AtomicBoolean(false)
+    private var audioRecord: AudioRecord? = null
+    private val executor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    private val isDiagnosticRunning = AtomicBoolean(false)
+    private var diagnosticThread: Thread? = null
+
+    private val isBeaconEmitting = AtomicBoolean(false)
+    private var beaconThread: Thread? = null
+
+    // Creates an AudioRecord prioritizing UNPROCESSED (raw acoustics, no AGC) with graceful fallbacks
+    @SuppressLint("MissingPermission")
+    private fun createAudioRecord(sampleRate: Int, bufferSize: Int): AudioRecord? {
+        val channelConfig = AudioFormat.CHANNEL_IN_MONO
+        val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        val supportsUnprocessed = audioManager?.getProperty(AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED) == "true"
+
+        val sourcesToTry = mutableListOf<Int>()
+        if (supportsUnprocessed) {
+            sourcesToTry.add(MediaRecorder.AudioSource.UNPROCESSED)
+        }
+        sourcesToTry.add(MediaRecorder.AudioSource.VOICE_RECOGNITION)
+        sourcesToTry.add(MediaRecorder.AudioSource.MIC)
+
+        for (source in sourcesToTry) {
+            try {
+                val record = AudioRecord(
+                    source,
+                    sampleRate,
+                    channelConfig,
+                    audioFormat,
+                    bufferSize
+                )
+                if (record.state == AudioRecord.STATE_INITIALIZED) {
+                    android.util.Log.i("UltrasonicProximity", "AudioRecord initialized using source: $source")
+                    return record
+                }
+                record.release()
+            } catch (e: Exception) {
+                android.util.Log.w("UltrasonicProximity", "Source $source unavailable: ${e.message}")
+            }
+        }
+        return null
+    }
+
+    // Estimates physical acoustic distance based on 19.2 kHz inverse path-loss model
+    fun estimateDistanceCm(snrDb: Double): Double {
+        if (snrDb < 2.0) return -1.0
+        val dist = 14.0 * Math.pow(10.0, (12.0 - snrDb) / 20.0)
+        return dist.coerceIn(3.0, 75.0)
+    }
+
+    // Starts live continuous ultrasonic radar to measure real-time distance and SNR
+    @SuppressLint("MissingPermission")
+    fun startLiveDiagnostic(
+        calibratedRefPowerDb: Double = GoertzelDetector.CALIBRATED_REF_POWER_DB,
+        onMetric: (UltrasonicLiveMetric) -> Unit
+    ) {
+        if (isDiagnosticRunning.get()) return
+
+        val hasPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasPermission) return
+
+        isDiagnosticRunning.set(true)
+        diagnosticThread = Thread {
+            val sampleRate = UltrasonicToneSynthesizer.DEFAULT_SAMPLE_RATE
+            val channelConfig = AudioFormat.CHANNEL_IN_MONO
+            val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+
+            val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+            val bufferSize = minBufferSize.coerceAtLeast(sampleRate / 10)
+
+            var record: AudioRecord? = null
+            try {
+                record = createAudioRecord(sampleRate, bufferSize)
+
+                if (record == null || record.state != AudioRecord.STATE_INITIALIZED) {
+                    isDiagnosticRunning.set(false)
+                    return@Thread
+                }
+
+                record.startRecording()
+                val audioBuffer = ShortArray(1024)
+
+                // Pulse envelope peak-tracking state
+                var burstActive = false
+                var burstPeakPower = 0.0
+                var burstPeakPowerDb = 0.0
+                var burstPeakSnrDb = 0.0
+                var burstQuietChunks = 0
+                var burstStartTime = 0L
+
+                while (isDiagnosticRunning.get()) {
+                    val readSamples = record.read(audioBuffer, 0, audioBuffer.size)
+                    if (readSamples > 0) {
+                        val detection = GoertzelDetector.evaluateChirp(
+                            samples = audioBuffer,
+                            targetFreqHz = UltrasonicToneSynthesizer.DEFAULT_FREQUENCY_HZ,
+                            sampleRate = sampleRate,
+                            snrThresholdDb = 6.0,
+                            refPowerDb = calibratedRefPowerDb
+                        )
+
+                        val now = System.currentTimeMillis()
+
+                        if (detection.isDetected) {
+                            if (!burstActive) {
+                                burstActive = true
+                                burstStartTime = now
+                                burstPeakPower = detection.targetPower
+                                burstPeakPowerDb = detection.powerLevelDb
+                                burstPeakSnrDb = detection.snrDb
+                                burstQuietChunks = 0
+                            } else {
+                                if (detection.targetPower > burstPeakPower) {
+                                    burstPeakPower = detection.targetPower
+                                    burstPeakPowerDb = detection.powerLevelDb
+                                    burstPeakSnrDb = detection.snrDb
+                                }
+                                burstQuietChunks = 0
+                            }
+                        } else if (burstActive) {
+                            burstQuietChunks++
+                        }
+
+                        // Burst finalizes after 2 quiet chunks (~42ms) or max burst duration of 160ms
+                        val burstEnded = burstActive && (burstQuietChunks >= 2 || (now - burstStartTime) > 160L)
+
+                        var finalizedDist = -1.0
+                        var isCoLocated = false
+                        var emitFinalized = false
+
+                        if (burstEnded) {
+                            finalizedDist = GoertzelDetector.calculateDistanceCm(
+                                powerDb = burstPeakPowerDb,
+                                refPowerDb = calibratedRefPowerDb
+                            )
+                            isCoLocated = finalizedDist in 0.1..25.0
+                            emitFinalized = true
+
+                            // Reset burst tracking for next incoming ping
+                            burstActive = false
+                            burstPeakPower = 0.0
+                            burstQuietChunks = 0
+                        }
+
+                        val metric = UltrasonicLiveMetric(
+                            snrDb = detection.snrDb,
+                            targetPower = detection.targetPower,
+                            powerLevelDb = detection.powerLevelDb,
+                            noisePower = detection.targetPower / Math.pow(10.0, detection.snrDb.coerceAtLeast(0.0) / 10.0),
+                            estimatedDistanceCm = if (emitFinalized) finalizedDist else -1.0,
+                            isChirpDetected = detection.isDetected,
+                            isCoLocatedSameDesk = isCoLocated,
+                            isBurstFinalized = emitFinalized,
+                            burstPeakPowerDb = burstPeakPowerDb,
+                            burstPeakSnrDb = burstPeakSnrDb
+                        )
+                        mainHandler.post { onMetric(metric) }
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("UltrasonicDiagnostic", "Diagnostic listening error: ${e.message}", e)
+            } finally {
+                try {
+                    record?.stop()
+                    record?.release()
+                } catch (_: Exception) {}
+                isDiagnosticRunning.set(false)
+            }
+        }.apply {
+            priority = Thread.MAX_PRIORITY
+            start()
+        }
+    }
+
+    // Stops live diagnostic radar
+    fun stopLiveDiagnostic() {
+        isDiagnosticRunning.set(false)
+        diagnosticThread?.interrupt()
+        diagnosticThread = null
+    }
+
+    // Starts emitting continuous 19.2 kHz acoustic pings at regular intervals
+    fun startBeaconEmitter(intervalMs: Long = 700L, onPingSent: () -> Unit = {}) {
+        if (isBeaconEmitting.get()) return
+        isBeaconEmitting.set(true)
+        beaconThread = Thread {
+            while (isBeaconEmitting.get()) {
+                emitChirp()
+                mainHandler.post { onPingSent() }
+                try {
+                    Thread.sleep(intervalMs)
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+        }.apply {
+            priority = Thread.MAX_PRIORITY
+            start()
+        }
+    }
+
+    // Stops emitting acoustic beacon
+    fun stopBeaconEmitter() {
+        isBeaconEmitting.set(false)
+        beaconThread?.interrupt()
+        beaconThread = null
+    }
+
+    // Emits a rapid burst sequence (e.g. 50 or 100 bursts) for statistical ensemble testing
+    fun emitBurstSequence(
+        count: Int = 100,
+        intervalMs: Long = 130L,
+        onProgress: (sent: Int, total: Int) -> Unit = { _, _ -> },
+        onComplete: () -> Unit = {}
+    ) {
+        if (isBeaconEmitting.get()) return
+        isBeaconEmitting.set(true)
+        beaconThread = Thread {
+            for (i in 1..count) {
+                if (!isBeaconEmitting.get()) break
+                emitChirp()
+                mainHandler.post { onProgress(i, count) }
+                try {
+                    Thread.sleep(intervalMs)
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+            isBeaconEmitting.set(false)
+            beaconThread = null
+            mainHandler.post { onComplete() }
+        }.apply {
+            priority = Thread.MAX_PRIORITY
+            start()
+        }
+    }
+
+    // Transmits an inaudible Hann-windowed 19.2 kHz acoustic ping
+    fun emitChirp(onComplete: (() -> Unit)? = null) {
+        UltrasonicToneSynthesizer.playChirp(
+            frequencyHz = UltrasonicToneSynthesizer.DEFAULT_FREQUENCY_HZ,
+            sampleRate = UltrasonicToneSynthesizer.DEFAULT_SAMPLE_RATE,
+            durationMs = UltrasonicToneSynthesizer.DEFAULT_DURATION_MS,
+            onComplete = onComplete
+        )
+    }
+
+    // Listens for incoming ultrasonic chirps within a bounded listening window
+    @SuppressLint("MissingPermission")
+    fun listenForChirp(
+        listenDurationMs: Long = 400L,
+        onResult: (UltrasonicDetectionResult) -> Unit
+    ) {
+        if (isListening.get()) {
+            return
+        }
+
+        val hasPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasPermission) {
+            mainHandler.post {
+                onResult(UltrasonicDetectionResult(isDetected = false, snrDb = 0.0, targetPower = 0.0))
+            }
+            return
+        }
+
+        executor.execute {
+            isListening.set(true)
+            val sampleRate = UltrasonicToneSynthesizer.DEFAULT_SAMPLE_RATE
+            val channelConfig = AudioFormat.CHANNEL_IN_MONO
+            val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+
+            val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+            val bufferSize = minBufferSize.coerceAtLeast(sampleRate / 10)
+
+            var record: AudioRecord? = null
+            var bestDetection = UltrasonicDetectionResult(isDetected = false, snrDb = 0.0, targetPower = 0.0)
+
+            try {
+                record = createAudioRecord(sampleRate, bufferSize)
+
+                if (record == null || record.state != AudioRecord.STATE_INITIALIZED) {
+                    mainHandler.post { onResult(bestDetection) }
+                    return@execute
+                }
+
+                audioRecord = record
+                record.startRecording()
+
+                val audioBuffer = ShortArray(1024)
+                val startTime = System.currentTimeMillis()
+                var burstStarted = false
+                var burstQuietCount = 0
+
+                while (isListening.get() && (System.currentTimeMillis() - startTime) < listenDurationMs) {
+                    val readSamples = record.read(audioBuffer, 0, audioBuffer.size)
+                    if (readSamples > 0) {
+                        val detection = GoertzelDetector.evaluateChirp(
+                            samples = audioBuffer,
+                            targetFreqHz = UltrasonicToneSynthesizer.DEFAULT_FREQUENCY_HZ,
+                            sampleRate = sampleRate
+                        )
+
+                        if (detection.targetPower > bestDetection.targetPower) {
+                            bestDetection = detection
+                        }
+
+                        if (detection.isDetected) {
+                            burstStarted = true
+                            burstQuietCount = 0
+                        } else if (burstStarted) {
+                            burstQuietCount++
+                            // If burst completed, finish early with peak detection
+                            if (burstQuietCount >= 3) {
+                                break
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("UltrasonicManager", "Audio listening error: ${e.message}", e)
+            } finally {
+                try {
+                    record?.stop()
+                    record?.release()
+                } catch (_: Exception) {
+                }
+                audioRecord = null
+                isListening.set(false)
+                mainHandler.post { onResult(bestDetection) }
+            }
+        }
+    }
+
+    // Listens for incoming ultrasonic burst sequence and computes statistical ensemble consensus
+    @SuppressLint("MissingPermission")
+    fun collectBurstEnsemble(
+        listenDurationMs: Long = 1800L,
+        calibratedRefPowerDb: Double = GoertzelDetector.CALIBRATED_REF_POWER_DB,
+        onComplete: (AcousticStatisticalSummary) -> Unit
+    ) {
+        if (isListening.get()) {
+            return
+        }
+
+        val hasPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (!hasPermission) {
+            val emptySummary = GoertzelDetector.computeTrimmedMeanStats(emptyList(), calibratedRefPowerDb)
+            mainHandler.post { onComplete(emptySummary) }
+            return
+        }
+
+        executor.execute {
+            isListening.set(true)
+            val sampleRate = UltrasonicToneSynthesizer.DEFAULT_SAMPLE_RATE
+            val channelConfig = AudioFormat.CHANNEL_IN_MONO
+            val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+
+            val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+            val bufferSize = minBufferSize.coerceAtLeast(sampleRate / 10)
+
+            var record: AudioRecord? = null
+            val burstPowers = mutableListOf<Double>()
+
+            try {
+                record = createAudioRecord(sampleRate, bufferSize)
+
+                if (record == null || record.state != AudioRecord.STATE_INITIALIZED) {
+                    val emptySummary = GoertzelDetector.computeTrimmedMeanStats(emptyList(), calibratedRefPowerDb)
+                    mainHandler.post { onComplete(emptySummary) }
+                    return@execute
+                }
+
+                audioRecord = record
+                record.startRecording()
+
+                val audioBuffer = ShortArray(1024)
+                val startTime = System.currentTimeMillis()
+
+                var burstActive = false
+                var burstPeakPower = 0.0
+                var burstPeakPowerDb = 0.0
+                var burstQuietChunks = 0
+                var burstStartTime = 0L
+
+                while (isListening.get() && (System.currentTimeMillis() - startTime) < listenDurationMs) {
+                    val readSamples = record.read(audioBuffer, 0, audioBuffer.size)
+                    if (readSamples > 0) {
+                        val detection = GoertzelDetector.evaluateChirp(
+                            samples = audioBuffer,
+                            targetFreqHz = UltrasonicToneSynthesizer.DEFAULT_FREQUENCY_HZ,
+                            sampleRate = sampleRate,
+                            snrThresholdDb = 6.0,
+                            refPowerDb = calibratedRefPowerDb
+                        )
+
+                        val now = System.currentTimeMillis()
+
+                        if (detection.isDetected) {
+                            if (!burstActive) {
+                                burstActive = true
+                                burstStartTime = now
+                                burstPeakPower = detection.targetPower
+                                burstPeakPowerDb = detection.powerLevelDb
+                                burstQuietChunks = 0
+                            } else {
+                                if (detection.targetPower > burstPeakPower) {
+                                    burstPeakPower = detection.targetPower
+                                    burstPeakPowerDb = detection.powerLevelDb
+                                }
+                                burstQuietChunks = 0
+                            }
+                        } else if (burstActive) {
+                            burstQuietChunks++
+                        }
+
+                        val burstEnded = burstActive && (burstQuietChunks >= 2 || (now - burstStartTime) > 160L)
+                        if (burstEnded) {
+                            burstPowers.add(burstPeakPowerDb)
+                            burstActive = false
+                            burstPeakPower = 0.0
+                            burstQuietChunks = 0
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("UltrasonicProximity", "Ensemble listening error: ${e.message}", e)
+            } finally {
+                try {
+                    record?.stop()
+                    record?.release()
+                } catch (_: Exception) {}
+                audioRecord = null
+                isListening.set(false)
+
+                val summary = GoertzelDetector.computeTrimmedMeanStats(burstPowers, calibratedRefPowerDb)
+                mainHandler.post { onComplete(summary) }
+            }
+        }
+    }
+
+    // Stops any active listening and releases resources
+    fun release() {
+        stopLiveDiagnostic()
+        stopBeaconEmitter()
+        isListening.set(false)
+        try {
+            audioRecord?.stop()
+            audioRecord?.release()
+        } catch (_: Exception) {
+        }
+        audioRecord = null
+    }
+}
+
+// Live real-time acoustic signal telemetry container
+data class UltrasonicLiveMetric(
+    val snrDb: Double,
+    val targetPower: Double,
+    val powerLevelDb: Double = 0.0,
+    val noisePower: Double,
+    val estimatedDistanceCm: Double,
+    val isChirpDetected: Boolean,
+    val isCoLocatedSameDesk: Boolean,
+    val isBurstFinalized: Boolean = false,
+    val burstPeakPowerDb: Double = 0.0,
+    val burstPeakSnrDb: Double = 0.0
+)

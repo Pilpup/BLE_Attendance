@@ -127,5 +127,31 @@ data class SubmitNeighborsRequest(
     @SerializedName("student_id") val studentId: String? = null,
     val neighbors: List<String>,
     @SerializedName("session_salt") val sessionSalt: String? = null,
-    @SerializedName("relayed_reports") val relayedReports: Map<String, List<String>>? = null
+    @SerializedName("relayed_reports") val relayedReports: Map<String, List<String>>? = null,
+    @SerializedName("face_image_base64") val faceImageBase64: String? = null,
+    @SerializedName("ultrasonic_proximity_detected") val ultrasonicProximityDetected: Boolean? = null,
+    @SerializedName("co_located_peer_id") val coLocatedPeerId: String? = null
+)
+
+// Face Biometric Diagnostic Lab Models
+data class FaceLabCheckRequest(
+    @SerializedName("face_image_base64") val faceImageBase64: String
+)
+
+data class FaceLabCheckResponse(
+    @SerializedName("has_face") val hasFace: Boolean,
+    val remarks: String
+)
+
+data class FaceLabCompareRequest(
+    @SerializedName("image_a_base64") val imageABase64: String,
+    @SerializedName("image_b_base64") val imageBBase64: String
+)
+
+data class FaceLabCompareResponse(
+    @SerializedName("has_face_a") val hasFaceA: Boolean,
+    @SerializedName("has_face_b") val hasFaceB: Boolean,
+    @SerializedName("similarity_score") val similarityScore: Double,
+    @SerializedName("is_duplicate") val isDuplicate: Boolean,
+    val remarks: String
 )

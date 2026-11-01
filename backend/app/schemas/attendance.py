@@ -120,6 +120,18 @@ class SubmitNeighborsRequest(BaseModel):
         default=None,
         description="Salt captured from the teacher's in-room beacon; submissions without the matching salt are rejected"
     )
+    face_image_base64: Optional[str] = Field(
+        default=None,
+        description="Base64-encoded cropped front-camera face image captured during check-in"
+    )
+    ultrasonic_proximity_detected: Optional[bool] = Field(
+        default=None,
+        description="Whether an ultrasonic handshake (<25cm) was detected with a neighbor device"
+    )
+    co_located_peer_id: Optional[str] = Field(
+        default=None,
+        description="The peer student ID detected within ultrasonic range on the same desk"
+    )
 
 
 
@@ -139,3 +151,25 @@ class AttendanceSessionResponse(BaseModel):
     course_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class FaceLabCheckRequest(BaseModel):
+    face_image_base64: str
+
+
+class FaceLabCheckResponse(BaseModel):
+    has_face: bool
+    remarks: str
+
+
+class FaceLabCompareRequest(BaseModel):
+    image_a_base64: str
+    image_b_base64: str
+
+
+class FaceLabCompareResponse(BaseModel):
+    has_face_a: bool
+    has_face_b: bool
+    similarity_score: float
+    is_duplicate: bool
+    remarks: str

@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.FactCheck
+import androidx.compose.material.icons.automirrored.filled.FactCheck
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -26,14 +26,11 @@ import com.college.core.model.Role
 import com.college.core.model.User
 import com.college.core.ui.DashboardCard
 
-/**
- * Attendance feature's contribution to the Home Dashboard.
- * Visible for STUDENT, TEACHER or DEVELOPER — hidden for pure STAFF.
- */
+// Dashboard card entry point for the attendance feature
 object AttendanceDashboardCard : DashboardCard {
 
     override val id: String = "attendance_card"
-    override val priority: Int = 10 // everyday tool → top of the dashboard
+    override val priority: Int = 10
 
     const val NAV_ROUTE: String = "feature_attendance"
 
@@ -66,7 +63,7 @@ object AttendanceDashboardCard : DashboardCard {
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        Icons.Filled.FactCheck,
+                        Icons.AutoMirrored.Filled.FactCheck,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary
                     )
