@@ -37,18 +37,64 @@ object FrameQualityScorer {
 
         buffer.rewind()
 
-        // Sample pixel luminance to determine average scene brightness
+        // Fast early exposure probe (49 points): rejects pitch-black or blinded frames instantly
+        val probeStepX = width / 8
+        val probeStepY = height / 8
+        var probeSum = 0L
+        for (py in 1..7) {
+            val rOffset = (py * probeStepY) * rowStride
+            for (px in 1..7) {
+                probeSum += buffer.get(rOffset + (px * probeStepX * pixelStride)).toInt() and 0xFF
+            }
+        }
+        val earlyMean = probeSum / 49.0
+        if (earlyMean < MIN_BRIGHTNESS / 2.0) {
+            return FrameQuality(
+                isAcceptable = false,
+                sharpnessScore = 0.0,
+                meanBrightness = earlyMean,
+                rejectionReason = "Underexposed: Scene too dark"
+            )
+        }
+        if (earlyMean > (MAX_BRIGHTNESS + 255.0) / 2.0) {
+            return FrameQuality(
+                isAcceptable = false,
+                sharpnessScore = 0.0,
+                meanBrightness = earlyMean,
+                rejectionReason = "Overexposed: Scene washed out"
+            )
+        }
+
+        // Unified single pass: computes luminance brightness and discrete 2D Laplacian simultaneously
         var brightnessSum = 0L
+        var laplacianSum = 0L
+        var laplacianSqSum = 0L
         var sampleCount = 0
 
-        var y = 0
-        while (y < height) {
+        var y = sampleStep
+        val maxY = height - sampleStep
+        val maxX = width - sampleStep
+
+        while (y < maxY) {
             val rowOffset = y * rowStride
-            var x = 0
-            while (x < width) {
-                val pixel = buffer.get(rowOffset + (x * pixelStride)).toInt() and 0xFF
-                brightnessSum += pixel
+            var x = sampleStep
+            while (x < maxX) {
+                val centerIdx = rowOffset + (x * pixelStride)
+                val center = buffer.get(centerIdx).toInt() and 0xFF
+                val up = buffer.get(centerIdx - rowStride).toInt() and 0xFF
+                val down = buffer.get(centerIdx + rowStride).toInt() and 0xFF
+                val left = buffer.get(centerIdx - pixelStride).toInt() and 0xFF
+                val right = buffer.get(centerIdx + pixelStride).toInt() and 0xFF
+
+                // Center pixel IS the sampled luminance
+                brightnessSum += center
+
+                // 2D 5-point discrete Laplacian convolution stencil
+                val laplacian = (up + down + left + right) - (center shl 2)
+                laplacianSum += laplacian
+                laplacianSqSum += laplacian.toLong() * laplacian
                 sampleCount++
+
                 x += sampleStep
             }
             y += sampleStep
@@ -84,48 +130,9 @@ object FrameQualityScorer {
             )
         }
 
-        // Measure edge sharpness using discrete 2D Laplacian operator
-        var laplacianSum = 0.0
-        var laplacianSqSum = 0.0
-        var edgeCount = 0
-
-        y = sampleStep
-        while (y < height - sampleStep) {
-            val rowOffset = y * rowStride
-            val rowAbove = (y - 1) * rowStride
-            val rowBelow = (y + 1) * rowStride
-
-            var x = sampleStep
-            while (x < width - sampleStep) {
-                val center = buffer.get(rowOffset + x * pixelStride).toInt() and 0xFF
-                val up = buffer.get(rowAbove + x * pixelStride).toInt() and 0xFF
-                val down = buffer.get(rowBelow + x * pixelStride).toInt() and 0xFF
-                val left = buffer.get(rowOffset + (x - 1) * pixelStride).toInt() and 0xFF
-                val right = buffer.get(rowOffset + (x + 1) * pixelStride).toInt() and 0xFF
-
-                val laplacian = (up + down + left + right) - (4 * center)
-                val lapDouble = laplacian.toDouble()
-
-                laplacianSum += lapDouble
-                laplacianSqSum += lapDouble * lapDouble
-                edgeCount++
-
-                x += sampleStep
-            }
-            y += sampleStep
-        }
-
-        if (edgeCount == 0) {
-            return FrameQuality(
-                isAcceptable = true,
-                sharpnessScore = 0.0,
-                meanBrightness = meanBrightness
-            )
-        }
-
         // Calculate statistical variance of Laplacian responses
-        val meanLaplacian = laplacianSum / edgeCount
-        val variance = (laplacianSqSum / edgeCount) - (meanLaplacian * meanLaplacian)
+        val meanLap = laplacianSum.toDouble() / sampleCount
+        val variance = (laplacianSqSum.toDouble() / sampleCount) - (meanLap * meanLap)
         val sharpness = if (variance > 0.0) variance else 0.0
 
         return FrameQuality(
