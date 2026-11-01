@@ -6,8 +6,10 @@ import android.content.pm.PackageManager
 import android.util.Log
 import android.util.Size
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -110,7 +112,7 @@ class PassiveFaceCaptureManager(
 
                 provider.unbindAll()
 
-                if (previewSurfaceProvider != null) {
+                val camera = if (previewSurfaceProvider != null) {
                     val preview = Preview.Builder().build().also {
                         it.setSurfaceProvider(previewSurfaceProvider)
                     }
@@ -119,6 +121,17 @@ class PassiveFaceCaptureManager(
                 } else {
                     provider.bindToLifecycle(lifecycleOwner, cameraSelector, imageAnalysis)
                 }
+
+                // Prioritize auto-exposure and auto-focus on the central face region
+                try {
+                    val factory = SurfaceOrientedMeteringPointFactory(1f, 1f)
+                    val centerPoint = factory.createPoint(0.5f, 0.5f)
+                    val action = FocusMeteringAction.Builder(
+                        centerPoint,
+                        FocusMeteringAction.FLAG_AE or FocusMeteringAction.FLAG_AF
+                    ).build()
+                    camera.cameraControl.startFocusAndMetering(action)
+                } catch (_: Exception) {}
             } catch (e: Exception) {
                 Log.e(TAG, "Camera start error: ${e.message}", e)
                 stopCamera()
