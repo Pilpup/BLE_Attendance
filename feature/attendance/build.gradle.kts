@@ -1,4 +1,3 @@
-// BLE classroom attendance feature (attender & reporter flows). Never depends on :feature:library.
 plugins { id("com.android.library"); id("org.jetbrains.kotlin.android") }
 android {
     namespace = "com.college.feature.attendance"

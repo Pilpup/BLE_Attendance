@@ -1,21 +1,28 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Camera permission for passive biometric deduplication during reflex challenge -->
-    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Hardware requirements: BLE is mandatory; camera and mic are optional so app isn't hidden on Play Store -->
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.front" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
-    <!-- Microphone permission for ultrasonic proximity verification -->
+    <!-- Camera for face capture in reflex challenge -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- Microphone for ultrasonic proximity check -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Unified Permissions for both Broadcasting and Scanning.
-         AgP merges this library manifest into :app's final manifest at build time. -->
+    <!-- Bluetooth permissions for Android 12+ (API 31+) -->
+    <!-- neverForLocation allows BLE scanning without prompting for GPS permission -->
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <uses-permission
         android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <!-- Legacy Bluetooth & Location permissions for Android 11 and below (API <= 30) -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
