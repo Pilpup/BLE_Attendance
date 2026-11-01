@@ -8,22 +8,27 @@ import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
-import android.os.ParcelUuid
 import android.os.SystemClock
+import android.util.Log
 
 class BleScanner(
     private val context: Context,
     private val onScanningChanged: (Boolean) -> Unit,
     private val onPacketReceived: (rssi: Int, latencyMs: Double, messageText: String) -> Unit
 ) {
+    companion object {
+        private const val TAG = "BleScanner"
+    }
+
     // Bluetooth system service and scanner handles
     private val bluetoothManager get() = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val bleScanner get() = bluetoothManager.adapter?.bluetoothLeScanner
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     // Starts low-latency BLE scan filtered by classroom service UUID
     fun startScanning() {
         val filter = ScanFilter.Builder()
-            .setServiceData(ParcelUuid(BleConstants.TEST_UUID), null)
+            .setServiceData(BleConstants.PARCEL_UUID, null)
             .build()
 
         val settings = ScanSettings.Builder()
@@ -32,7 +37,7 @@ class BleScanner(
 
         val scanner = bleScanner
         if (scanner == null) {
-            println("BleScanner: Bluetooth adapter or scanner is null (Bluetooth disabled or permissions missing)")
+            Log.w(TAG, "Bluetooth adapter or scanner is null (Bluetooth disabled or permissions missing)")
             onScanningChanged(false)
             return
         }
@@ -41,18 +46,21 @@ class BleScanner(
             scanner.stopScan(scanCallback)
         } catch (_: Exception) {}
 
-        scanner.startScan(listOf(filter), settings, scanCallback)
-        onScanningChanged(true)
+        try {
+            scanner.startScan(listOf(filter), settings, scanCallback)
+            onScanningChanged(true)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting BLE scan: ${e.message}", e)
+            onScanningChanged(false)
+        }
     }
-
-    private val mainHandler = Handler(Looper.getMainLooper())
 
     // Stops active BLE scanning
     fun stopScanning() {
         try {
             bleScanner?.stopScan(scanCallback)
         } catch (e: Exception) {
-            println("Error stopping BLE scan: ${e.message}")
+            Log.e(TAG, "Error stopping BLE scan: ${e.message}")
         }
         onScanningChanged(false)
     }
@@ -67,9 +75,9 @@ class BleScanner(
             val osTime = SystemClock.elapsedRealtimeNanos()
             val latencyMs = (osTime - antennaTime) / 1_000_000.0
 
-            // Extract service data payload for the classroom UUID
+            // Extract service data payload for the classroom UUID using singleton ParcelUuid
             val scanRecord = result.scanRecord ?: return
-            val serviceDataBytes = scanRecord.getServiceData(ParcelUuid(BleConstants.TEST_UUID))
+            val serviceDataBytes = scanRecord.getServiceData(BleConstants.PARCEL_UUID)
                 ?: scanRecord.serviceData?.entries?.firstOrNull {
                     it.key.uuid == BleConstants.TEST_UUID
                 }?.value
@@ -87,7 +95,7 @@ class BleScanner(
         }
 
         override fun onScanFailed(errorCode: Int) {
-            println("Scan failed with error code: $errorCode")
+            Log.e(TAG, "Scan failed with error code: $errorCode")
             mainHandler.post {
                 onScanningChanged(false)
             }
