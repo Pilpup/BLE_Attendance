@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.ui.graphics.graphicsLayer
@@ -267,6 +268,10 @@ fun AttendanceScreen(
                     faceProxyDetected = viewModel.faceProxyDetected,
                     ultrasonicProximityDetected = viewModel.ultrasonicProximityDetected,
                     coLocatedPeerId = viewModel.coLocatedPeerId,
+                    auditedRecord = viewModel.auditedRecord,
+                    ultrasonicWasTriggered = viewModel.ultrasonicWasTriggered,
+                    onRefreshAudit = { viewModel.refreshAuditStatus() },
+                    isRefreshingAudit = viewModel.isRefreshingAudit,
                     onChallengeResult = { hit, total -> viewModel.recordChallengeResult(hit, total) },
                     onBehavioralReport = { report -> viewModel.recordBehavioralReport(report) },
                     onFaceCaptured = { viewModel.capturedFaceBase64 = it },
@@ -307,6 +312,10 @@ private fun StudentSection(
     faceProxyDetected: Boolean = false,
     ultrasonicProximityDetected: Boolean = false,
     coLocatedPeerId: String? = null,
+    auditedRecord: AttendanceRecordItem? = null,
+    ultrasonicWasTriggered: Boolean = false,
+    onRefreshAudit: (() -> Unit)? = null,
+    isRefreshingAudit: Boolean = false,
     onChallengeResult: (hit: Int, total: Int) -> Unit = { _, _ -> },
     onBehavioralReport: (CognitiveFocusReport) -> Unit = {},
     onFaceCaptured: (String) -> Unit = {},
@@ -435,7 +444,9 @@ private fun StudentSection(
                                     when {
                                         isVerified -> neonMint
                                         isDividedAttention -> crimsonRed
+                                        auditedRecord?.status == "ISOLATED_FLAGGED" -> solarAmber
                                         isUnverified -> solarAmber
+                                        studentPhase == StudentPhase.WAITING_FOR_AUDIT -> Color(0xFF00E5FF)
                                         isScanning -> neonMint
                                         else -> textMuted
                                     }
@@ -444,8 +455,10 @@ private fun StudentSection(
                         Text(
                             text = when {
                                 isVerified -> "MARKED PRESENT ✓"
+                                auditedRecord?.status == "ISOLATED_FLAGGED" -> "ISOLATED SEAT"
                                 isDividedAttention -> "DIVIDED ATTENTION PROXY"
                                 isUnverified -> "UNVERIFIED"
+                                studentPhase == StudentPhase.WAITING_FOR_AUDIT -> "AWAITING TEACHER AUDIT..."
                                 studentPhase == StudentPhase.LISTENING_FOR_TEACHER -> "LOCKING BEACON..."
                                 studentPhase == StudentPhase.DISCOVERY_COMPLETE -> "PROBES COMPLETE"
                                 else -> "READY TO SCAN"
@@ -454,8 +467,10 @@ private fun StudentSection(
                             fontWeight = FontWeight.Bold,
                             color = when {
                                 isVerified -> neonMint
+                                auditedRecord?.status == "ISOLATED_FLAGGED" -> solarAmber
                                 isDividedAttention -> crimsonRed
                                 isUnverified -> solarAmber
+                                studentPhase == StudentPhase.WAITING_FOR_AUDIT -> Color(0xFF00E5FF)
                                 isScanning -> neonMint
                                 else -> textMuted
                             }
@@ -675,6 +690,17 @@ private fun StudentSection(
                     }
                 }
 
+                studentPhase == StudentPhase.WAITING_FOR_AUDIT -> {
+                    WaitingForAuditScreen(
+                        detectedSessionId = detectedSessionId,
+                        sessionSalt = sessionSalt,
+                        targetsHit = targetsHit,
+                        deskNeighbours = deskNeighbours,
+                        isRefreshing = isRefreshingAudit,
+                        onRefresh = onRefreshAudit
+                    )
+                }
+
                 studentPhase == StudentPhase.VERIFIED_PRESENT || studentPhase == StudentPhase.UNVERIFIED_FLAGGED -> {
                     AntiProxyDefenseResultsScreen(
                         isVerified = studentPhase == StudentPhase.VERIFIED_PRESENT,
@@ -688,7 +714,11 @@ private fun StudentSection(
                         studentStatusMessage = studentStatusMessage,
                         faceProxyDetected = faceProxyDetected,
                         ultrasonicProximityDetected = ultrasonicProximityDetected,
-                        coLocatedPeerId = coLocatedPeerId
+                        coLocatedPeerId = coLocatedPeerId,
+                        auditedRecord = auditedRecord,
+                        ultrasonicWasTriggered = ultrasonicWasTriggered,
+                        onRefreshAudit = onRefreshAudit,
+                        isRefreshing = isRefreshingAudit
                     )
                 }
 
@@ -763,6 +793,7 @@ private fun StudentSection(
         }
 
         // Student Bottom Action Button
+        val isWaitingForAudit = studentPhase == StudentPhase.WAITING_FOR_AUDIT
         val showNextButton = isGameOver && !hasProceededToNext
 
         Button(
@@ -770,9 +801,13 @@ private fun StudentSection(
                 if (showNextButton) {
                     hasProceededToNext = true
                     onNext()
+                } else if (isWaitingForAudit) {
+                    onRefreshAudit?.invoke()
                 } else if (isScanning) {
                     onStopScanning()
                 } else {
+                    hasProceededToNext = false
+                    isGameOver = false
                     onStartScanning()
                 }
             },
@@ -783,6 +818,7 @@ private fun StudentSection(
             colors = ButtonDefaults.buttonColors(
                 containerColor = when {
                     showNextButton -> Color(0xFF059669)
+                    isWaitingForAudit -> Color(0xFF00E5FF)
                     isScanning -> alertRed
                     isDividedAttention -> crimsonRed
                     isUnverified -> warningOrange
@@ -807,6 +843,19 @@ private fun StudentSection(
                         contentDescription = null,
                         tint = Color.White,
                         modifier = Modifier.size(20.dp)
+                    )
+                } else if (isWaitingForAudit) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        tint = appBg,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = if (isRefreshingAudit) "Checking Status..." else "Refresh Status",
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = appBg
                     )
                 } else {
                     Icon(
@@ -837,6 +886,142 @@ private fun StudentSection(
     }
 }
 
+// Waiting for teacher to finalize attendance session and execute cloud social-mesh graph audit
+@Composable
+private fun WaitingForAuditScreen(
+    detectedSessionId: String,
+    sessionSalt: String,
+    targetsHit: Int,
+    deskNeighbours: List<PeerData>,
+    isRefreshing: Boolean,
+    onRefresh: (() -> Unit)?
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Spacer(modifier = Modifier.height(12.dp))
+
+        Box(
+            modifier = Modifier
+                .size(72.dp)
+                .clip(CircleShape)
+                .background(Color(0xFF00E5FF).copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Sensors,
+                contentDescription = null,
+                tint = Color(0xFF00E5FF),
+                modifier = Modifier.size(36.dp)
+            )
+        }
+
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = "CHECK-IN SUBMITTED",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Black,
+                letterSpacing = 0.5.sp,
+                color = Color(0xFF00E5FF)
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Waiting for instructor to end session and run cloud social-mesh graph audit...",
+                fontSize = 12.sp,
+                color = textMuted,
+                textAlign = TextAlign.Center
+            )
+        }
+
+        Surface(
+            shape = RoundedCornerShape(14.dp),
+            color = cardBg,
+            border = BorderStroke(1.dp, cardBorder),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "STAGE 1 AUDIT (LOCAL DEFENSES)",
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.sp,
+                    color = textMuted
+                )
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = neonMint, modifier = Modifier.size(16.dp))
+                    Text("Beacon Salt Received [ $sessionSalt ]", fontSize = 12.sp, color = textPrimary)
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = neonMint, modifier = Modifier.size(16.dp))
+                    Text("Reflex Challenge ($targetsHit hits, human latency verified)", fontSize = 12.sp, color = textPrimary)
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(Icons.Default.CheckCircle, contentDescription = null, tint = neonMint, modifier = Modifier.size(16.dp))
+                    Text("Passive Biometric Frame Captured", fontSize = 12.sp, color = textPrimary)
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = if (deskNeighbours.isNotEmpty()) Icons.Default.CheckCircle else Icons.Default.Sensors,
+                        contentDescription = null,
+                        tint = if (deskNeighbours.isNotEmpty()) neonMint else solarAmber,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Text(
+                        text = if (deskNeighbours.isNotEmpty()) {
+                            "Desk Topology: ${deskNeighbours.size} nearest peers discovered"
+                        } else {
+                            "Desk Topology: 0 peers (Isolated seat awaiting graph audit)"
+                        },
+                        fontSize = 12.sp,
+                        color = textPrimary
+                    )
+                }
+            }
+        }
+
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(top = 8.dp)
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(28.dp),
+                color = Color(0xFF00E5FF),
+                strokeWidth = 2.5.dp
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = if (isRefreshing) "Syncing session audit..." else "Session #$detectedSessionId • Auto-syncing with server...",
+                fontSize = 11.sp,
+                color = textMuted
+            )
+        }
+    }
+}
+
 // Displays multi-layer anti-proxy verification audit results across radio, reflex, biometric, and acoustic layers
 @Composable
 private fun AntiProxyDefenseResultsScreen(
@@ -851,7 +1036,11 @@ private fun AntiProxyDefenseResultsScreen(
     studentStatusMessage: String?,
     faceProxyDetected: Boolean = false,
     ultrasonicProximityDetected: Boolean = false,
-    coLocatedPeerId: String? = null
+    coLocatedPeerId: String? = null,
+    auditedRecord: AttendanceRecordItem? = null,
+    ultrasonicWasTriggered: Boolean = false,
+    onRefreshAudit: (() -> Unit)? = null,
+    isRefreshing: Boolean = false
 ) {
     val isDividedAttention = activeReport?.classification == FocusClassification.DIVIDED_ATTENTION_PROXY ||
             studentStatusMessage?.contains("Divided attention", ignoreCase = true) == true
@@ -861,6 +1050,9 @@ private fun AntiProxyDefenseResultsScreen(
     val isUltrasonicProxy = ultrasonicProximityDetected ||
             studentStatusMessage?.contains("Ultrasonic", ignoreCase = true) == true ||
             studentStatusMessage?.contains("same desk", ignoreCase = true) == true
+
+    val isIsolated = auditedRecord?.status == "ISOLATED_FLAGGED"
+    val isSpoofer = auditedRecord?.status == "SPOOFER_REJECTED"
 
     // Decode normalized 112x112 captured face for visual verification
     val faceBitmap = remember(capturedFaceBase64) {
@@ -883,10 +1075,26 @@ private fun AntiProxyDefenseResultsScreen(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         // Overall verification status header banner
+        val bannerBg = when {
+            isVerified -> neonMintBg
+            isIsolated -> solarAmberBg
+            else -> crimsonRedBg
+        }
+        val bannerGlow = when {
+            isVerified -> neonMintGlow
+            isIsolated -> solarAmberGlow
+            else -> crimsonRedGlow
+        }
+        val bannerTint = when {
+            isVerified -> neonMint
+            isIsolated -> solarAmber
+            else -> crimsonRed
+        }
+
         Surface(
             shape = RoundedCornerShape(14.dp),
-            color = if (isVerified) neonMintBg else crimsonRedBg,
-            border = BorderStroke(1.dp, if (isVerified) neonMintGlow else crimsonRedGlow),
+            color = bannerBg,
+            border = BorderStroke(1.dp, bannerGlow),
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
@@ -895,31 +1103,38 @@ private fun AntiProxyDefenseResultsScreen(
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Icon(
-                    imageVector = if (isVerified) Icons.Default.CheckCircle else Icons.Default.Warning,
+                    imageVector = when {
+                        isVerified -> Icons.Default.CheckCircle
+                        isIsolated -> Icons.Default.Sensors
+                        else -> Icons.Default.Warning
+                    },
                     contentDescription = null,
-                    tint = if (isVerified) neonMint else crimsonRed,
+                    tint = bannerTint,
                     modifier = Modifier.size(36.dp)
                 )
                 Column {
                     Text(
                         text = when {
+                            isIsolated -> "ISOLATED SEAT — AWAITING TEACHER OVERRIDE"
+                            isSpoofer -> "HALLWAY SPOOFER REJECTED"
                             isVerified -> "ATTENDANCE VERIFIED"
                             isUltrasonicProxy -> "CO-LOCATED SAME-DESK PROXY"
                             isFaceProxy -> "DUPLICATE BIOMETRIC PROXY"
                             isDividedAttention -> "DIVIDED ATTENTION PROXY"
                             else -> "ATTENDANCE UNVERIFIED"
                         },
-                        fontSize = 15.sp,
+                        fontSize = 14.sp,
                         fontWeight = FontWeight.Black,
                         letterSpacing = 0.5.sp,
-                        color = if (isVerified) neonMint else crimsonRed
+                        color = bannerTint
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = if (isVerified) {
-                            "Session #$detectedSessionId • All Defense Layers Passed"
-                        } else {
-                            studentStatusMessage ?: "Multi-layer verification criteria not met"
+                        text = when {
+                            isIsolated -> "Zero mutual desk neighbors found. Teacher must manually confirm attendance."
+                            isSpoofer -> "Unreciprocated neighbor link detected by classroom graph audit."
+                            isVerified -> "Session #$detectedSessionId • All Defense Layers Passed"
+                            else -> studentStatusMessage ?: "Multi-layer verification criteria not met"
                         },
                         fontSize = 11.sp,
                         color = textMuted
@@ -929,16 +1144,40 @@ private fun AntiProxyDefenseResultsScreen(
         }
 
         // Layer 1: BLE Mesh Radio Proximity
+        val layer1Passed: Boolean
+        val layer1StatusBadge: String
+        val layer1Details: List<String>
+
+        if (auditedRecord != null) {
+            layer1Passed = auditedRecord.status == "VERIFIED_PRESENT"
+            layer1StatusBadge = when (auditedRecord.status) {
+                "VERIFIED_PRESENT" -> "VERIFIED (${auditedRecord.verificationMethod})"
+                "ISOLATED_FLAGGED" -> "ISOLATED SEAT (0 NEIGHBORS)"
+                "SPOOFER_REJECTED" -> "SPOOFER REJECTED"
+                else -> auditedRecord.status
+            }
+            layer1Details = listOf(
+                "Beacon Salt: [ ${if (sessionSalt.isNotEmpty() && sessionSalt != "------") sessionSalt else "VERIFIED"} ]",
+                "Desk Topology: ${deskNeighbours.size} nearest peers discovered",
+                "Graph Affinity: ${auditedRecord.affinityScore} • ${auditedRecord.remarks ?: "Classroom graph audit"}"
+            )
+        } else {
+            val hasNeighbors = deskNeighbours.isNotEmpty()
+            layer1Passed = hasNeighbors
+            layer1StatusBadge = if (hasNeighbors) "IN-ROOM (${deskNeighbours.size} PEERS)" else "UNVERIFIED (0 PEERS)"
+            layer1Details = listOf(
+                "Beacon Salt: [ ${if (sessionSalt.isNotEmpty() && sessionSalt != "------") sessionSalt else "VERIFIED"} ]",
+                "Desk Topology: ${deskNeighbours.size} nearest peers confirmed (median RSSI ≥ -90 dBm)"
+            )
+        }
+
         LayerAuditCard(
             layerNumber = 1,
             title = "BLE Mesh Radio Proximity",
             icon = Icons.Default.BluetoothConnected,
-            statusBadge = if (sessionSalt.isNotEmpty() && sessionSalt != "------") "VERIFIED IN-ROOM" else "VERIFIED",
-            isPassed = true,
-            details = listOf(
-                "Beacon Salt: [ ${if (sessionSalt.isNotEmpty() && sessionSalt != "------") sessionSalt else "VERIFIED"} ]",
-                "Desk Topology: ${deskNeighbours.size} nearest peers confirmed (median RSSI ≥ -90 dBm)"
-            )
+            statusBadge = layer1StatusBadge,
+            isPassed = layer1Passed,
+            details = layer1Details
         )
 
         // Layer 2: Cognitive Reflex Engine
@@ -980,22 +1219,69 @@ private fun AntiProxyDefenseResultsScreen(
         )
 
         // Layer 4: Ultrasonic Proximity Handshake
-        val layer4Passed = !isUltrasonicProxy
-        LayerAuditCard(
-            layerNumber = 4,
-            title = "Ultrasonic Proximity Handshake",
-            icon = Icons.Default.GraphicEq,
-            statusBadge = when {
+        val layer4Passed: Boolean?
+        val layer4StatusBadge: String
+        val layer4Details: List<String>
+
+        if (!ultrasonicWasTriggered) {
+            layer4Passed = null
+            layer4StatusBadge = "DORMANT (NO CLOSE PEERS)"
+            layer4Details = listOf(
+                "Acoustic Protocol: 19.2 kHz Pulse Train (Statistical Ensemble)",
+                "Acoustic Audit: Dormant — No neighboring devices with RSSI ≥ -70 dBm detected"
+            )
+        } else {
+            layer4Passed = !isUltrasonicProxy
+            layer4StatusBadge = when {
                 isUltrasonicProxy -> "SAME DESK DETECTED (< 25 cm)"
                 else -> "SEPARATION VERIFIED"
-            },
-            isPassed = layer4Passed,
-            details = listOf(
+            }
+            layer4Details = listOf(
                 "Acoustic Protocol: 19.2 kHz Pulse Train (Statistical Ensemble)",
                 if (isUltrasonicProxy) "Acoustic Audit: Co-located with peer ${coLocatedPeerId ?: "neighbor"} (< 25 cm, >= 65% Green consensus)"
                 else "Acoustic Audit: Separate bench separation confirmed (multipath outliers rejected)"
             )
+        }
+
+        LayerAuditCard(
+            layerNumber = 4,
+            title = "Ultrasonic Proximity Handshake",
+            icon = Icons.Default.GraphicEq,
+            statusBadge = layer4StatusBadge,
+            isPassed = layer4Passed,
+            details = layer4Details
         )
+
+        // Refresh button for teacher override or updated status
+        if (isIsolated || !isVerified) {
+            Button(
+                onClick = { onRefreshAudit?.invoke() },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = cardBg),
+                border = BorderStroke(1.dp, cardBorder)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        tint = textPrimary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = if (isRefreshing) "Refreshing Server Verdict..." else "Refresh Status (Check Teacher Override)",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = textPrimary
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -2792,18 +3078,18 @@ private fun AuthServerDialog(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     OutlinedButton(
-                        onClick = { serverUrlInput = "http://10.115.186.134:53317/" },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        modifier = Modifier.height(28.dp)
-                    ) {
-                        Text("Local LAN (10.115.186.134:53317)", fontSize = 10.sp)
-                    }
-                    OutlinedButton(
                         onClick = { serverUrlInput = "https://ble-attendance-api-dbf1.onrender.com/" },
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                         modifier = Modifier.height(28.dp)
                     ) {
                         Text("Cloud Render", fontSize = 10.sp)
+                    }
+                    OutlinedButton(
+                        onClick = { serverUrlInput = "http://10.115.186.134:53317/" },
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                        modifier = Modifier.height(28.dp)
+                    ) {
+                        Text("Local LAN (10.115.186.134:53317)", fontSize = 10.sp)
                     }
                 }
             }

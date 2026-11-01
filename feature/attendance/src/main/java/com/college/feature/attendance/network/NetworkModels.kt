@@ -87,6 +87,7 @@ data class SessionCreateRequest(
 )
 
 data class AttendanceRecordItem(
+    val id: String? = null,
     @SerializedName("ble_device_id") val bleDeviceId: String,
     val status: String,
     @SerializedName("verification_method") val verificationMethod: String,
@@ -95,6 +96,11 @@ data class AttendanceRecordItem(
     @SerializedName("roll_number") val rollNumber: String? = null,
     @SerializedName("student_name") val studentName: String? = null,
     @SerializedName("student_id") val studentId: String? = null
+)
+
+data class RecordOverrideRequest(
+    val status: String = "VERIFIED_PRESENT",
+    val remarks: String? = "Verified by instructor"
 )
 
 data class AttendanceSessionResponse(

@@ -21,6 +21,7 @@ import com.college.feature.attendance.network.CourseCreateRequest
 import com.college.feature.attendance.network.CourseResponse
 import com.college.feature.attendance.network.LoginRequest
 import com.college.feature.attendance.network.MeshAuditRunRequest
+import com.college.feature.attendance.network.RecordOverrideRequest
 import com.college.feature.attendance.network.RegisterRequest
 import com.college.feature.attendance.network.ResendOtpRequest
 import com.college.feature.attendance.network.SessionCreateRequest
@@ -31,6 +32,9 @@ import com.college.feature.attendance.audio.AcousticStatisticalSummary
 import com.college.feature.attendance.audio.EnsembleVerdict
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
@@ -59,6 +63,7 @@ enum class StudentPhase {
     LISTENING_FOR_TEACHER,
     PROBING_NEIGHBORS,
     DISCOVERY_COMPLETE,
+    WAITING_FOR_AUDIT,
     VERIFIED_PRESENT,
     UNVERIFIED_FLAGGED
 }
@@ -164,6 +169,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         private set
     var ultrasonicSnrDb by mutableStateOf(0.0)
         private set
+    var auditedRecord by mutableStateOf<AttendanceRecordItem?>(null)
+        private set
+    var ultrasonicWasTriggered by mutableStateOf(false)
+        private set
+    var isRefreshingAudit by mutableStateOf(false)
+        private set
+    private var auditPollingJob: Job? = null
 
     val proximityManager by lazy {
         com.college.feature.attendance.audio.UltrasonicProximityManager(application.applicationContext)
@@ -193,9 +205,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             ?: prefs.getString("roll_number", defaultLocalId)
             ?: defaultLocalId
         val savedUrl = prefs.getString("server_url", null)
-        if (!savedUrl.isNullOrBlank() && !savedUrl.contains("10.0.2.2") && !savedUrl.contains("onrender.com") && !savedUrl.contains(":8000")) {
+        if (!savedUrl.isNullOrBlank() && !savedUrl.contains("10.0.2.2") && !savedUrl.contains("10.115.") && !savedUrl.contains(":53317") && !savedUrl.contains(":8000")) {
             AttendanceApiClient.baseUrl = savedUrl
         } else {
+            AttendanceApiClient.baseUrl = "https://ble-attendance-api-dbf1.onrender.com/"
             prefs.edit().putString("server_url", AttendanceApiClient.baseUrl).apply()
         }
         hydrateSessionFromPrefs()
@@ -567,10 +580,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 withContext(Dispatchers.Main) {
                     if (res.isSuccessful) {
                         if (!keepRadioActive && studentDiscoverySecondsRemaining == 0) {
-                            studentPhase = if (isChallengePassed && !faceProxyDetected && !ultrasonicProximityDetected) {
-                                StudentPhase.VERIFIED_PRESENT
+                            if (!isChallengePassed || faceProxyDetected || ultrasonicProximityDetected) {
+                                studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                             } else {
-                                StudentPhase.UNVERIFIED_FLAGGED
+                                studentPhase = StudentPhase.WAITING_FOR_AUDIT
+                                startPollingForAudit(sessId)
                             }
                         }
                         if (!keepRadioActive) {
@@ -743,6 +757,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun markStudentVerified(recordOrDeviceId: String) {
+        val target = finalizedRecords.firstOrNull { it.bleDeviceId == recordOrDeviceId || it.rollNumber == recordOrDeviceId }
         finalizedRecords = finalizedRecords.map { rec ->
             if (rec.bleDeviceId == recordOrDeviceId || rec.rollNumber == recordOrDeviceId) {
                 rec.copy(
@@ -753,6 +768,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 )
             } else {
                 rec
+            }
+        }
+        if (target?.id != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    api.overrideRecord(target.id, RecordOverrideRequest())
+                } catch (_: Exception) { }
             }
         }
     }
@@ -800,6 +822,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         coLocatedPeerId = null
         ultrasonicSnrDb = 0.0
         testedUltrasonicPeers.clear()
+        auditedRecord = null
+        ultrasonicWasTriggered = false
+        isRefreshingAudit = false
+        auditPollingJob?.cancel()
+        auditPollingJob = null
 
         // Real classroom mode: Listen for teacher BLE beacon broadcast
         detectedSessionId = "----"
@@ -813,6 +840,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         studentTimer?.cancel()
         studentTimer = null
         studentDiscoverySecondsRemaining = 0
+        auditPollingJob?.cancel()
+        auditPollingJob = null
         studentPhase = StudentPhase.STANDBY
         onStopScanning?.invoke()
         onStopBroadcasting?.invoke()
@@ -824,9 +853,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         studentTimer = null
         studentDiscoverySecondsRemaining = 0
         val isDividedProxy = lastFocusReport?.classification == com.college.feature.attendance.telemetry.FocusClassification.DIVIDED_ATTENTION_PROXY
-        studentPhase = if (isChallengePassed && !faceProxyDetected && !ultrasonicProximityDetected) {
-            StudentPhase.VERIFIED_PRESENT
-        } else {
+        if (isDividedProxy || !isChallengePassed || faceProxyDetected || ultrasonicProximityDetected) {
             if (studentStatusMessage == null) {
                 studentStatusMessage = when {
                     faceProxyDetected -> "Biometric proxy rejected: Duplicate face detected in session"
@@ -835,9 +862,17 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     else -> "Attendance verification requirements not met"
                 }
             }
-            StudentPhase.UNVERIFIED_FLAGGED
+            studentPhase = StudentPhase.UNVERIFIED_FLAGGED
+            submitMyNeighborsToCloud(keepRadioActive = false)
+        } else {
+            studentPhase = StudentPhase.WAITING_FOR_AUDIT
+            studentStatusMessage = "Check-in submitted! Waiting for teacher to finalize attendance..."
+            submitMyNeighborsToCloud(keepRadioActive = false)
+            val sessId = detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: ""
+            if (sessId.isNotBlank()) {
+                startPollingForAudit(sessId)
+            }
         }
-        submitMyNeighborsToCloud(keepRadioActive = false)
         onStopScanning?.invoke()
         onStopBroadcasting?.invoke()
     }
@@ -891,6 +926,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val isPeerProbe = (cleanMsg.length == 8 || (cleanMsg.length > 8 && cleanMsg.startsWith(detectedSessionId)))
                 && !cleanMsg.startsWith("S:") && !cleanMsg.startsWith("SESSION:")
         val canReceiveProbe = studentPhase == StudentPhase.PROBING_NEIGHBORS ||
+                studentPhase == StudentPhase.WAITING_FOR_AUDIT ||
                 studentPhase == StudentPhase.VERIFIED_PRESENT ||
                 studentPhase == StudentPhase.DISCOVERY_COMPLETE ||
                 studentPhase == StudentPhase.UNVERIFIED_FLAGGED
@@ -905,12 +941,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         discoveredPeers[peerId] = existing.withSample(rssi)
                     } else {
                         discoveredPeers[peerId] = PeerData(peerId).withSample(rssi)
-
-                        // Promote to verified if peer discovered and challenge passed
-                        if (studentPhase == StudentPhase.UNVERIFIED_FLAGGED && isChallengePassed && !ultrasonicProximityDetected && !faceProxyDetected) {
-                            studentPhase = StudentPhase.VERIFIED_PRESENT
-                        }
-
                         // Push updated peer list to server
                         submitMyNeighborsToCloud(keepRadioActive = true)
                     }
@@ -928,6 +958,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Layer 4 ultrasonic proximity handshake using multi-burst statistical consensus
     private fun triggerUltrasonicProximityHandshake(peerId: String) {
+        ultrasonicWasTriggered = true
         viewModelScope.launch(Dispatchers.Default) {
             val isEmitter = studentShortId < peerId
             if (isEmitter) {
@@ -967,12 +998,106 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    fun startPollingForAudit(sessionId: String) {
+        if (sessionId.isBlank() || sessionId == "----") return
+        auditPollingJob?.cancel()
+        auditPollingJob = viewModelScope.launch(Dispatchers.IO) {
+            var attempts = 0
+            while (isActive && attempts < 90) { // Poll for ~3 minutes while teacher session completes
+                attempts++
+                delay(2000L)
+                try {
+                    val res = api.getSessionDetails(sessionId)
+                    if (res.isSuccessful) {
+                        val session = res.body()
+                        if (session != null && session.status == "COMPLETED") {
+                            val currentUserId = SessionManager.default.currentUser?.id
+                            val myRecord = session.records?.firstOrNull { rec ->
+                                rec.bleDeviceId.equals(studentShortId, ignoreCase = true) ||
+                                (rec.rollNumber != null && rec.rollNumber.equals(currentRollNumber, ignoreCase = true)) ||
+                                (currentUserId != null && rec.studentId == currentUserId)
+                            }
+                            withContext(Dispatchers.Main) {
+                                auditedRecord = myRecord
+                                if (myRecord != null) {
+                                    if (myRecord.status == "VERIFIED_PRESENT") {
+                                        studentPhase = StudentPhase.VERIFIED_PRESENT
+                                        studentStatusMessage = myRecord.remarks ?: "Verified by classroom mesh graph"
+                                    } else {
+                                        studentPhase = StudentPhase.UNVERIFIED_FLAGGED
+                                        studentStatusMessage = when (myRecord.status) {
+                                            "ISOLATED_FLAGGED" -> myRecord.remarks ?: "Zero desk neighbors detected (isolated seat)"
+                                            "SPOOFER_REJECTED" -> myRecord.remarks ?: "Hallway spoofer detected (unreciprocated link)"
+                                            else -> myRecord.remarks ?: "Verification criteria not met"
+                                        }
+                                    }
+                                } else {
+                                    studentPhase = StudentPhase.UNVERIFIED_FLAGGED
+                                    studentStatusMessage = "No attendance record finalized for this device"
+                                }
+                            }
+                            break
+                        } else if (session?.status == "CANCELLED") {
+                            withContext(Dispatchers.Main) {
+                                studentPhase = StudentPhase.UNVERIFIED_FLAGGED
+                                studentStatusMessage = "Session was cancelled by the instructor"
+                            }
+                            break
+                        }
+                    }
+                } catch (_: Exception) { }
+            }
+        }
+    }
+
+    fun refreshAuditStatus() {
+        val sessId = detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            withContext(Dispatchers.Main) { isRefreshingAudit = true }
+            try {
+                val res = api.getSessionDetails(sessId)
+                if (res.isSuccessful) {
+                    val session = res.body()
+                    if (session != null && session.status == "COMPLETED") {
+                        val currentUserId = SessionManager.default.currentUser?.id
+                        val myRecord = session.records?.firstOrNull { rec ->
+                            rec.bleDeviceId.equals(studentShortId, ignoreCase = true) ||
+                            (rec.rollNumber != null && rec.rollNumber.equals(currentRollNumber, ignoreCase = true)) ||
+                            (currentUserId != null && rec.studentId == currentUserId)
+                        }
+                        withContext(Dispatchers.Main) {
+                            auditedRecord = myRecord
+                            if (myRecord != null) {
+                                if (myRecord.status == "VERIFIED_PRESENT") {
+                                    studentPhase = StudentPhase.VERIFIED_PRESENT
+                                    studentStatusMessage = myRecord.remarks ?: "Verified by classroom mesh graph"
+                                } else {
+                                    studentPhase = StudentPhase.UNVERIFIED_FLAGGED
+                                    studentStatusMessage = when (myRecord.status) {
+                                        "ISOLATED_FLAGGED" -> myRecord.remarks ?: "Zero desk neighbors detected (isolated seat)"
+                                        "SPOOFER_REJECTED" -> myRecord.remarks ?: "Hallway spoofer detected (unreciprocated link)"
+                                        else -> myRecord.remarks ?: "Verification criteria not met"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                withContext(Dispatchers.Main) { isRefreshingAudit = false }
+            }
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
         teacherTimer?.cancel()
         teacherTimer = null
         studentTimer?.cancel()
         studentTimer = null
+        auditPollingJob?.cancel()
+        auditPollingJob = null
         proximityManager.release()
     }
 }

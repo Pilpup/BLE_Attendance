@@ -3,6 +3,7 @@ package com.college.feature.attendance.network
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
+import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.Path
 
@@ -79,6 +80,12 @@ interface AttendanceApiService {
     suspend fun getSessionDetails(
         @Path("sessionId") sessionId: String
     ): Response<AttendanceSessionResponse>
+
+    @PATCH("api/v1/attendance/records/{recordId}/override")
+    suspend fun overrideRecord(
+        @Path("recordId") recordId: String,
+        @Body body: RecordOverrideRequest
+    ): Response<AttendanceRecordItem>
 
     @POST("api/v1/attendance/lab/face-check")
     suspend fun checkLabFace(

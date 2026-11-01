@@ -44,4 +44,5 @@ val crimsonRedGlow = Color(0x66FF1744)
 // Sensory and camera exposure warning badges
 val solarAmber = Color(0xFFFFA000)
 val solarAmberBg = Color(0x33FFA000)
+val solarAmberGlow = Color(0x66FFA000)
 val amberAccent = Color(0xFFFF9100)
