@@ -107,8 +107,7 @@ data class AttendanceScreenCallbacks(
     val onStartStudentScanning: () -> Unit,
     val onStopStudentScanning: () -> Unit,
     val onUpdateRollNumber: (String) -> Unit,
-    val onRequestPermissions: () -> Unit,
-    val onOpenSecurityLab: (() -> Unit)? = null
+    val onRequestPermissions: () -> Unit
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -209,34 +208,6 @@ fun AttendanceScreen(
                 },
                 actions = {
                     val displayDeviceId = studentId.ifEmpty { user.rollNumber ?: user.id }
-                    if (user.isDeveloper() && callbacks.onOpenSecurityLab != null) {
-                        Surface(
-                            onClick = { callbacks.onOpenSecurityLab.invoke() },
-                            shape = RoundedCornerShape(10.dp),
-                            color = Color(0x2800F5A0),
-                            border = BorderStroke(1.dp, Color(0xFF00F5A0)),
-                            modifier = Modifier.padding(end = 8.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.GraphicEq,
-                                    contentDescription = "Security Lab",
-                                    tint = Color(0xFF00F5A0),
-                                    modifier = Modifier.size(13.dp)
-                                )
-                                Text(
-                                    text = "Lab",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Black,
-                                    color = Color(0xFF00F5A0)
-                                )
-                            }
-                        }
-                    }
                     Surface(
                         onClick = onOpenAuthDialog,
                         shape = RoundedCornerShape(10.dp),

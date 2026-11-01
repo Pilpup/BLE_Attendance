@@ -15,8 +15,10 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -42,6 +44,7 @@ import kotlin.math.absoluteValue
 import kotlin.math.sin
 import kotlin.math.sqrt
 
+@Immutable
 data class ReflexTarget(
     val id: Int,
     val relX: Float,
@@ -71,6 +74,12 @@ private val SolarStops = arrayOf(
     0.62f to Color(0x0AFF9100),
     0.80f to Color.Transparent,
     1.00f to Color.Transparent
+)
+
+private val AmbientGlowColors = listOf(
+    Color(0x1400F5A0),
+    Color(0x0600F5A0),
+    Color.Transparent
 )
 
 // Generates randomized target position ensuring minimum distance from existing orbs
@@ -131,6 +140,41 @@ private fun generateNewTarget(
     )
 }
 
+// Replenishes active targets when count drops below threshold
+private fun replenishTargets(
+    currentActive: List<ReflexTarget>,
+    totalSpawned: Int,
+    targetsGoal: Int,
+    nowTime: Long,
+    rng: Random
+): Pair<List<ReflexTarget>, Int>? {
+    val living = currentActive.filter { target ->
+        !target.isTapped && (nowTime - target.spawnTimeMillis < target.lifetimeMillis)
+    }.toMutableList()
+
+    if (living.size >= 3 || totalSpawned >= targetsGoal) {
+        return null
+    }
+
+    val needed = (6 - living.size).coerceAtMost(targetsGoal - totalSpawned)
+    if (needed <= 0) return null
+
+    val newOrbs = mutableListOf<ReflexTarget>()
+    for (k in 0 until needed) {
+        val newOrb = generateNewTarget(
+            id = totalSpawned + k,
+            existingTargets = living + newOrbs,
+            rng = rng
+        ).copy(
+            spawnTimeMillis = nowTime + (k * 80L),
+            lifetimeMillis = 1200L
+        )
+        newOrbs.add(newOrb)
+    }
+
+    return (currentActive + newOrbs) to (totalSpawned + newOrbs.size)
+}
+
 // Interactive multi-orb reflex challenge with decay timers and continuous replenishment
 @Composable
 fun OrbPoppingGame(
@@ -146,7 +190,7 @@ fun OrbPoppingGame(
         Random(seed)
     }
 
-    val targetsGoal = 18
+    val targetsGoal = GameTelemetryEngine.DEFAULT_TARGETS_GOAL
     var targetsHit by remember { mutableIntStateOf(0) }
     var totalTargetsSpawned by remember { mutableIntStateOf(0) }
     var activeTargets by remember { mutableStateOf<List<ReflexTarget>>(emptyList()) }
@@ -212,28 +256,10 @@ fun OrbPoppingGame(
             }
 
             // Replenish targets when living count drops below threshold
-            if (livingCount < 3 && totalTargetsSpawned < targetsGoal) {
-                val needed = (6 - livingCount).coerceAtMost(targetsGoal - totalTargetsSpawned)
-                if (needed > 0) {
-                    val living = activeTargets.filter { target ->
-                        !target.isTapped && (nowTime - target.spawnTimeMillis < target.lifetimeMillis)
-                    }.toMutableList()
-                    val newOrbs = mutableListOf<ReflexTarget>()
-                    for (k in 0 until needed) {
-                        val newOrb = generateNewTarget(
-                            id = totalTargetsSpawned + k,
-                            existingTargets = living + newOrbs,
-                            rng = rng
-                        ).copy(
-                            spawnTimeMillis = nowTime + (k * 80L),
-                            lifetimeMillis = 1200L
-                        )
-                        newOrbs.add(newOrb)
-                    }
-                    activeTargets = activeTargets + newOrbs
-                    totalTargetsSpawned += newOrbs.size
-                    onProgress(targetsHit, totalTargetsSpawned)
-                }
+            replenishTargets(activeTargets, totalTargetsSpawned, targetsGoal, nowTime, rng)?.let { (newTargets, newSpawned) ->
+                activeTargets = newTargets
+                totalTargetsSpawned = newSpawned
+                onProgress(targetsHit, totalTargetsSpawned)
             }
 
             // Complete the game once all targets have spawned and resolved
@@ -256,17 +282,14 @@ fun OrbPoppingGame(
         // Ambient background glow
         Canvas(modifier = Modifier.fillMaxSize()) {
             val center = Offset(size.width / 2f, size.height / 2f)
+            val glowRadius = size.width * 0.65f
             drawCircle(
                 brush = Brush.radialGradient(
-                    listOf(
-                        Color(0x1400F5A0),
-                        Color(0x0600F5A0),
-                        Color.Transparent
-                    ),
+                    colors = AmbientGlowColors,
                     center = center,
-                    radius = size.width * 0.65f
+                    radius = glowRadius
                 ),
-                radius = size.width * 0.65f,
+                radius = glowRadius,
                 center = center
             )
         }
@@ -278,24 +301,9 @@ fun OrbPoppingGame(
                 .padding(12.dp)
         ) {
             activeTargets.forEach { target ->
-                val targetAge = currentTimeMillis - target.spawnTimeMillis
-                val isExpired = targetAge >= target.lifetimeMillis
-
-                if (!target.isTapped && !isExpired && targetAge >= 0L) {
-                    val fadeDuration = 220f
-                    val spawnProgress = (targetAge.toFloat() / fadeDuration).coerceIn(0f, 1f)
-                    val despawnProgress = ((target.lifetimeMillis - targetAge).toFloat() / fadeDuration).coerceIn(0f, 1f)
-                    val rawFade = spawnProgress * despawnProgress
-                    val envelopeAlpha = rawFade * rawFade * (3f - 2f * rawFade)
-                    val envelopeScale = 0.72f + (0.28f * envelopeAlpha)
-
+                key(target.id) {
                     val xDp = availW * target.relX
                     val yDp = availH * target.relY
-
-                    // Target pulse animation
-                    val pulseNorm = (sin((spiritPhase * 1.5f + target.id * 1.57f).toDouble()).toFloat() + 1f) / 2f
-                    val targetPulseScale = (0.94f + (0.08f * pulseNorm)) * envelopeScale
-                    val targetPulseAlpha = 0.60f + (0.40f * pulseNorm)
 
                     Box(
                         modifier = Modifier
@@ -305,7 +313,8 @@ fun OrbPoppingGame(
                                 detectTapGestures { offset ->
                                     if (target.isTapped) return@detectTapGestures
                                     val nowTapTime = System.currentTimeMillis()
-                                    if (nowTapTime - target.spawnTimeMillis >= target.lifetimeMillis) return@detectTapGestures
+                                    val targetAge = nowTapTime - target.spawnTimeMillis
+                                    if (targetAge < 0L || targetAge >= target.lifetimeMillis) return@detectTapGestures
 
                                     val targetSizePx = size.width.toFloat()
                                     val centerX = targetSizePx / 2f
@@ -317,7 +326,6 @@ fun OrbPoppingGame(
 
                                     if (dist <= radius) {
                                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                        val latency = nowTapTime - target.spawnTimeMillis
                                         val normDist = (dist / radius).coerceIn(0f, 1f)
 
                                         // Record tap telemetry event
@@ -326,7 +334,6 @@ fun OrbPoppingGame(
                                                 targetId = target.id,
                                                 tapTimeMillis = nowTapTime,
                                                 spawnTimeMillis = target.spawnTimeMillis,
-                                                latencyMs = latency,
                                                 targetRelX = target.relX,
                                                 targetRelY = target.relY,
                                                 touchOffsetX = dx,
@@ -335,38 +342,18 @@ fun OrbPoppingGame(
                                             )
                                         )
 
-                                        // Update hit state and trigger replenishment check
-                                        activeTargets = activeTargets.map {
+                                        // Update hit state and trigger wave replenishment
+                                        val updatedTargets = activeTargets.map {
                                             if (it.id == target.id) it.copy(isTapped = true) else it
                                         }
+                                        activeTargets = updatedTargets
                                         targetsHit++
                                         onProgress(targetsHit, totalTargetsSpawned)
 
-                                        val livingNow = activeTargets.count { t ->
-                                            !t.isTapped && (nowTapTime - t.spawnTimeMillis < t.lifetimeMillis)
-                                        }
-                                        if (livingNow < 3 && totalTargetsSpawned < targetsGoal) {
-                                            val needed = (6 - livingNow).coerceAtMost(targetsGoal - totalTargetsSpawned)
-                                            if (needed > 0) {
-                                                val living = activeTargets.filter { t ->
-                                                    !t.isTapped && (nowTapTime - t.spawnTimeMillis < t.lifetimeMillis)
-                                                }.toMutableList()
-                                                val newOrbs = mutableListOf<ReflexTarget>()
-                                                for (k in 0 until needed) {
-                                                    val newOrb = generateNewTarget(
-                                                        id = totalTargetsSpawned + k,
-                                                        existingTargets = living + newOrbs,
-                                                        rng = rng
-                                                    ).copy(
-                                                        spawnTimeMillis = nowTapTime + (k * 80L),
-                                                        lifetimeMillis = 1200L
-                                                    )
-                                                    newOrbs.add(newOrb)
-                                                }
-                                                activeTargets = activeTargets + newOrbs
-                                                totalTargetsSpawned += newOrbs.size
-                                                onProgress(targetsHit, totalTargetsSpawned)
-                                            }
+                                        replenishTargets(updatedTargets, totalTargetsSpawned, targetsGoal, nowTapTime, rng)?.let { (newTargets, newSpawned) ->
+                                            activeTargets = newTargets
+                                            totalTargetsSpawned = newSpawned
+                                            onProgress(targetsHit, totalTargetsSpawned)
                                         }
                                     }
                                 }
@@ -375,11 +362,27 @@ fun OrbPoppingGame(
                     ) {
                         Canvas(
                             modifier = Modifier
-                                .size(targetSize)
+                                .fillMaxSize()
                                 .graphicsLayer {
-                                    scaleX = targetPulseScale
-                                    scaleY = targetPulseScale
-                                    alpha = envelopeAlpha
+                                    val now = currentTimeMillis
+                                    val targetAge = now - target.spawnTimeMillis
+                                    if (target.isTapped || targetAge < 0L || targetAge >= target.lifetimeMillis) {
+                                        alpha = 0f
+                                    } else {
+                                        val fadeDuration = 220f
+                                        val spawnProgress = (targetAge.toFloat() / fadeDuration).coerceIn(0f, 1f)
+                                        val despawnProgress = ((target.lifetimeMillis - targetAge).toFloat() / fadeDuration).coerceIn(0f, 1f)
+                                        val rawFade = spawnProgress * despawnProgress
+                                        val envelopeAlpha = rawFade * rawFade * (3f - 2f * rawFade)
+                                        val envelopeScale = 0.72f + (0.28f * envelopeAlpha)
+
+                                        val pulseNorm = (sin((spiritPhase * 1.5f + target.id * 1.57f).toDouble()).toFloat() + 1f) / 2f
+                                        val targetPulseScale = (0.94f + (0.08f * pulseNorm)) * envelopeScale
+
+                                        scaleX = targetPulseScale
+                                        scaleY = targetPulseScale
+                                        alpha = envelopeAlpha * (0.60f + (0.40f * pulseNorm))
+                                    }
                                 }
                         ) {
                             val center = Offset(size.width / 2f, size.height / 2f)
@@ -393,8 +396,7 @@ fun OrbPoppingGame(
                                     radius = maxRadius
                                 ),
                                 radius = maxRadius,
-                                center = center,
-                                alpha = targetPulseAlpha
+                                center = center
                             )
                         }
                     }

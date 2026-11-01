@@ -4,11 +4,27 @@ import com.college.feature.attendance.telemetry.CognitiveFocusReport
 import com.college.feature.attendance.telemetry.ExpiredTargetEvent
 import com.college.feature.attendance.telemetry.FocusClassification
 import com.college.feature.attendance.telemetry.TapEvent
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.sqrt
 
 // Analyzes tap timing and spatial accuracy to verify single-device human operation
 object GameTelemetryEngine {
+
+    const val DEFAULT_TARGETS_GOAL = 18
+    const val MIN_PASSING_ACCURACY = 55
+    const val MIN_PASSING_CREDIBILITY = 50
+
+    // Automated script detection thresholds
+    private const val SUPERHUMAN_LATENCY_MS = 130f
+    private const val SUPERHUMAN_TAP_RATIO_THRESHOLD = 0.25f
+    private const val BOT_MIN_TAPS = 6
+    private const val BOT_MAX_LATENCY_STD_DEV_MS = 15f
+    private const val BOT_MAX_SPATIAL_DISPERSION_STD_DEV = 0.02f
+
+    // Multi-device divided attention thresholds
+    private const val DIVIDED_ATTENTION_OSCILLATION_THRESHOLD = 0.75f
+    private const val DIVIDED_ATTENTION_GAP_MS = 3800L
 
     data class TelemetryMetrics(
         val totalTaps: Int,
@@ -30,14 +46,14 @@ object GameTelemetryEngine {
     fun extractMetrics(
         taps: List<TapEvent>,
         expired: List<ExpiredTargetEvent>,
-        totalTargetsGoal: Int = 18
+        totalTargetsGoal: Int = DEFAULT_TARGETS_GOAL
     ): TelemetryMetrics {
         val totalTaps = taps.size
         val totalExpired = expired.size
         val totalSpawned = (totalTaps + totalExpired).coerceAtLeast(totalTargetsGoal)
         val accuracy = if (totalSpawned > 0) ((totalTaps * 100) / totalSpawned) else 0
 
-        if (taps.isEmpty()) {
+        if (totalTaps == 0) {
             return TelemetryMetrics(
                 totalTaps = 0,
                 totalExpired = totalExpired,
@@ -56,29 +72,53 @@ object GameTelemetryEngine {
             )
         }
 
-        // Calculate reaction latencies and identify superhuman tap speeds
-        val latencies = ArrayList<Float>(taps.size)
+        // Single-pass accumulation: latencies, superhuman tap detection, and radial dispersion
+        val latencies = FloatArray(totalTaps)
         var sumLat = 0f
         var superhumanTaps = 0
-        for (i in taps.indices) {
-            val lat = taps[i].latencyMs.toFloat()
-            latencies.add(lat)
+        var sumRadial = 0f
+        var maxInterTapGap = 0L
+
+        for (i in 0 until totalTaps) {
+            val tap = taps[i]
+            val lat = tap.latencyMs.toFloat()
+            latencies[i] = lat
             sumLat += lat
-            if (lat < 130f) superhumanTaps++
+            if (lat < SUPERHUMAN_LATENCY_MS) {
+                superhumanTaps++
+            }
+            sumRadial += tap.normalizedRadialOffset
+
+            // Measure pause between consecutive taps
+            if (i > 0) {
+                val gap = (tap.tapTimeMillis - taps[i - 1].tapTimeMillis).coerceAtLeast(0L)
+                if (gap > maxInterTapGap) {
+                    maxInterTapGap = gap
+                }
+            }
         }
-        val count = latencies.size
+
+        val count = totalTaps
         val meanLatency = sumLat / count
         val superhumanTapRatio = superhumanTaps.toFloat() / count.toFloat()
+        val meanRadialOffset = sumRadial / count
 
-        // Calculate variance and standard deviation of reaction times
+        // Calculate variance of reaction times and spatial touch dispersion
         var varianceSum = 0f
+        var radialVarSum = 0f
         for (i in 0 until count) {
-            val diff = latencies[i] - meanLatency
-            varianceSum += diff * diff
+            val diffLat = latencies[i] - meanLatency
+            varianceSum += diffLat * diffLat
+
+            val diffRadial = taps[i].normalizedRadialOffset - meanRadialOffset
+            radialVarSum += diffRadial * diffRadial
         }
         val variance = if (count > 1) varianceSum / (count - 1) else 0f
         val stdDev = sqrt(variance)
         val cv = if (meanLatency > 0f) stdDev / meanLatency else 0f
+
+        val radialVariance = if (count > 1) radialVarSum / (count - 1) else 0f
+        val spatialDispersionStdDev = sqrt(radialVariance)
 
         // Calculate Mean Absolute Consecutive Difference (MCD) to detect sawtooth oscillations
         var mcd = 0f
@@ -91,38 +131,12 @@ object GameTelemetryEngine {
         }
         val oscillationIndex = if (meanLatency > 0f) mcd / meanLatency else 0f
 
-        // Compute median reaction latency
+        // Compute median reaction latency (sorts primitive array in place)
         latencies.sort()
         val medianLatency = when {
             count % 2 == 1 -> latencies[count / 2]
             else -> (latencies[count / 2 - 1] + latencies[count / 2]) / 2f
         }
-
-        // Measure maximum pause between consecutive taps
-        val tapTimes = ArrayList<Long>(count)
-        for (i in taps.indices) {
-            tapTimes.add(taps[i].tapTimeMillis)
-        }
-        tapTimes.sort()
-        var maxInterTapGap = 0L
-        for (i in 0 until tapTimes.size - 1) {
-            val gap = tapTimes[i + 1] - tapTimes[i]
-            if (gap > maxInterTapGap) maxInterTapGap = gap
-        }
-
-        // Calculate spatial touch dispersion relative to orb centers
-        var sumRadial = 0f
-        for (i in taps.indices) {
-            sumRadial += taps[i].normalizedRadialOffset
-        }
-        val meanRadialOffset = sumRadial / count
-        var radialVarSum = 0f
-        for (i in taps.indices) {
-            val diff = taps[i].normalizedRadialOffset - meanRadialOffset
-            radialVarSum += diff * diff
-        }
-        val radialVariance = if (count > 1) radialVarSum / (count - 1) else 0f
-        val spatialDispersionStdDev = sqrt(radialVariance)
 
         return TelemetryMetrics(
             totalTaps = totalTaps,
@@ -194,7 +208,7 @@ object GameTelemetryEngine {
     fun analyze(
         taps: List<TapEvent>,
         expired: List<ExpiredTargetEvent>,
-        totalTargetsGoal: Int = 18
+        totalTargetsGoal: Int = DEFAULT_TARGETS_GOAL
     ): CognitiveFocusReport {
         val totalSpawned = (taps.size + expired.size).coerceAtLeast(totalTargetsGoal)
         if (taps.isEmpty()) {
@@ -224,24 +238,36 @@ object GameTelemetryEngine {
         val focusIndex = (credibilityScore / 100f).coerceIn(0f, 1f)
 
         // Detect automated scripts with near-zero latency variance or superhuman tap speed
-        val isZeroVarianceBot = (metrics.totalTaps >= 6 && metrics.stdDev < 15f && metrics.spatialDispersionStdDev < 0.02f)
-        val isSuperhumanBot = metrics.superhumanTapRatio > 0.25f
+        val isZeroVarianceBot = (metrics.totalTaps >= BOT_MIN_TAPS && metrics.stdDev < BOT_MAX_LATENCY_STD_DEV_MS && metrics.spatialDispersionStdDev < BOT_MAX_SPATIAL_DISPERSION_STD_DEV)
+        val isSuperhumanBot = metrics.superhumanTapRatio > SUPERHUMAN_TAP_RATIO_THRESHOLD
 
-        // Classify behavioral patterns as human single-device or divided-attention proxy
+        // Detect multi-device divided attention proxy (alternating taps between phones)
+        val isDividedAttention = metrics.totalTaps >= 4 && (
+            (metrics.oscillationIndex >= DIVIDED_ATTENTION_OSCILLATION_THRESHOLD && metrics.maxInterTapGap >= DIVIDED_ATTENTION_GAP_MS) ||
+            (credibilityScore < MIN_PASSING_CREDIBILITY && metrics.oscillationIndex >= DIVIDED_ATTENTION_OSCILLATION_THRESHOLD)
+        )
+
+        // Classify behavioral patterns based on telemetry metrics and credibility
         val (classification, diagnosticReason) = when {
             isZeroVarianceBot || isSuperhumanBot -> {
                 FocusClassification.AUTOMATED_SCRIPT to
                         "Robotic timing or superhuman tap speed detected. Automated script flagged."
             }
 
-            metrics.accuracy >= 55 -> {
+            isDividedAttention -> {
+                val formattedOscillation = String.format(Locale.US, "%.2f", metrics.oscillationIndex)
+                FocusClassification.DIVIDED_ATTENTION_PROXY to
+                        "Divided attention proxy: Erratic alternating latency detected (oscillation: $formattedOscillation, gap: ${metrics.maxInterTapGap}ms). Multi-device attention split."
+            }
+
+            metrics.accuracy >= MIN_PASSING_ACCURACY && credibilityScore >= MIN_PASSING_CREDIBILITY -> {
                 FocusClassification.FOCUSED_SINGLE_DEVICE to
-                        "Single-device human verified (${metrics.totalTaps}/${metrics.totalSpawned} hits, ${metrics.accuracy}% accuracy)."
+                        "Single-device human verified (${metrics.totalTaps}/${metrics.totalSpawned} hits, ${metrics.accuracy}% accuracy, focus: $credibilityScore/100)."
             }
 
             else -> {
-                FocusClassification.DIVIDED_ATTENTION_PROXY to
-                        "Divided attention proxy: Only ${metrics.totalTaps}/${metrics.totalSpawned} targets hit (${metrics.accuracy}% accuracy). Multi-device attention split."
+                FocusClassification.INATTENTIVE to
+                        "Inattentive: Only ${metrics.totalTaps}/${metrics.totalSpawned} targets hit (${metrics.accuracy}% accuracy, focus: $credibilityScore/100)."
             }
         }
 
