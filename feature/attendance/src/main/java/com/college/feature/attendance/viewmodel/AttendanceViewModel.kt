@@ -37,14 +37,21 @@ import java.util.UUID
 
 data class PeerData(
     val peerId: String,
-    val rssiSamples: MutableList<Int> = mutableListOf()
+    val rssiSamples: List<Int> = emptyList(),
+    val medianRssi: Int = -99
 ) {
-    val medianRssi: Int
-        get() = if (rssiSamples.isEmpty()) -99 else {
-            val sorted = rssiSamples.sorted()
-            sorted[sorted.size / 2]
-        }
     val count: Int get() = rssiSamples.size
+
+    fun withSample(rssi: Int, maxSamples: Int = 10): PeerData {
+        val updated = (rssiSamples + rssi).takeLast(maxSamples)
+        val sorted = updated.sorted()
+        val median = sorted[sorted.size / 2]
+        return PeerData(
+            peerId = peerId,
+            rssiSamples = updated,
+            medianRssi = median
+        )
+    }
 }
 
 enum class StudentPhase {
@@ -135,11 +142,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         get() = if (challengeTotalTargets > 0) (challengeScore * 100) / challengeTotalTargets else 0
     val isChallengePassed: Boolean
         get() = (challengeTotalTargets == 0 || challengeScorePercentage >= 55) &&
-                (lastFocusReport == null || (
-                    lastFocusReport?.classification != com.college.feature.attendance.telemetry.FocusClassification.DIVIDED_ATTENTION_PROXY &&
-                    lastFocusReport?.classification != com.college.feature.attendance.telemetry.FocusClassification.AUTOMATED_SCRIPT &&
-                    lastFocusReport?.classification != com.college.feature.attendance.telemetry.FocusClassification.INATTENTIVE
-                ))
+                (lastFocusReport == null || lastFocusReport?.isPassing == true)
 
     fun recordChallengeResult(hit: Int, total: Int) {
         challengeScore = hit
@@ -167,21 +170,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
     private val testedUltrasonicPeers = mutableSetOf<String>()
 
-    // Standalone developer debug mode flag (disabled by default in production)
-    var isDebugMode by mutableStateOf(false)
-
-    // Resets session anti-proxy state
-    fun resetSessionSecurityState() {
-        capturedFaceBase64 = null
-        studentStatusMessage = null
-        faceProxyDetected = false
-        ultrasonicProximityDetected = false
-        coLocatedPeerId = null
-        ultrasonicSnrDb = 0.0
-        testedUltrasonicPeers.clear()
-        studentPhase = StudentPhase.STANDBY
-    }
-
     // Top 3 nearest desk neighbors with signal strength above threshold
     val topDeskNeighbours: List<PeerData>
         get() = discoveredPeers.values
@@ -208,7 +196,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         if (!savedUrl.isNullOrBlank() && !savedUrl.contains("10.0.2.2") && !savedUrl.contains("onrender.com") && !savedUrl.contains(":8000")) {
             AttendanceApiClient.baseUrl = savedUrl
         } else {
-            AttendanceApiClient.baseUrl = "http://10.115.186.134:53317/"
             prefs.edit().putString("server_url", AttendanceApiClient.baseUrl).apply()
         }
         hydrateSessionFromPrefs()
@@ -814,23 +801,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         ultrasonicSnrDb = 0.0
         testedUltrasonicPeers.clear()
 
-        if (isDebugMode) {
-            // Debug mode: Auto-initialize session so student can test reflex game and face capture immediately
-            detectedSessionId = "AUTO-101"
-            detectedSessionSalt = "DEMO1"
-            discoveredPeers["PEER-A1"] = PeerData("PEER-A1").apply { rssiSamples.add(-65) }
-            discoveredPeers["PEER-B2"] = PeerData("PEER-B2").apply { rssiSamples.add(-72) }
-
-            studentPhase = StudentPhase.PROBING_NEIGHBORS
-            startStudentDiscoveryWindow()
-            onStartScanning?.invoke()
-        } else {
-            // Real classroom mode: Listen for teacher BLE beacon broadcast
-            detectedSessionId = "----"
-            detectedSessionSalt = "------"
-            studentPhase = StudentPhase.LISTENING_FOR_TEACHER
-            onStartScanning?.invoke()
-        }
+        // Real classroom mode: Listen for teacher BLE beacon broadcast
+        detectedSessionId = "----"
+        detectedSessionSalt = "------"
+        studentPhase = StudentPhase.LISTENING_FOR_TEACHER
+        onStartScanning?.invoke()
     }
 
     // Student scanning stop
@@ -927,12 +902,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 if (peerId.isNotEmpty() && peerId != studentShortId) {
                     val existing = discoveredPeers[peerId]
                     if (existing != null) {
-                        val updatedSamples = existing.rssiSamples.toMutableList().apply { add(rssi) }
-                        discoveredPeers[peerId] = existing.copy(rssiSamples = updatedSamples)
+                        discoveredPeers[peerId] = existing.withSample(rssi)
                     } else {
-                        val newPeer = PeerData(peerId)
-                        newPeer.rssiSamples.add(rssi)
-                        discoveredPeers[peerId] = newPeer
+                        discoveredPeers[peerId] = PeerData(peerId).withSample(rssi)
 
                         // Promote to verified if peer discovered and challenge passed
                         if (studentPhase == StudentPhase.UNVERIFIED_FLAGGED && isChallengePassed && !ultrasonicProximityDetected && !faceProxyDetected) {
@@ -993,5 +965,14 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 android.util.Log.i("AttendanceViewModel", "Ultrasonic separation verified for $peerId: ${summary.estimatedDistanceCm.roundToInt()} cm (${summary.bluePercentage}% Blue)")
             }
         }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        teacherTimer?.cancel()
+        teacherTimer = null
+        studentTimer?.cancel()
+        studentTimer = null
+        proximityManager.release()
     }
 }
