@@ -8,6 +8,17 @@ import kotlin.math.max
 // Detects isolated ultrasonic spectral energy and evaluates Signal-to-Noise Ratio
 object GoertzelDetector {
 
+    // Precomputed filter coefficients at 48 kHz (2 * cos(2 * PI * f / 48000))
+    // 19.2 kHz evaluates exactly to -golden_ratio (-1.618033988749895)
+    private const val COEFF_18400_HZ_AT_48K = -1.4862896506307135
+    private const val COEFF_18800_HZ_AT_48K = -1.5540307997920397
+    private const val COEFF_19200_HZ_AT_48K = -1.6180339887498950
+    private const val COEFF_19600_HZ_AT_48K = -1.6781745265551944
+    private const val COEFF_20000_HZ_AT_48K = -1.7320508075688772
+
+    // Power attenuation offset for 25.0 cm boundary relative to 20 cm reference: 20 * log10(25/20)
+    private const val SAME_DESK_POWER_OFFSET_DB = 1.938200260161128
+
     @Volatile
     private var cachedHannWindow: DoubleArray? = null
 
@@ -30,8 +41,13 @@ object GoertzelDetector {
         sampleRate: Int,
         applyWindow: Boolean = false
     ): Double {
-        val normalizedFreq = 2.0 * PI * targetFreqHz / sampleRate
-        val coeff = 2.0 * cos(normalizedFreq)
+        val coeff = if (sampleRate == UltrasonicToneSynthesizer.DEFAULT_SAMPLE_RATE &&
+            targetFreqHz == UltrasonicToneSynthesizer.DEFAULT_FREQUENCY_HZ
+        ) {
+            COEFF_19200_HZ_AT_48K
+        } else {
+            2.0 * cos(2.0 * PI * targetFreqHz / sampleRate)
+        }
         val window = if (applyWindow && samples.isNotEmpty()) getOrCreateHannWindow(samples.size) else null
 
         var sPrev = 0.0
@@ -86,12 +102,15 @@ object GoertzelDetector {
         // Hann window suppresses sidelobe leakage into adjacent guard bands
         val window = getOrCreateHannWindow(samples.size)
 
-        // Precompute filter coefficients for target and 4 guard bands (18.4 - 20.0 kHz)
-        val f0Coeff = 2.0 * cos(2.0 * PI * targetFreqHz / sampleRate)
-        val g1Coeff = 2.0 * cos(2.0 * PI * 18400.0 / sampleRate)
-        val g2Coeff = 2.0 * cos(2.0 * PI * 18800.0 / sampleRate)
-        val g3Coeff = 2.0 * cos(2.0 * PI * 19600.0 / sampleRate)
-        val g4Coeff = 2.0 * cos(2.0 * PI * 20000.0 / sampleRate)
+        // Use precomputed constants at default 48 kHz to eliminate per-frame trigonometry
+        val isDefault48k = sampleRate == UltrasonicToneSynthesizer.DEFAULT_SAMPLE_RATE &&
+            targetFreqHz == UltrasonicToneSynthesizer.DEFAULT_FREQUENCY_HZ
+
+        val f0Coeff = if (isDefault48k) COEFF_19200_HZ_AT_48K else 2.0 * cos(2.0 * PI * targetFreqHz / sampleRate)
+        val g1Coeff = if (sampleRate == UltrasonicToneSynthesizer.DEFAULT_SAMPLE_RATE) COEFF_18400_HZ_AT_48K else 2.0 * cos(2.0 * PI * 18400.0 / sampleRate)
+        val g2Coeff = if (sampleRate == UltrasonicToneSynthesizer.DEFAULT_SAMPLE_RATE) COEFF_18800_HZ_AT_48K else 2.0 * cos(2.0 * PI * 18800.0 / sampleRate)
+        val g3Coeff = if (sampleRate == UltrasonicToneSynthesizer.DEFAULT_SAMPLE_RATE) COEFF_19600_HZ_AT_48K else 2.0 * cos(2.0 * PI * 19600.0 / sampleRate)
+        val g4Coeff = if (sampleRate == UltrasonicToneSynthesizer.DEFAULT_SAMPLE_RATE) COEFF_20000_HZ_AT_48K else 2.0 * cos(2.0 * PI * 20000.0 / sampleRate)
 
         var s0Prev = 0.0; var s0Prev2 = 0.0
         var g1Prev = 0.0; var g1Prev2 = 0.0
@@ -190,12 +209,13 @@ object GoertzelDetector {
         val medianPowerDb = sorted[total / 2]
         val estimatedDist = calculateDistanceCm(trimmedMeanPowerDb, refPowerDb)
 
+        // 25.0 cm boundary maps to a single constant power threshold, avoiding repeated Math.pow in loop
+        val sameDeskThresholdPowerDb = refPowerDb - SAME_DESK_POWER_OFFSET_DB
         var greenCount = 0
-        var blueCount = 0
         for (powerDb in sorted) {
-            val dist = calculateDistanceCm(powerDb, refPowerDb)
-            if (dist <= 25.0) greenCount++ else blueCount++
+            if (powerDb >= sameDeskThresholdPowerDb) greenCount++
         }
+        val blueCount = total - greenCount
 
         val greenPct = (greenCount * 100) / total
         val bluePct = (blueCount * 100) / total
