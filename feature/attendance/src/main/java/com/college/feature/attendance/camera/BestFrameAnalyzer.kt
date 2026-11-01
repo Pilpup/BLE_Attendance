@@ -19,6 +19,14 @@ class BestFrameAnalyzer(
     private val onBestScoreUpdated: ((Double) -> Unit)? = null
 ) : ImageAnalysis.Analyzer {
 
+    companion object {
+        // Minimum sharpness variance to qualify as a valid face candidate
+        const val MIN_ACCEPTABLE_SHARPNESS = 30.0
+
+        // Required relative improvement (10%) to justify allocating a new high-res Bitmap
+        private const val SHARPNESS_IMPROVEMENT_RATIO = 1.10
+    }
+
     private val isPaused = AtomicBoolean(false)
     private var lastSampleTimestamp = 0L
 
@@ -51,12 +59,22 @@ class BestFrameAnalyzer(
                 pixelStride = yPlane.pixelStride
             )
 
+            // Ignore frames that are unacceptable or too blurry to qualify as face candidates
+            if (!quality.isAcceptable || quality.sharpnessScore < MIN_ACCEPTABLE_SHARPNESS) {
+                return
+            }
+
+            var updatedScore: Double? = null
+            var oldBitmapToRecycle: Bitmap? = null
+
             synchronized(lock) {
                 val currentBest = bestCandidate
-                val shouldUpdate = currentBest == null || (quality.isAcceptable && quality.sharpnessScore > currentBest.sharpnessScore)
+                val shouldUpdate = currentBest == null ||
+                    (quality.sharpnessScore >= currentBest.sharpnessScore * SHARPNESS_IMPROVEMENT_RATIO)
+
                 if (shouldUpdate) {
                     val rawBitmap = imageProxy.toBitmap()
-                    val oldBitmap = currentBest?.bitmap
+                    oldBitmapToRecycle = currentBest?.bitmap
 
                     bestCandidate = BestFrameCandidate(
                         bitmap = rawBitmap,
@@ -64,10 +82,16 @@ class BestFrameAnalyzer(
                         rotationDegrees = imageProxy.imageInfo.rotationDegrees,
                         timestamp = now
                     )
-
-                    oldBitmap?.recycle()
-                    onBestScoreUpdated?.invoke(quality.sharpnessScore)
+                    updatedScore = quality.sharpnessScore
                 }
+            }
+
+            // Recycle previous bitmap outside the synchronized block to prevent lock contention
+            oldBitmapToRecycle?.recycle()
+
+            // Dispatch listener outside the lock to avoid lock inversion with Compose UI thread
+            updatedScore?.let { score ->
+                onBestScoreUpdated?.invoke(score)
             }
         } catch (_: Exception) {
             // Fail gracefully without crashing camera stream
