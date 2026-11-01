@@ -168,7 +168,8 @@ object GoertzelDetector {
             snrDb = if (isChirp) snrDb else 0.0,
             targetPower = targetPower,
             powerLevelDb = powerLevelDb,
-            estimatedDistanceCm = distanceCm
+            estimatedDistanceCm = distanceCm,
+            noisePower = noiseBaseline
         )
     }
 
@@ -274,5 +275,6 @@ data class UltrasonicDetectionResult(
     val snrDb: Double,
     val targetPower: Double,
     val powerLevelDb: Double = 0.0,
-    val estimatedDistanceCm: Double = -1.0
+    val estimatedDistanceCm: Double = -1.0,
+    val noisePower: Double = 0.0
 )
