@@ -602,7 +602,7 @@ private fun StudentSection(
                                 modifier = Modifier.size(14.dp)
                             )
                             Text(
-                                text = if (liveFaceSharpness > 40.0) "Face Locked (${liveFaceSharpness.toInt()})" else "Scanning Face...",
+                                text = if (liveFaceSharpness > 40.0) "Ready" else "Position Face",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = if (liveFaceSharpness > 40.0) neonMint else solarAmber
@@ -612,17 +612,13 @@ private fun StudentSection(
                 }
 
                 isGameOver && !hasProceededToNext -> {
-                    // Performance score screen with cheat detection status
+                    // Performance score screen
                     val isCheaterCaught = activeReport?.classification == FocusClassification.DIVIDED_ATTENTION_PROXY ||
                             activeReport?.classification == FocusClassification.AUTOMATED_SCRIPT
 
-                    val total = totalTargetsSpawned.coerceAtLeast(1)
-                    val ratio = targetsHit.toFloat() / total
                     val (ratingText, ratingColor) = when {
-                        isCheaterCaught -> "nice try lil bro" to crimsonRed
-                        ratio >= 0.80f -> "Excellent" to neonMint
-                        ratio >= 0.55f -> "Good" to warningOrange
-                        else -> "Git Gud" to crimsonRed
+                        isCheaterCaught -> "Needs Review" to warningOrange
+                        else -> "Completed" to neonMint
                     }
 
                     Column(
@@ -645,19 +641,15 @@ private fun StudentSection(
                             Spacer(modifier = Modifier.height(8.dp))
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
-                                color = crimsonRedBg,
-                                border = BorderStroke(1.dp, crimsonRed)
+                                color = warningOrangeBg,
+                                border = BorderStroke(1.dp, warningOrange)
                             ) {
                                 Text(
-                                    text = if (activeReport?.classification == FocusClassification.DIVIDED_ATTENTION_PROXY) {
-                                        "DIVIDED ATTENTION PROXY"
-                                    } else {
-                                        "AUTOMATED SCRIPT FLAGGED"
-                                    },
+                                    text = "CHECK-IN PENDING REVIEW",
                                     fontSize = 12.sp,
-                                    fontWeight = FontWeight.Black,
+                                    fontWeight = FontWeight.Bold,
                                     letterSpacing = 1.sp,
-                                    color = crimsonRed,
+                                    color = warningOrange,
                                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
                                 )
                             }
@@ -846,7 +838,7 @@ private fun StudentSection(
                         Text(
                             text = when {
                                 isScanning -> "Cancel Scan"
-                                isDividedAttention -> "Proxy Flagged (Retry)"
+                                isDividedAttention -> "Check In Again"
                                 else -> "Check In"
                             },
                             fontSize = 16.sp,
@@ -1216,64 +1208,131 @@ private fun AntiProxyDefenseResultsScreen(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 28.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .padding(horizontal = 24.dp, vertical = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
     ) {
-        val heroColor = if (isOverallVerified) neonMint else crimsonRed
+        val heroColor = if (isOverallVerified) successGreen else warningOrange
+        val heroBg = if (isOverallVerified) successGreenBg else warningOrangeBg
         val heroIcon = if (isOverallVerified) Icons.Default.CheckCircle else Icons.Default.Warning
 
-        // Centered Glowing Status Badge
+        // Status Icon Circle
         Box(
             modifier = Modifier
-                .size(68.dp)
+                .size(84.dp)
                 .clip(CircleShape)
-                .background(heroColor.copy(alpha = 0.12f))
-                .border(2.dp, heroColor.copy(alpha = 0.45f), CircleShape),
+                .background(heroBg)
+                .border(2.dp, heroColor.copy(alpha = 0.5f), CircleShape),
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 imageVector = heroIcon,
                 contentDescription = null,
                 tint = heroColor,
-                modifier = Modifier.size(36.dp)
+                modifier = Modifier.size(44.dp)
             )
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(20.dp))
 
         Text(
-            text = if (isOverallVerified) "VERIFIED" else "UNVERIFIED",
-            fontSize = 32.sp,
-            fontWeight = FontWeight.Black,
-            letterSpacing = 2.sp,
-            color = heroColor,
+            text = if (isOverallVerified) "Attendance Confirmed" else "Needs Review",
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Bold,
+            color = textPrimary,
             textAlign = TextAlign.Center
         )
 
-        Spacer(modifier = Modifier.height(28.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
-        // Security Defense Cards
-        Column(
+        Text(
+            text = if (isOverallVerified) {
+                "You have been successfully checked in."
+            } else {
+                "Please show this screen to your instructor."
+            },
+            fontSize = 14.sp,
+            color = textSecondary,
+            textAlign = TextAlign.Center
+        )
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Minimal Status Card
+        Card(
             modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = cardBg),
+            border = BorderStroke(1.dp, cardBorder)
         ) {
-            SecurityDefenseCard(
-                title = "BLE Mesh",
-                status = if (blePass) DefenseStatus.PASSED else DefenseStatus.FAILED
-            )
-            SecurityDefenseCard(
-                title = "Behaviour Analysis",
-                status = if (reflexPass) DefenseStatus.PASSED else DefenseStatus.FAILED
-            )
-            SecurityDefenseCard(
-                title = "Face Matching",
-                status = if (facePass) DefenseStatus.PASSED else DefenseStatus.FAILED,
-                photoBitmap = faceBitmap
-            )
-            SecurityDefenseCard(
-                title = "Ultrasonic Distance",
-                status = ultrasonicStatus
-            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    if (faceBitmap != null) {
+                        Image(
+                            bitmap = faceBitmap,
+                            contentDescription = "Photo",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .border(1.dp, cardBorder, CircleShape)
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(logBg),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Face,
+                                contentDescription = null,
+                                tint = textMuted,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                    }
+
+                    Column {
+                        Text(
+                            text = if (isOverallVerified) "Verified Present" else "Under Review",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp,
+                            color = textPrimary
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = if (isOverallVerified) "Confirmed in classroom" else "Check in with instructor",
+                            fontSize = 12.sp,
+                            color = textMuted
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = heroBg,
+                    border = BorderStroke(1.dp, heroColor.copy(alpha = 0.4f))
+                ) {
+                    Text(
+                        text = if (isOverallVerified) "Present" else "Review",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = heroColor
+                    )
+                }
+            }
         }
     }
 }
@@ -1573,7 +1632,7 @@ private fun TeacherSection(
                                 )
                                 Spacer(modifier = Modifier.height(2.dp))
                                 Text(
-                                    text = "Unverified",
+                                    text = "Needs Review",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     textAlign = TextAlign.Center,
@@ -1616,6 +1675,11 @@ private fun TeacherSection(
                 }
             }
 
+            // Quarantined / unverified records needing instructor confirmation (Option 1)
+            val needsReviewRecords = remember(finalizedRecords) {
+                finalizedRecords.filter { getRecordAuditStatus(it) == "Unverified" }
+            }
+
             // Attendance list strictly sorted in ascending order by student roll number (memoized)
             val sortedList = remember(finalizedRecords) {
                 finalizedRecords.sortedWith { r1, r2 ->
@@ -1641,6 +1705,127 @@ private fun TeacherSection(
                         .weight(1f),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    // Option 1: Minimal Teacher Quarantine Review Section
+                    if (needsReviewRecords.isNotEmpty()) {
+                        item(key = "needs_review_banner") {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = CardDefaults.cardColors(containerColor = warningOrangeBg.copy(alpha = 0.35f)),
+                                border = BorderStroke(1.dp, warningOrange.copy(alpha = 0.5f))
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Warning,
+                                                contentDescription = null,
+                                                tint = warningOrange,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Text(
+                                                text = "Needs Review (${needsReviewRecords.size})",
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 14.sp,
+                                                color = warningOrange
+                                            )
+                                        }
+                                        Text(
+                                            text = "Tap Confirm to mark present",
+                                            fontSize = 11.sp,
+                                            color = textMuted
+                                        )
+                                    }
+
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        needsReviewRecords.forEach { rec ->
+                                            Surface(
+                                                shape = RoundedCornerShape(10.dp),
+                                                color = cardBg,
+                                                border = BorderStroke(1.dp, cardBorder),
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Text(
+                                                            text = getDisplayStudentName(rec),
+                                                            fontWeight = FontWeight.Bold,
+                                                            fontSize = 14.sp,
+                                                            color = textPrimary
+                                                        )
+                                                        Spacer(modifier = Modifier.height(2.dp))
+                                                        Row(
+                                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                            verticalAlignment = Alignment.CenterVertically
+                                                        ) {
+                                                            Text(
+                                                                text = getDisplayRollNo(rec),
+                                                                fontSize = 12.sp,
+                                                                fontWeight = FontWeight.Medium,
+                                                                fontFamily = FontFamily.Monospace,
+                                                                color = textSecondary
+                                                            )
+                                                            Text(
+                                                                text = "• Weak signal / corner seat",
+                                                                fontSize = 11.sp,
+                                                                color = textMuted
+                                                            )
+                                                        }
+                                                    }
+
+                                                    Button(
+                                                        onClick = { onVerifyStudent(rec) },
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        colors = ButtonDefaults.buttonColors(
+                                                            containerColor = successGreen,
+                                                            contentColor = Color.Black
+                                                        ),
+                                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                                                        modifier = Modifier.height(32.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = "Confirm",
+                                                            fontSize = 12.sp,
+                                                            fontWeight = FontWeight.Bold
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        item(key = "all_students_header") {
+                            Text(
+                                text = "All Students (${sortedList.size})",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = textSecondary,
+                                modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                            )
+                        }
+                    }
+
                     items(sortedList, key = { it.bleDeviceId }) { rec ->
                         val status = getRecordAuditStatus(rec)
                         val statusColor = when (status) {
@@ -1716,7 +1901,7 @@ private fun TeacherSection(
                                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                                         ) {
                                             Text(
-                                                text = "Unverified",
+                                                text = "Needs Review",
                                                 fontWeight = FontWeight.Bold,
                                                 fontSize = 11.sp,
                                                 color = warningOrange
@@ -1736,7 +1921,7 @@ private fun TeacherSection(
                                         border = BorderStroke(1.dp, statusColor.copy(alpha = 0.4f))
                                     ) {
                                         Text(
-                                            text = status,
+                                            text = if (status == "Verified") "Present" else status,
                                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 11.sp,

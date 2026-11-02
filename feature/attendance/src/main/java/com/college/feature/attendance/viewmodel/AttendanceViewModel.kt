@@ -188,6 +188,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var isRefreshingAudit by mutableStateOf(false)
         private set
     private var auditPollingJob: Job? = null
+    private var airVerdictJob: Job? = null
 
     val proximityManager by lazy {
         com.college.feature.attendance.audio.UltrasonicProximityManager(application.applicationContext)
@@ -272,6 +273,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             }
         }
         stopTeacherSession()
+        airVerdictJob?.cancel()
+        airVerdictJob = null
         backendSessionId = null
         finalizedRecords = emptyList()
         cloudStatusMessage = null
@@ -738,7 +741,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         isCloudSyncing = true
-        cloudStatusMessage = "Auditing classroom mesh..."
+        cloudStatusMessage = "Finalizing attendance..."
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val reportPayload = MeshAuditRunRequest(emptyMap())
@@ -751,7 +754,14 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         val body = res.body()!!
                         finalizedRecords = body.records ?: emptyList()
                         recordSessionToHistory(finalizedRecords)
-                        cloudStatusMessage = "Audit complete: ${body.totalVerified} verified, ${body.totalSpoofers} rejected"
+                        val verifiedCount = finalizedRecords.count { it.status == "VERIFIED_PRESENT" }
+                        val reviewCount = finalizedRecords.count { it.status == "ISOLATED_FLAGGED" || it.status == "UNVERIFIED" }
+                        cloudStatusMessage = if (reviewCount > 0) {
+                            "Completed • $verifiedCount present, $reviewCount need review"
+                        } else {
+                            "Completed • $verifiedCount present"
+                        }
+                        broadcastAirVerdicts(finalizedRecords)
                     } else {
                         val errBody = try { res.errorBody()?.string() } catch (_: Exception) { null }
                         cloudStatusMessage = "Audit failed: HTTP ${res.code()}${if (!errBody.isNullOrBlank()) " - $errBody" else ""}"
@@ -762,6 +772,37 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     isCloudSyncing = false
                     cloudStatusMessage = "Finalize failed: ${e.localizedMessage}"
                 }
+            }
+        }
+    }
+
+    // Option 2: Sequentially broadcast BLE air verdicts (V:<ID>:OK) for verified students
+    fun broadcastAirVerdicts(records: List<AttendanceRecordItem>) {
+        val verified = records.filter { it.status == "VERIFIED_PRESENT" }
+        if (verified.isEmpty()) return
+
+        airVerdictJob?.cancel()
+        airVerdictJob = viewModelScope.launch(Dispatchers.Default) {
+            repeat(2) {
+                for (rec in verified) {
+                    if (!isActive) break
+                    val ids = mutableListOf(rec.bleDeviceId)
+                    rec.rollNumber?.let { roll ->
+                        if (roll.isNotBlank() && roll != rec.bleDeviceId) {
+                            ids.add(roll)
+                        }
+                    }
+                    for (id in ids) {
+                        if (!isActive) break
+                        withContext(Dispatchers.Main) {
+                            onStartBroadcasting?.invoke("V:$id:OK", teacherTxPower)
+                        }
+                        delay(350L)
+                    }
+                }
+            }
+            withContext(Dispatchers.Main) {
+                onStopBroadcasting?.invoke()
             }
         }
     }
@@ -791,7 +832,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     status = "VERIFIED_PRESENT",
                     verificationMethod = "MANUAL_OVERRIDE",
                     affinityScore = 1.0,
-                    remarks = "Verified by instructor"
+                    remarks = "Confirmed by instructor"
                 )
             } else {
                 rec
@@ -802,6 +843,27 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 try {
                     api.overrideRecord(target.id, RecordOverrideRequest())
                 } catch (_: Exception) { }
+            }
+        }
+
+        // Option 2: Blast air verdict over BLE for manually confirmed student
+        val idsToBroadcast = mutableListOf(recordOrDeviceId)
+        target?.bleDeviceId?.let { if (it !in idsToBroadcast) idsToBroadcast.add(it) }
+        target?.rollNumber?.let { if (it.isNotBlank() && it !in idsToBroadcast) idsToBroadcast.add(it) }
+
+        airVerdictJob?.cancel()
+        airVerdictJob = viewModelScope.launch(Dispatchers.Default) {
+            repeat(4) {
+                for (id in idsToBroadcast) {
+                    if (!isActive) break
+                    withContext(Dispatchers.Main) {
+                        onStartBroadcasting?.invoke("V:$id:OK", teacherTxPower)
+                    }
+                    delay(350L)
+                }
+            }
+            withContext(Dispatchers.Main) {
+                onStopBroadcasting?.invoke()
             }
         }
     }
@@ -833,6 +895,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         teacherTimer = null
         isSessionActive = false
         remainingSeconds = 0
+        airVerdictJob?.cancel()
+        airVerdictJob = null
         onStopBroadcasting?.invoke()
     }
 
@@ -910,15 +974,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val isDividedProxy = lastFocusReport?.classification == com.college.feature.attendance.telemetry.FocusClassification.DIVIDED_ATTENTION_PROXY
         if (isDividedProxy || !isChallengePassed || faceProxyDetected || ultrasonicProximityDetected) {
             if (studentStatusMessage == null) {
-                studentStatusMessage = when {
-                    faceProxyDetected -> "Biometric proxy rejected: Duplicate face detected in session"
-                    ultrasonicProximityDetected -> "Ultrasonic proximity rejected: Co-located on same desk (< 25 cm) with $coLocatedPeerId"
-                    isDividedProxy -> lastFocusReport?.diagnosticReason ?: "Divided attention proxy detected"
-                    else -> "Attendance verification requirements not met"
-                }
+                studentStatusMessage = "Attendance not confirmed. Please see instructor."
             }
             studentPhase = StudentPhase.UNVERIFIED_FLAGGED
             submitMyNeighborsToCloud(keepRadioActive = false)
+            onStartScanning?.invoke()
+            onStopBroadcasting?.invoke()
         } else {
             studentPhase = StudentPhase.WAITING_FOR_AUDIT
             studentStatusMessage = null
@@ -927,9 +988,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             if (sessId.isNotBlank()) {
                 startPollingForAudit(sessId)
             }
+            onStartScanning?.invoke()
+            onStopBroadcasting?.invoke()
         }
-        onStopScanning?.invoke()
-        onStopBroadcasting?.invoke()
     }
 
     private fun startStudentDiscoveryWindow() {
@@ -963,6 +1024,25 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val cleanMsg = messageText.trim()
 
         if (isTeacherMode) return
+
+        // Option 2: Air Verdict packet broadcast by teacher (V:<ID>:OK)
+        if (cleanMsg.startsWith("V:")) {
+            val parts = cleanMsg.split(":")
+            if (parts.size >= 3 && parts[2] == "OK") {
+                val targetId = parts[1].trim()
+                val isMatch = targetId.equals(studentShortId, ignoreCase = true) ||
+                        targetId.equals(currentRollNumber, ignoreCase = true)
+                if (isMatch) {
+                    studentPhase = StudentPhase.VERIFIED_PRESENT
+                    studentStatusMessage = "Attendance Confirmed"
+                    auditPollingJob?.cancel()
+                    auditPollingJob = null
+                    onStopScanning?.invoke()
+                    onStopBroadcasting?.invoke()
+                    return
+                }
+            }
+        }
 
         // Check for teacher beacon packet format (S:<SessionID>:<Salt>)
         val isBeacon = cleanMsg.startsWith("S:") || cleanMsg.startsWith("SESSION:")
@@ -1052,7 +1132,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 ultrasonicProximityDetected = true
                 coLocatedPeerId = peerId
                 ultrasonicSnrDb = summary.trimmedMeanPowerDb
-                studentStatusMessage = "Co-location proxy rejected: Confirmed by Radio ($peerMedianRssi dBm >= -55 dBm) AND Ultrasonic (${summary.estimatedDistanceCm.roundToInt()} cm < 25 cm) with $peerId"
+                studentStatusMessage = "Attendance not confirmed. Please see instructor."
                 submitMyNeighborsToCloud(keepRadioActive = true)
             } else {
                 // Discarded false alarms: one or both sensors confirmed natural physical separation
@@ -1088,23 +1168,22 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                 if (myRecord != null) {
                                     if (myRecord.status == "VERIFIED_PRESENT" && !hasLocalDefenseFailed) {
                                         studentPhase = StudentPhase.VERIFIED_PRESENT
-                                        studentStatusMessage = myRecord.remarks ?: "Verified by classroom mesh graph"
+                                        studentStatusMessage = "Attendance Confirmed"
+                                        onStopScanning?.invoke()
+                                        onStopBroadcasting?.invoke()
                                     } else {
                                         studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                                         studentStatusMessage = when {
-                                            hasLocalDefenseFailed -> studentStatusMessage ?: "Local anti-proxy defense rejected"
-                                            myRecord.status == "ISOLATED_FLAGGED" -> myRecord.remarks ?: "Zero desk neighbors detected (isolated seat)"
-                                            myRecord.status == "SPOOFER_REJECTED" -> myRecord.remarks ?: "Hallway spoofer detected (unreciprocated link)"
-                                            myRecord.status == "DUPLICATE_FACE_PROXY" -> "Biometric proxy rejected: Duplicate face detected in session"
-                                            myRecord.status == "CO_LOCATED_SAME_DESK_PROXY" -> "Ultrasonic proximity rejected: Co-located on same desk (< 25 cm)"
-                                            myRecord.status == "DIVIDED_ATTENTION_PROXY" -> "Divided attention proxy rejected: Simultaneous multi-device gameplay"
-                                            myRecord.status == "NO_FACE_DETECTED" -> "Biometric verification failed: No human face detected"
-                                            else -> myRecord.remarks ?: "Verification criteria not met"
+                                            hasLocalDefenseFailed -> "Attendance not confirmed. Please see instructor."
+                                            myRecord.status == "ISOLATED_FLAGGED" -> "Needs instructor confirmation"
+                                            else -> "Attendance not confirmed"
                                         }
+                                        onStartScanning?.invoke()
                                     }
                                 } else {
                                     studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-                                    studentStatusMessage = "No attendance record finalized for this device"
+                                    studentStatusMessage = "Attendance not confirmed"
+                                    onStartScanning?.invoke()
                                 }
                             }
                             break
@@ -1112,6 +1191,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             withContext(Dispatchers.Main) {
                                 studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                                 studentStatusMessage = "Session was cancelled by the instructor"
+                                onStopScanning?.invoke()
                             }
                             break
                         }
@@ -1141,19 +1221,17 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             if (myRecord != null) {
                                 if (myRecord.status == "VERIFIED_PRESENT" && !hasLocalDefenseFailed) {
                                     studentPhase = StudentPhase.VERIFIED_PRESENT
-                                    studentStatusMessage = myRecord.remarks ?: "Verified by classroom mesh graph"
+                                    studentStatusMessage = "Attendance Confirmed"
+                                    onStopScanning?.invoke()
+                                    onStopBroadcasting?.invoke()
                                 } else {
                                     studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                                     studentStatusMessage = when {
-                                        hasLocalDefenseFailed -> studentStatusMessage ?: "Local anti-proxy defense rejected"
-                                        myRecord.status == "ISOLATED_FLAGGED" -> myRecord.remarks ?: "Zero desk neighbors detected (isolated seat)"
-                                        myRecord.status == "SPOOFER_REJECTED" -> myRecord.remarks ?: "Hallway spoofer detected (unreciprocated link)"
-                                        myRecord.status == "DUPLICATE_FACE_PROXY" -> "Biometric proxy rejected: Duplicate face detected in session"
-                                        myRecord.status == "CO_LOCATED_SAME_DESK_PROXY" -> "Ultrasonic proximity rejected: Co-located on same desk (< 25 cm)"
-                                        myRecord.status == "DIVIDED_ATTENTION_PROXY" -> "Divided attention proxy rejected: Simultaneous multi-device gameplay"
-                                        myRecord.status == "NO_FACE_DETECTED" -> "Biometric verification failed: No human face detected"
-                                        else -> myRecord.remarks ?: "Verification criteria not met"
+                                        hasLocalDefenseFailed -> "Attendance not confirmed. Please see instructor."
+                                        myRecord.status == "ISOLATED_FLAGGED" -> "Needs instructor confirmation"
+                                        else -> "Attendance not confirmed"
                                     }
+                                    onStartScanning?.invoke()
                                 }
                             }
                         }
@@ -1172,6 +1250,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         teacherTimer = null
         studentTimer?.cancel()
         studentTimer = null
+        airVerdictJob?.cancel()
+        airVerdictJob = null
         auditPollingJob?.cancel()
         auditPollingJob = null
         proximityManager.release()
