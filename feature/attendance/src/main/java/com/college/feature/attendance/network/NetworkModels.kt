@@ -132,6 +132,7 @@ data class MeshAuditRunRequest(
 data class SubmitNeighborsRequest(
     @SerializedName("student_id") val studentId: String? = null,
     val neighbors: List<String>,
+    @SerializedName("close_neighbors") val closeNeighbors: List<String>? = null,
     @SerializedName("session_salt") val sessionSalt: String? = null,
     @SerializedName("relayed_reports") val relayedReports: Map<String, List<String>>? = null,
     @SerializedName("face_image_base64") val faceImageBase64: String? = null,

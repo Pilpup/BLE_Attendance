@@ -576,6 +576,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     fun submitMyNeighborsToCloud(keepRadioActive: Boolean = false) {
         val sessId = detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: return
         val neighborIds = topDeskNeighbours.map { it.peerId }
+        val closeNeighborIds = discoveredPeers.values
+            .filter { it.medianRssi >= -65 }
+            .map { it.peerId }
         val facePayload = capturedFaceBase64
         val dividedAttention = isDividedProxy
         viewModelScope.launch(Dispatchers.IO) {
@@ -583,6 +586,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 val req = SubmitNeighborsRequest(
                     studentId = studentShortId,
                     neighbors = neighborIds,
+                    closeNeighbors = closeNeighborIds,
                     sessionSalt = detectedSessionSalt.takeIf { it != "------" },
                     faceImageBase64 = facePayload,
                     ultrasonicProximityDetected = ultrasonicProximityDetected,
@@ -1009,8 +1013,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         studentStatusMessage = "Co-location proxy rejected: Devices held on same desk (< 20 cm) with $peerId"
                         submitMyNeighborsToCloud(keepRadioActive = true)
                     } else {
-                        // 2) Close proximity (-68 dBm to -56 dBm): activate ultrasonic acoustic distance handshake
-                        val isClosePeer = rssi >= -68 || updatedPeer.medianRssi >= -68
+                        // 2) Close proximity (-65 dBm to -56 dBm): activate ultrasonic acoustic distance handshake
+                        val isClosePeer = rssi >= -65 || updatedPeer.medianRssi >= -65
                         if (isClosePeer && !testedUltrasonicPeers.contains(peerId)) {
                             testedUltrasonicPeers.add(peerId)
                             triggerUltrasonicProximityHandshake(peerId)

@@ -547,6 +547,51 @@ def test_session_face_registry():
     assert len(registry.get_flagged_pairs("session_101")) == 0
 
 
+def test_session_face_registry_cluster_interrogation():
+    import base64
+    import io
+    from PIL import Image
+    from app.services.face_engine import SessionFaceRegistry
+
+    registry = SessionFaceRegistry()
+
+    # Image A: Red
+    img_a = Image.new("RGB", (100, 100), color=(255, 0, 0))
+    buf_a = io.BytesIO()
+    img_a.save(buf_a, format="JPEG")
+    b64_a = base64.b64encode(buf_a.getvalue()).decode("utf-8")
+
+    # Image B: Gray (moderate similarity ~0.58 to Red in synthetic test embedding)
+    img_b = Image.new("RGB", (100, 100), color=(150, 150, 150))
+    buf_b = io.BytesIO()
+    img_b.save(buf_b, format="JPEG")
+    b64_b = base64.b64encode(buf_b.getvalue()).decode("utf-8")
+
+    # Image Proxy: Orange (high similarity ~0.93 to Red)
+    img_proxy = Image.new("RGB", (100, 100), color=(255, 80, 0))
+    buf_proxy = io.BytesIO()
+    img_proxy.save(buf_proxy, format="JPEG")
+    b64_proxy = base64.b64encode(buf_proxy.getvalue()).decode("utf-8")
+
+    # Student A registers with cluster containing Student B
+    res_a = registry.register_and_check("session_202", "STUA", "22BCSE201", b64_a, cluster_peers={"STUB"})
+    assert res_a.is_duplicate is False
+
+    # Student C (distant, across the room) registers with image B (moderately similar to A, ~0.58)
+    # Since C is NOT in A's cluster and similarity < 0.70, C is NOT falsely flagged
+    res_c = registry.register_and_check("session_202", "STUC", "22BCSE203", b64_b, cluster_peers={"STUD"})
+    assert res_c.is_duplicate is False
+
+    # Student B (same desk cluster as A) registers with proxy image
+    # Since B IS in A's cluster, the sensitive threshold (0.363) is used and B is caught matching A
+    res_b = registry.register_and_check("session_202", "STUB", "22BCSE202", b64_proxy, cluster_peers={"STUA"})
+    assert res_b.is_duplicate is True
+    assert res_b.matched_student_key == "STUA"
+
+    # Purge
+    registry.clear_session("session_202")
+
+
 # Verifies debug session auto-provisioning and duplicate face detection via API endpoint
 @pytest.mark.anyio
 async def test_debug_session_auto_provision_and_duplicate_rejection():

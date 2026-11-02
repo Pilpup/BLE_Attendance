@@ -5,7 +5,7 @@ import io
 import logging
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -176,6 +176,7 @@ class SessionFaceRegistry:
         student_key: str,
         roll_number: Optional[str],
         face_base64: str,
+        cluster_peers: Optional[Set[str] | List[str]] = None,
         threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     ) -> FaceCheckResult:
         try:
@@ -205,19 +206,32 @@ class SessionFaceRegistry:
         max_similarity = -1.0
         matched_key: Optional[str] = None
         matched_roll: Optional[str] = None
+        target_cluster = set(cluster_peers) if cluster_peers is not None else None
 
-        # Compare against all existing registered student faces in this active session
+        # Compare against existing registered student faces in this active session
         for existing_key, record in session_store.items():
             if existing_key == student_key:
                 continue
 
             sim = self.engine.compute_similarity(embedding, record["embedding"])
-            if sim > max_similarity:
+
+            # Proximity Cluster Interrogation:
+            # Sensitive duplicate matching (0.363) triggers for devices in the same radio proximity cluster.
+            # Distant devices across the room require identical cloned image matching (>= 0.70) to prevent lookalike false positives.
+            existing_cluster = record.get("cluster_peers", set())
+            is_in_cluster = (
+                target_cluster is None or
+                existing_key in target_cluster or
+                student_key in existing_cluster
+            )
+            effective_threshold = threshold if is_in_cluster else 0.70
+
+            if sim >= effective_threshold and sim > max_similarity:
                 max_similarity = sim
                 matched_key = existing_key
                 matched_roll = record.get("roll")
 
-        is_duplicate = (max_similarity >= threshold) and (matched_key is not None)
+        is_duplicate = (matched_key is not None)
 
         if is_duplicate:
             # Record duplicate face match for instructor dashboard review
@@ -236,6 +250,7 @@ class SessionFaceRegistry:
             session_store[student_key] = {
                 "embedding": embedding,
                 "roll": roll_number,
+                "cluster_peers": target_cluster or set(),
                 "flagged": True,
                 "image_b64": clean_b64,
             }
@@ -259,6 +274,7 @@ class SessionFaceRegistry:
         session_store[student_key] = {
             "embedding": embedding,
             "roll": roll_number,
+            "cluster_peers": target_cluster or set(),
             "flagged": False,
             "image_b64": None,
         }

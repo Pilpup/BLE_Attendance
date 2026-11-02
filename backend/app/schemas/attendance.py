@@ -112,6 +112,10 @@ class SubmitNeighborsRequest(BaseModel):
         ...,
         description="Top-3 discovered peer IDs or roll numbers (median RSSI >= -82 dBm)"
     )
+    close_neighbors: Optional[List[str]] = Field(
+        default=None,
+        description="Peers detected in close proximity cluster (RSSI >= -65 dBm)"
+    )
     relayed_reports: Optional[dict[str, List[str]]] = Field(
         default=None,
         description="Vouchers collected from offline peers over BLE: {offline_student_id: [nbr1, nbr2, nbr3]}"

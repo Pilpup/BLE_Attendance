@@ -555,16 +555,26 @@ async def submit_student_neighbors(
     student_key = raw_key[-4:].upper() if len(raw_key) >= 4 else raw_key.upper()
 
     normalized_neighbors = [n[-4:].upper() if len(n) >= 4 else n.upper() for n in payload.neighbors]
+    normalized_close = [n[-4:].upper() if len(n) >= 4 else n.upper() for n in (payload.close_neighbors or [])]
 
     # Face deduplication check (Layer 3: Camera Face Biometric Deduplication)
     face_check_result = None
     if payload.face_image_base64:
         raw_roll = (current_user.roll_number if current_user else None) or payload.student_id or student_key
+
+        # Compile proximity cluster peers: close peers (RSSI >= -65), reported desk neighbors, and co-located peer
+        cluster_peers = set(normalized_close)
+        cluster_peers.update(normalized_neighbors)
+        if payload.co_located_peer_id:
+            co_key = payload.co_located_peer_id[-4:].upper() if len(payload.co_located_peer_id) >= 4 else payload.co_located_peer_id.upper()
+            cluster_peers.add(co_key)
+
         face_check_result = face_registry.register_and_check(
             session_id=str(session_obj.id),
             student_key=student_key,
             roll_number=raw_roll,
             face_base64=payload.face_image_base64,
+            cluster_peers=cluster_peers,
         )
 
         if not face_check_result.has_human_face:
