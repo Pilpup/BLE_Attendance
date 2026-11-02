@@ -472,7 +472,6 @@ async def finalize_attendance_session(
         session_obj.course_code = course_obj.course_code
         session_obj.course_name = course_obj.course_name
 
-    face_registry.clear_session(str(session_obj.id))
     logger.info(f"[Audit Finalized] Session: {session_obj.id}, Verified: {session_obj.total_verified}, Spoofers: {session_obj.total_spoofers}, Total Records: {len(payload.records)}")
     return session_obj
 
@@ -489,8 +488,14 @@ async def submit_student_neighbors(
     session_obj = await _resolve_session(session_id, db)
     if not session_obj:
         raise HTTPException(status_code=404, detail="Attendance session not found")
-    if session_obj.status != "ACTIVE":
+    if session_obj.status == "CANCELLED":
+        raise HTTPException(status_code=400, detail="Attendance session has been cancelled")
+    if session_obj.status not in ("ACTIVE", "COMPLETED"):
         raise HTTPException(status_code=400, detail="Attendance session is not active")
+    if session_obj.status == "COMPLETED":
+        # Allow 90-second grace period for in-flight student game completions and biometric face deduplication
+        if session_obj.ended_at and (datetime.now(timezone.utc) - session_obj.ended_at).total_seconds() > 90:
+            raise HTTPException(status_code=400, detail="Attendance session has expired")
 
     # TTL check: Auto-expire active sessions older than 5 minutes
     if _is_session_stale(session_obj.started_at, minutes=5):
@@ -945,7 +950,6 @@ async def audit_and_finalize_session(
         session_obj.course_code = course_obj.course_code
         session_obj.course_name = course_obj.course_name
 
-    face_registry.clear_session(str(session_obj.id))
     logger.info(f"[Audit Finalized] Session: {session_obj.id}, Verified: {session_obj.total_verified}, Spoofers: {session_obj.total_spoofers}, Total Records: {len(audit_results)}")
     return session_obj
 

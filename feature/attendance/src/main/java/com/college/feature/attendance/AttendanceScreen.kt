@@ -284,7 +284,7 @@ fun AttendanceScreen(
                     isRefreshingAudit = viewModel.isRefreshingAudit,
                     onChallengeResult = { hit, total -> viewModel.recordChallengeResult(hit, total) },
                     onBehavioralReport = { report -> viewModel.recordBehavioralReport(report) },
-                    onFaceCaptured = { viewModel.capturedFaceBase64 = it },
+                    onFaceCaptured = { viewModel.recordFaceCapture(it) },
                     onStartScanning = callbacks.onStartStudentScanning,
                     onStopScanning = callbacks.onStopStudentScanning,
                     onNext = { viewModel.proceedStudentToNext() },
@@ -1188,12 +1188,13 @@ private fun AntiProxyDefenseResultsScreen(
         }
     }
 
-    // Layer 1: BLE Mesh
-    val blePass = if (auditedRecord != null) {
-        auditedRecord.status == "VERIFIED_PRESENT"
-    } else {
-        isVerified || deskNeighbours.isNotEmpty()
-    }
+    // Layer 1: BLE Mesh passes if device is part of classroom mutual mesh (fails for isolated seats or outside spoofers)
+    val isBleSpooferOrIsolated = auditedRecord?.status == "ISOLATED_FLAGGED" ||
+            auditedRecord?.status == "SPOOFER_REJECTED" ||
+            auditedRecord?.status == "SALT_REJECTED" ||
+            (auditedRecord == null && deskNeighbours.isEmpty())
+
+    val blePass = !isBleSpooferOrIsolated
 
     // Layer 2: Behaviour Analysis
     val reflexPass = !isDividedAttention && targetsHit >= 6

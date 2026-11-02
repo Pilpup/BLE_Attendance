@@ -12,8 +12,8 @@ import numpy as np
 
 logger = logging.getLogger("uvicorn.error")
 
-# Standard OpenCV SFace cosine distance threshold (0.363 achieves 99.9% verification accuracy)
-DEFAULT_SIMILARITY_THRESHOLD = 0.363
+# Standard OpenCV SFace cosine distance threshold (0.33 tuned for unconstrained mobile selfies across subtle angle differences)
+DEFAULT_SIMILARITY_THRESHOLD = 0.33
 YUNET_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "weights", "face_detection_yunet.onnx")
 SFACE_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "weights", "face_recognition_sface.onnx")
 

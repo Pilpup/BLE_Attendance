@@ -21,7 +21,7 @@ class BestFrameAnalyzer(
 
     companion object {
         // Minimum sharpness variance to qualify as a valid face candidate
-        const val MIN_ACCEPTABLE_SHARPNESS = 30.0
+        const val MIN_ACCEPTABLE_SHARPNESS = 12.0
 
         // Required relative improvement (10%) to justify allocating a new high-res Bitmap
         private const val SHARPNESS_IMPROVEMENT_RATIO = 1.10

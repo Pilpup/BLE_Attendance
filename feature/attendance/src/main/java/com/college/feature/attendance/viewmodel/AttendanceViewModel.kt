@@ -166,6 +166,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     var capturedFaceBase64 by mutableStateOf<String?>(null)
 
+    // Records the locked face biometric payload and immediately uploads to cloud registry
+    fun recordFaceCapture(faceB64: String) {
+        capturedFaceBase64 = faceB64
+        submitMyNeighborsToCloud(keepRadioActive = true)
+    }
+
     // Layer 3 and Layer 4 anti-proxy state flags
     var faceProxyDetected by mutableStateOf(false)
         private set
@@ -610,29 +616,36 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             ultrasonicProximityDetected = true
                         }
                         studentStatusMessage = extracted ?: "Security defense verification rejected"
-                        studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-                        onStopScanning?.invoke()
-                        onStopBroadcasting?.invoke()
-                    } else {
-                        // Server response 404/500/etc
-                        val errDetail = try { res.errorBody()?.string() } catch (_: Exception) { null }
-                        val extracted = Regex("\"detail\"\\s*:\\s*\"(.*?)\"").find(errDetail ?: "")?.groupValues?.get(1)
-                        studentStatusMessage = extracted ?: "Attendance server error (${res.code()})"
-                        studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-                        if (!keepRadioActive) {
+                        // Only abort if this is the final check-in or discovery window has ended
+                        if (!keepRadioActive || studentDiscoverySecondsRemaining == 0) {
+                            studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                             onStopScanning?.invoke()
                             onStopBroadcasting?.invoke()
+                        }
+                    } else {
+                        // Intermediate background peer sync (404/500) while session propagates must not crash/abort gameplay
+                        val errDetail = try { res.errorBody()?.string() } catch (_: Exception) { null }
+                        val extracted = Regex("\"detail\"\\s*:\\s*\"(.*?)\"").find(errDetail ?: "")?.groupValues?.get(1)
+                        if (!keepRadioActive || studentDiscoverySecondsRemaining == 0) {
+                            studentStatusMessage = extracted ?: "Attendance server error (${res.code()})"
+                            studentPhase = StudentPhase.UNVERIFIED_FLAGGED
+                            onStopScanning?.invoke()
+                            onStopBroadcasting?.invoke()
+                        } else {
+                            android.util.Log.w("AttendanceViewModel", "Intermediate peer sync pending: ${res.code()} - $extracted")
                         }
                     }
                     Unit
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    studentStatusMessage = "Connection failed: Please verify classroom Wi-Fi connection"
-                    studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-                    if (!keepRadioActive) {
+                    if (!keepRadioActive || studentDiscoverySecondsRemaining == 0) {
+                        studentStatusMessage = "Connection failed: Please verify classroom Wi-Fi connection"
+                        studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                         onStopScanning?.invoke()
                         onStopBroadcasting?.invoke()
+                    } else {
+                        android.util.Log.w("AttendanceViewModel", "Intermediate peer sync network error: ${e.message}")
                     }
                     Unit
                 }
@@ -672,10 +685,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         if (res.isSuccessful && res.body() != null) {
                             backendSessionId = res.body()!!.id
                             cloudStatusMessage = "Cloud session active: $sessionId"
+                            // Start broadcasting in-room beacon AFTER session is safely recorded in cloud DB
+                            onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
                         } else {
                             val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
                             cloudStatusMessage = "Cloud sync warning (HTTP ${res.code()}): running locally ($sessionId)"
                             android.util.Log.e("AttendanceViewModel", "Session create failed: HTTP ${res.code()} - $err")
+                            onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
                         }
                     }
                 } catch (e: Exception) {
@@ -683,15 +699,14 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         isCloudSyncing = false
                         cloudStatusMessage = "Cloud sync error: ${e.localizedMessage ?: "Offline"}"
                         android.util.Log.e("AttendanceViewModel", "Session create exception", e)
+                        onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
                     }
                 }
             }
         } else {
             cloudStatusMessage = "Local session active (code: $sessionId)"
+            onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
         }
-
-        // Broadcast teacher in-room beacon (teacher does not scan BLE)
-        onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
 
         teacherTimer?.cancel()
         teacherTimer = object : CountDownTimer(durationSeconds * 1000L, 1000L) {
@@ -985,15 +1000,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         submitMyNeighborsToCloud(keepRadioActive = true)
                     }
 
-                    // Layer 4 proximity check:
-                    // 1) Extreme BLE radio proximity: RSSI >= -52 dBm indicates phones held in same hands (< 25 cm)
-                    if (rssi >= -52 || updatedPeer.medianRssi >= -52) {
-                        ultrasonicProximityDetected = true
-                        coLocatedPeerId = peerId
-                        studentStatusMessage = "Co-location proxy rejected: Devices held on same desk (< 25 cm) with $peerId"
-                        studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-                        submitMyNeighborsToCloud(keepRadioActive = true)
-                    } else if (rssi >= -70 && !testedUltrasonicPeers.contains(peerId)) {
+                    // High mutual RSSI indicates peers are very close in the room.
+                    // Activate Ultrasonic Distance handshake to measure actual physical distance accurately!
+                    val isClosePeer = rssi >= -68 || updatedPeer.medianRssi >= -68
+                    if (isClosePeer && !testedUltrasonicPeers.contains(peerId)) {
                         testedUltrasonicPeers.add(peerId)
                         triggerUltrasonicProximityHandshake(peerId)
                     }
@@ -1029,7 +1039,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 coLocatedPeerId = peerId
                 ultrasonicSnrDb = summary.trimmedMeanPowerDb
                 studentStatusMessage = "Ultrasonic proximity rejected: Co-located on same desk (${summary.estimatedDistanceCm.roundToInt()} cm, ${summary.greenPercentage}% Green) with $peerId"
-                studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                 submitMyNeighborsToCloud(keepRadioActive = true)
             } else {
                 // Discarded outliers confirmed natural separation (next bench or distant)

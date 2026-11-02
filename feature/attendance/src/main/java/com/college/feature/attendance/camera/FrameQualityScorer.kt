@@ -13,7 +13,7 @@ data class FrameQuality(
 // Evaluates raw camera luminance buffers for blur and exposure
 object FrameQualityScorer {
 
-    private const val MIN_FACE_BRIGHTNESS = 25.0
+    private const val MIN_FACE_BRIGHTNESS = 15.0
     private const val MAX_FACE_BRIGHTNESS = 240.0
     private const val MAX_BACKLIGHT_RATIO = 2.5
     private const val DEFAULT_SAMPLE_STEP = 4
