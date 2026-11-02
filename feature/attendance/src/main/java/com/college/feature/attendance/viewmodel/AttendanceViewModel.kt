@@ -194,10 +194,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
     private val testedUltrasonicPeers = mutableSetOf<String>()
 
-    // Top 3 nearest desk neighbors with signal strength above threshold (median RSSI >= -70 dBm)
+    // Top 3 nearest desk/bench neighbors in the classroom mesh (median RSSI >= -82 dBm)
     val topDeskNeighbours: List<PeerData>
         get() = discoveredPeers.values
-            .filter { it.medianRssi >= -70 }
+            .filter { it.medianRssi >= -82 }
             .sortedByDescending { it.medianRssi }
             .take(3)
 
@@ -1000,12 +1000,21 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         submitMyNeighborsToCloud(keepRadioActive = true)
                     }
 
-                    // High mutual RSSI indicates peers are very close in the room.
-                    // Activate Ultrasonic Distance handshake to measure actual physical distance accurately!
-                    val isClosePeer = rssi >= -68 || updatedPeer.medianRssi >= -68
-                    if (isClosePeer && !testedUltrasonicPeers.contains(peerId)) {
-                        testedUltrasonicPeers.add(peerId)
-                        triggerUltrasonicProximityHandshake(peerId)
+                    // Layer 4 Ultrasonic Proximity Evaluation:
+                    // 1) Extreme radio proximity: median RSSI >= -55 dBm indicates devices touching / held in the same hands (< 20 cm)
+                    if (updatedPeer.medianRssi >= -55 || rssi >= -55) {
+                        ultrasonicWasTriggered = true
+                        ultrasonicProximityDetected = true
+                        coLocatedPeerId = peerId
+                        studentStatusMessage = "Co-location proxy rejected: Devices held on same desk (< 20 cm) with $peerId"
+                        submitMyNeighborsToCloud(keepRadioActive = true)
+                    } else {
+                        // 2) Close proximity (-68 dBm to -56 dBm): activate ultrasonic acoustic distance handshake
+                        val isClosePeer = rssi >= -68 || updatedPeer.medianRssi >= -68
+                        if (isClosePeer && !testedUltrasonicPeers.contains(peerId)) {
+                            testedUltrasonicPeers.add(peerId)
+                            triggerUltrasonicProximityHandshake(peerId)
+                        }
                     }
                 }
             }
@@ -1019,11 +1028,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch(Dispatchers.Default) {
             val isEmitter = studentShortId < peerId
             if (isEmitter) {
-                // Emitter transmits rapid 15-burst pulse train
-                proximityManager.emitBurstSequence(count = 15, intervalMs = 120L)
+                // Emitter transmits sustained 30-burst pulse train (3.6s) to ensure listener captures it
+                proximityManager.emitBurstSequence(count = 30, intervalMs = 120L)
             } else {
-                // Listener listens cleanly for incoming pulse train without transmitting over its own mic
-                proximityManager.collectBurstEnsemble(listenDurationMs = 2500L) { summary ->
+                // Listener listens for 3500ms to guarantee capture of incoming chirp ensemble
+                proximityManager.collectBurstEnsemble(listenDurationMs = 3500L) { summary ->
                     handleEnsembleSummary(summary, peerId)
                 }
             }

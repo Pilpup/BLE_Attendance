@@ -1202,10 +1202,9 @@ private fun AntiProxyDefenseResultsScreen(
     // Layer 3: Face Matching
     val facePass = !isFaceProxy
 
-    // Layer 4: Ultrasonic Distance
+    // Layer 4: Ultrasonic Distance (Pass unless acoustic or radio proximity detected same-desk co-location)
     val ultrasonicStatus = when {
         isUltrasonicProxy -> DefenseStatus.FAILED
-        !ultrasonicWasTriggered -> DefenseStatus.DORMANT
         else -> DefenseStatus.PASSED
     }
 

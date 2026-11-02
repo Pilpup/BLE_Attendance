@@ -816,6 +816,72 @@ async def submit_student_neighbors(
                 )
                 db.add(relay_sub)
 
+    # For in-flight submissions arriving during the grace period of an already COMPLETED session,
+    # immediately evaluate and record their attendance so they don't get orphaned without an AttendanceRecord.
+    if session_obj.status == "COMPLETED":
+        rec_stmt = select(AttendanceRecord).where(
+            AttendanceRecord.session_id == target_session_id,
+            AttendanceRecord.ble_device_id == student_key,
+        )
+        rec_res = await db.execute(rec_stmt)
+        existing_record = rec_res.scalars().first()
+
+        if not existing_record:
+            verified_neighbors = []
+            if normalized_neighbors:
+                v_stmt = select(AttendanceRecord).where(
+                    AttendanceRecord.session_id == target_session_id,
+                    AttendanceRecord.ble_device_id.in_(normalized_neighbors),
+                    AttendanceRecord.status == "VERIFIED_PRESENT",
+                )
+                v_res = await db.execute(v_stmt)
+                verified_neighbors = [r.ble_device_id for r in v_res.scalars().all()]
+
+            if verified_neighbors:
+                rec_status = "VERIFIED_PRESENT"
+                verif_method = "DIRECT_MUTUAL"
+                affinity = 1.00
+                bridge = None
+                remarks = f"In-flight check-in verified via mutual desk neighbor [{', '.join(verified_neighbors)}]"
+                session_obj.total_verified = (session_obj.total_verified or 0) + 1
+            elif normalized_neighbors:
+                rec_status = "VERIFIED_PRESENT"
+                verif_method = "IN_FLIGHT_GRACE"
+                affinity = 0.85
+                bridge = None
+                remarks = f"In-flight check-in verified during grace period (Reported: [{', '.join(normalized_neighbors)}])"
+                session_obj.total_verified = (session_obj.total_verified or 0) + 1
+            else:
+                rec_status = "ISOLATED_FLAGGED"
+                verif_method = "NONE"
+                affinity = 0.00
+                bridge = None
+                remarks = "Zero desk neighbors detected (isolated seat)"
+
+            resolved_student_id = user_id
+            if not resolved_student_id:
+                user_stmt = select(User).where(User.roll_number.ilike(f"%{student_key}")).limit(1)
+                user_res = await db.execute(user_stmt)
+                matched_user = user_res.scalar_one_or_none()
+                if matched_user:
+                    resolved_student_id = matched_user.id
+
+            new_record = AttendanceRecord(
+                id=uuid.uuid4(),
+                session_id=session_obj.id,
+                student_id=resolved_student_id,
+                ble_device_id=student_key,
+                status=rec_status,
+                verification_method=verif_method,
+                affinity_score=affinity,
+                bridge_device_id=bridge,
+                reported_neighbors=normalized_neighbors,
+                remarks=remarks,
+                recorded_at=datetime.now(timezone.utc),
+            )
+            db.add(new_record)
+            logger.info(f"[In-Flight Grace Audit] Generated {rec_status} record for late arrival {student_key} in session {session_obj.id}")
+
     await db.commit()
 
     logger.info(f"[Check-In] Student: {student_key} submitted {len(normalized_neighbors)} neighbors: {normalized_neighbors} for session: {target_session_id}")
@@ -958,7 +1024,7 @@ async def audit_and_finalize_session(
 async def get_session_details(
     session_id: str,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_user),
 ):
     session_obj = await _resolve_session(session_id, db)
     if not session_obj:

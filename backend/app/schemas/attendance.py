@@ -110,7 +110,7 @@ class SubmitNeighborsRequest(BaseModel):
     )
     neighbors: List[str] = Field(
         ...,
-        description="Top-3 discovered peer IDs or roll numbers (median RSSI >= -70 dBm)"
+        description="Top-3 discovered peer IDs or roll numbers (median RSSI >= -82 dBm)"
     )
     relayed_reports: Optional[dict[str, List[str]]] = Field(
         default=None,
