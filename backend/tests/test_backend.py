@@ -60,10 +60,11 @@ def test_mesh_audit_topology():
     assert res_map["B"]["verification_method"] == "DIRECT_MUTUAL"
     assert res_map["B"]["affinity_score"] == 1.00
 
-    # Verify C is triadic closure via shared bridges
-    assert res_map["C"]["status"] == "VERIFIED_PRESENT"
+    # Verify C has unreciprocated triadic link (Quarantined for teacher confirmation, NEVER auto-verified)
+    assert res_map["C"]["status"] == "ISOLATED_FLAGGED"
     assert res_map["C"]["verification_method"] == "TRIADIC_CLOSURE"
     assert res_map["C"]["affinity_score"] == 0.50
+    assert "Pending Teacher Confirmation" in res_map["C"]["remarks"]
 
     # Verify D is spoofer rejected (unreciprocated single claim)
     assert res_map["D"]["status"] == "SPOOFER_REJECTED"
@@ -72,6 +73,113 @@ def test_mesh_audit_topology():
     # Verify E is isolated
     assert res_map["E"]["status"] == "ISOLATED_FLAGGED"
     assert res_map["E"]["affinity_score"] == 0.00
+
+
+def test_mesh_audit_satellite_cluster_quarantine():
+    # Classroom Main Web: 6 students (S1-S6) in mutual pairs/chains
+    # Outside Cafeteria Cluster: 3 students (X, Y, Z) who are mutual with each other,
+    # but have ZERO links connecting to the classroom main component!
+    reports = {
+        "S1": ["S2"],
+        "S2": ["S1", "S3"],
+        "S3": ["S2", "S4"],
+        "S4": ["S3", "S5"],
+        "S5": ["S4", "S6"],
+        "S6": ["S5"],
+        # Outside cluster (3 colluding students in cafeteria)
+        "X": ["Y", "Z"],
+        "Y": ["X", "Z"],
+        "Z": ["X", "Y"],
+    }
+    results = audit_classroom_mesh(reports)
+    res_map = {r["ble_device_id"]: r for r in results}
+
+    # S1-S6 in the classroom are Verified Present
+    for s in ["S1", "S2", "S3", "S4", "S5", "S6"]:
+        assert res_map[s]["status"] == "VERIFIED_PRESENT"
+        assert res_map[s]["affinity_score"] == 1.00
+
+    # X, Y, Z outside are quarantined as satellite cluster
+    for out in ["X", "Y", "Z"]:
+        assert res_map[out]["status"] == "ISOLATED_FLAGGED"
+        assert res_map[out]["affinity_score"] == 0.00
+        assert "Disconnected satellite cluster" in res_map[out]["remarks"]
+
+
+def test_mesh_audit_outside_eavesdropping_cluster_quarantine():
+    # Classroom Main Web: 6 students (S1-S6) in mutual pairs/chains
+    # Outside Window Cluster: 3 students (W1, W2, W3) who are mutual with each other.
+    # W1 eavesdrops on S1 through the window and claims S1 in its report.
+    # BUT S1 never saw W1 back (in-degree to cluster = 0).
+    # Out-degree eavesdropping MUST NOT anchor the cluster; W1, W2, W3 must be quarantined!
+    reports = {
+        "S1": ["S2"],
+        "S2": ["S1", "S3"],
+        "S3": ["S2", "S4"],
+        "S4": ["S3", "S5"],
+        "S5": ["S4", "S6"],
+        "S6": ["S5"],
+        # Outside window cluster (W1 sniffs S1)
+        "W1": ["W2", "W3", "S1"],
+        "W2": ["W1", "W3"],
+        "W3": ["W1", "W2"],
+    }
+    results = audit_classroom_mesh(reports)
+    res_map = {r["ble_device_id"]: r for r in results}
+
+    # S1-S6 in the classroom are Verified Present
+    for s in ["S1", "S2", "S3", "S4", "S5", "S6"]:
+        assert res_map[s]["status"] == "VERIFIED_PRESENT"
+
+    # W1, W2, W3 outside are quarantined as satellite cluster despite W1 claiming S1
+    for out in ["W1", "W2", "W3"]:
+        assert res_map[out]["status"] == "ISOLATED_FLAGGED"
+        assert res_map[out]["affinity_score"] == 0.00
+        assert "Disconnected satellite cluster" in res_map[out]["remarks"]
+
+
+def test_mesh_audit_corridor_chain_of_four_quarantine():
+    # Classroom Main Web: 12 students (S1-S12)
+    # Outside corridor chain: 4 spoofers (C1 <-> C2 <-> C3 <-> C4)
+    # Even though len(comp) == 4, dynamic threshold quarantines them
+    reports = {
+        **{f"S{i}": [f"S{i-1}" if i > 1 else "S2", f"S{i+1}" if i < 12 else "S11"] for i in range(1, 13)},
+        # 4 spoofers in corridor
+        "C1": ["C2"],
+        "C2": ["C1", "C3"],
+        "C3": ["C2", "C4"],
+        "C4": ["C3"],
+    }
+    results = audit_classroom_mesh(reports)
+    res_map = {r["ble_device_id"]: r for r in results}
+
+    for c in ["C1", "C2", "C3", "C4"]:
+        assert res_map[c]["status"] == "ISOLATED_FLAGGED"
+        assert res_map[c]["affinity_score"] == 0.00
+        assert "Disconnected satellite cluster" in res_map[c]["remarks"]
+
+
+def test_mesh_audit_classroom_row_with_incoming_anchors_verified():
+    # Classroom Main Web: 12 students (S1-S12)
+    # Separated row across aisle: 3 students (R1, R2, R3)
+    # 2 in-classroom students (S5 and S6) acknowledge seeing R1 and R2
+    reports = {
+        **{f"S{i}": [f"S{i-1}" if i > 1 else "S2", f"S{i+1}" if i < 12 else "S11"] for i in range(1, 13)},
+        # S5 and S6 report row students across aisle
+        "S5": ["S4", "S6", "R1"],
+        "S6": ["S5", "S7", "R2"],
+        # Row 3 students
+        "R1": ["R2"],
+        "R2": ["R1", "R3"],
+        "R3": ["R2"],
+    }
+    results = audit_classroom_mesh(reports)
+    res_map = {r["ble_device_id"]: r for r in results}
+
+    # All row students are verified because the classroom core acknowledged them (incoming anchors >= 2)
+    for r in ["R1", "R2", "R3"]:
+        assert res_map[r]["status"] == "VERIFIED_PRESENT"
+        assert res_map[r]["affinity_score"] == 1.00
 
 
 def test_mesh_audit_offline_peer_witness():

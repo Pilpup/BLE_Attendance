@@ -1005,20 +1005,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     }
 
                     // Layer 4 Ultrasonic Proximity Evaluation:
-                    // 1) Extreme radio proximity: median RSSI >= -55 dBm indicates devices touching / held in the same hands (< 20 cm)
-                    if (updatedPeer.medianRssi >= -55 || rssi >= -55) {
-                        ultrasonicWasTriggered = true
-                        ultrasonicProximityDetected = true
-                        coLocatedPeerId = peerId
-                        studentStatusMessage = "Co-location proxy rejected: Devices held on same desk (< 20 cm) with $peerId"
-                        submitMyNeighborsToCloud(keepRadioActive = true)
-                    } else {
-                        // 2) Close proximity (-65 dBm to -56 dBm): activate ultrasonic acoustic distance handshake
-                        val isClosePeer = rssi >= -65 || updatedPeer.medianRssi >= -65
-                        if (isClosePeer && !testedUltrasonicPeers.contains(peerId)) {
-                            testedUltrasonicPeers.add(peerId)
-                            triggerUltrasonicProximityHandshake(peerId)
-                        }
+                    // Close proximity (RSSI >= -65 dBm, including touching >= -55 dBm) activates the ultrasonic acoustic distance handshake.
+                    // Neither radio nor ultrasonic alone can flag a student: both must independently agree.
+                    val isClosePeer = rssi >= -65 || updatedPeer.medianRssi >= -65
+                    if (isClosePeer && !testedUltrasonicPeers.contains(peerId)) {
+                        testedUltrasonicPeers.add(peerId)
+                        triggerUltrasonicProximityHandshake(peerId)
                     }
                 }
             }
@@ -1043,19 +1035,31 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // Handles statistical ensemble results: only flags when consensus confirms physical same-desk co-location
+    // Handles statistical ensemble results: only flags when BOTH radio touching (RSSI >= -55 dBm)
+    // AND ultrasonic acoustic distance (< 25 cm) independently agree, preventing false positives from either sensor alone.
     private fun handleEnsembleSummary(summary: AcousticStatisticalSummary, peerId: String) {
         viewModelScope.launch(Dispatchers.Main) {
-            if (summary.verdict == EnsembleVerdict.CONFIRMED_SAME_DESK || (summary.sampleCount >= 3 && summary.greenPercentage >= 60)) {
-                // Statistical consensus confirms co-location on same desk (< 25 cm)
+            val peer = discoveredPeers[peerId]
+            val peerMedianRssi = peer?.medianRssi ?: -100
+            val isRadioTouching = peerMedianRssi >= -55 || (peer?.rssiSamples?.any { it >= -55 } == true)
+            val isAcousticClose = summary.verdict == EnsembleVerdict.CONFIRMED_SAME_DESK ||
+                    (summary.sampleCount >= 3 && summary.greenPercentage >= 60) ||
+                    (summary.estimatedDistanceCm in 1.0..25.0)
+
+            // Strict Sensor Fusion: "touching (rssi >= -55) && ultrasonic < 25cm"
+            if (isRadioTouching && isAcousticClose) {
+                // Both independent physical domains confirmed extreme co-location (< 25 cm)
                 ultrasonicProximityDetected = true
                 coLocatedPeerId = peerId
                 ultrasonicSnrDb = summary.trimmedMeanPowerDb
-                studentStatusMessage = "Ultrasonic proximity rejected: Co-located on same desk (${summary.estimatedDistanceCm.roundToInt()} cm, ${summary.greenPercentage}% Green) with $peerId"
+                studentStatusMessage = "Co-location proxy rejected: Confirmed by Radio ($peerMedianRssi dBm >= -55 dBm) AND Ultrasonic (${summary.estimatedDistanceCm.roundToInt()} cm < 25 cm) with $peerId"
                 submitMyNeighborsToCloud(keepRadioActive = true)
             } else {
-                // Discarded outliers confirmed natural separation (next bench or distant)
-                android.util.Log.i("AttendanceViewModel", "Ultrasonic separation verified for $peerId: ${summary.estimatedDistanceCm.roundToInt()} cm (${summary.bluePercentage}% Blue)")
+                // Discarded false alarms: one or both sensors confirmed natural physical separation
+                android.util.Log.i(
+                    "AttendanceViewModel",
+                    "Proximity separation verified for $peerId: Radio=$peerMedianRssi dBm (touching=$isRadioTouching), Ultrasonic=${summary.estimatedDistanceCm.roundToInt()} cm (acoustic_close=$isAcousticClose)"
+                )
             }
         }
     }
