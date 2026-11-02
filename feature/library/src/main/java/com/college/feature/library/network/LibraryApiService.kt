@@ -47,6 +47,11 @@ interface LibraryApiService {
     suspend fun reserveBook(
         @Path("bookId") bookId: String
     ): Response<BookDto>
+
+    @GET("api/v1/library/books/lookup/{isbn}")
+    suspend fun lookupBook(
+        @Path("isbn") isbn: String
+    ): Response<BookLookupResponse>
 }
 
 // ---- Wire format (snake_case once talking to the FastAPI backend) ----------
@@ -59,7 +64,10 @@ data class BookDto(
     val category: String,
     @SerializedName("total_copies") val totalCopies: Int,
     @SerializedName("available_copies") val availableCopies: Int,
-    @SerializedName("shelf_location") val shelfLocation: String? = null
+    @SerializedName("shelf_location") val shelfLocation: String? = null,
+    val edition: String? = null,
+    val overview: String? = null,
+    @SerializedName("table_of_contents") val tableOfContents: String? = null
 )
 
 data class BookCreateRequest(
@@ -68,15 +76,33 @@ data class BookCreateRequest(
     val isbn: String,
     val category: String,
     @SerializedName("total_copies") val totalCopies: Int,
-    @SerializedName("shelf_location") val shelfLocation: String? = null
+    @SerializedName("shelf_location") val shelfLocation: String? = null,
+    val edition: String? = null,
+    val overview: String? = null,
+    @SerializedName("table_of_contents") val tableOfContents: String? = null
 )
 
 data class BookUpdateRequest(
+    val title: String? = null,
+    val author: String? = null,
+    val isbn: String? = null,
+    val category: String? = null,
+    @SerializedName("total_copies") val totalCopies: Int? = null,
+    @SerializedName("available_copies") val availableCopies: Int? = null,
+    @SerializedName("shelf_location") val shelfLocation: String? = null,
+    val edition: String? = null,
+    val overview: String? = null,
+    @SerializedName("table_of_contents") val tableOfContents: String? = null
+)
+
+data class BookLookupResponse(
     val title: String,
     val author: String,
+    val edition: String? = null,
+    val index: String? = null,
     val isbn: String,
     val category: String,
-    @SerializedName("total_copies") val totalCopies: Int,
-    @SerializedName("available_copies") val availableCopies: Int,
-    @SerializedName("shelf_location") val shelfLocation: String? = null
+    val overview: String? = null,
+    @SerializedName("table_of_contents") val tableOfContents: String? = null,
+    val source: String? = null
 )

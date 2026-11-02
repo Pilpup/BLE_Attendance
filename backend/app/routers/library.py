@@ -12,7 +12,13 @@ from app.core.security import get_current_user, require_staff_or_dev
 from app.database import get_db
 from app.models.library import Book, BookReservation
 from app.models.attendance import User
-from app.schemas.library import BookCreateRequest, BookResponse, BookUpdateRequest
+from app.schemas.library import (
+    BookCreateRequest,
+    BookLookupResponse,
+    BookResponse,
+    BookUpdateRequest,
+)
+from app.services.book_lookup import lookup_book_by_isbn
 
 router = APIRouter(prefix="/library", tags=["Library"])
 
@@ -56,6 +62,43 @@ async def list_books(
     return result.scalars().all()
 
 
+@router.get("/books/lookup/{isbn}", response_model=BookLookupResponse)
+async def lookup_book(
+    isbn: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Look up book details by ISBN barcode using Google Books API, OpenLibrary API,
+    and ISBNdb API. Checks local catalog first to return locally held details.
+    """
+    clean_isbn = _normalize_isbn(isbn)
+    existing = await db.execute(select(Book).where(Book.isbn == clean_isbn))
+    local_book = existing.scalars().first()
+
+    if local_book:
+        return BookLookupResponse(
+            title=local_book.title,
+            author=local_book.author,
+            edition=local_book.edition,
+            index=local_book.shelf_location,
+            isbn=local_book.isbn,
+            category=local_book.category,
+            overview=local_book.overview,
+            table_of_contents=local_book.table_of_contents,
+            source="Local Catalogue",
+        )
+
+    lookup_result = await lookup_book_by_isbn(clean_isbn)
+    if not lookup_result:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No book metadata found for ISBN {isbn} across Google Books, OpenLibrary, and ISBNdb",
+        )
+
+    return lookup_result
+
+
 # ─────────────────────────────────────────────
 # Inventory management — STAFF / DEVELOPER only
 # ─────────────────────────────────────────────
@@ -77,6 +120,9 @@ async def add_book(
         total_copies=payload.total_copies,
         available_copies=payload.total_copies,
         shelf_location=payload.shelf_location.strip(),
+        edition=payload.edition.strip() if payload.edition and payload.edition.strip() else None,
+        overview=payload.overview.strip() if payload.overview and payload.overview.strip() else None,
+        table_of_contents=payload.table_of_contents.strip() if payload.table_of_contents and payload.table_of_contents.strip() else None,
     )
 
     existing = await db.execute(select(Book).where(Book.isbn == normalized_isbn))

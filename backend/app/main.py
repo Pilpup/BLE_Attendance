@@ -93,6 +93,9 @@ BEGIN
     CREATE INDEX IF NOT EXISTS ix_books_title ON books(title);
     CREATE INDEX IF NOT EXISTS ix_books_author ON books(author);
     CREATE INDEX IF NOT EXISTS ix_books_category ON books(category);
+    ALTER TABLE books ADD COLUMN IF NOT EXISTS edition VARCHAR(100);
+    ALTER TABLE books ADD COLUMN IF NOT EXISTS overview TEXT;
+    ALTER TABLE books ADD COLUMN IF NOT EXISTS table_of_contents TEXT;
 
     -- book_reservations (one user holding one copy; Phase 4)
     CREATE TABLE IF NOT EXISTS book_reservations (

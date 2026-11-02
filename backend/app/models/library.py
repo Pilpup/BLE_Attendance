@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -27,6 +27,9 @@ class Book(Base):
     total_copies: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     available_copies: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     shelf_location: Mapped[str] = mapped_column(String(100), nullable=False, default="Main Hall")
+    edition: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    overview: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    table_of_contents: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

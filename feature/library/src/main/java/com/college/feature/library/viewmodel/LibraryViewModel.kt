@@ -10,9 +10,11 @@ import com.college.core.network.SessionManager
 import com.college.feature.library.model.Book
 import com.college.feature.library.network.BookCreateRequest
 import com.college.feature.library.network.BookUpdateRequest
+import com.college.feature.library.network.BookLookupResponse
 import com.college.feature.library.network.LibraryApiClient
 import com.college.feature.library.network.LibraryApiService
 import com.college.feature.library.network.BookDto
+import com.college.feature.library.scanner.BookLookupHelper
 import retrofit2.Response
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -27,88 +29,7 @@ import java.util.UUID
 object LibraryCatalogStore {
 
     /** Realistic college titles across the catalogue chip categories. */
-    private val sampleCatalogue = listOf(
-        Book(
-            id = "book-001",
-            title = "Computer Networking: A Top-Down Approach",
-            author = "James F. Kurose, Keith W. Ross",
-            isbn = "9780133594140",
-            category = "CS",
-            totalCopies = 5,
-            availableCopies = 3,
-            shelfLocation = "Shelf 1-A"
-        ),
-        Book(
-            id = "book-002",
-            title = "Introduction to Algorithms",
-            author = "Thomas H. Cormen et al.",
-            isbn = "9780262042829",
-            category = "CS",
-            totalCopies = 3,
-            availableCopies = 2,
-            shelfLocation = "Shelf 1-B"
-        ),
-        Book(
-            id = "book-003",
-            title = "Operating System Concepts",
-            author = "Abraham Silberschatz",
-            isbn = "9781118878762",
-            category = "CS",
-            totalCopies = 4,
-            availableCopies = 0,
-            shelfLocation = "Shelf 1-C"
-        ),
-        Book(
-            id = "book-004",
-            title = "Linear Algebra Done Right",
-            author = "Sheldon Axler",
-            isbn = "9781441987153",
-            category = "MATH",
-            totalCopies = 3,
-            availableCopies = 1,
-            shelfLocation = "Shelf 2-A"
-        ),
-        Book(
-            id = "book-005",
-            title = "Calculus: Early Transcendentals",
-            author = "James Stewart",
-            isbn = "9781285741550",
-            category = "MATH",
-            totalCopies = 6,
-            availableCopies = 4,
-            shelfLocation = "Shelf 2-B"
-        ),
-        Book(
-            id = "book-006",
-            title = "University Physics with Modern Physics",
-            author = "Hugh D. Young, Roger A. Freedman",
-            isbn = "9780321973610",
-            category = "PHYSICS",
-            totalCopies = 4,
-            availableCopies = 2,
-            shelfLocation = "Shelf 3-A"
-        ),
-        Book(
-            id = "book-007",
-            title = "Organic Chemistry",
-            author = "Jonathan Clayden",
-            isbn = "9780199642778",
-            category = "CHEMISTRY",
-            totalCopies = 2,
-            availableCopies = 1,
-            shelfLocation = "Shelf 3-B"
-        ),
-        Book(
-            id = "book-008",
-            title = "Molecular Biology of the Cell",
-            author = "Bruce Alberts et al.",
-            isbn = "9780815344322",
-            category = "BIO",
-            totalCopies = 3,
-            availableCopies = 0,
-            shelfLocation = "Shelf 4-A"
-        )
-    )
+    private val sampleCatalogue = emptyList<Book>()
 
     /** Seeded eagerly so the dashboard card has counts on first launch. */
     val books = mutableStateListOf<Book>().apply { addAll(sampleCatalogue) }
@@ -254,14 +175,27 @@ class LibraryViewModel : ViewModel() {
                     category = fixed.category,
                     totalCopies = fixed.totalCopies,
                     availableCopies = fixed.availableCopies,
-                    shelfLocation = fixed.shelfLocation
+                    shelfLocation = fixed.shelfLocation,
+                    edition = fixed.edition,
+                    overview = fixed.overview,
+                    tableOfContents = fixed.tableOfContents
                 )
             )
         }
     }
 
     /** Staff add a title to the catalogue (available == total on intake). */
-    fun addBook(title: String, author: String, isbn: String, category: String, copies: Int) {
+    fun addBook(
+        title: String,
+        author: String,
+        isbn: String,
+        category: String,
+        copies: Int,
+        shelfLocation: String = "Main Hall",
+        edition: String? = null,
+        overview: String? = null,
+        tableOfContents: String? = null
+    ) {
         if (!canUseStaffTools) return
         if (title.isBlank() || author.isBlank() || isbn.isBlank() || category.isBlank()) return
 
@@ -274,7 +208,10 @@ class LibraryViewModel : ViewModel() {
             category = category.trim().uppercase(),
             totalCopies = total,
             availableCopies = total,
-            shelfLocation = "Main Hall"
+            shelfLocation = shelfLocation.trim().ifBlank { "Main Hall" },
+            edition = edition?.trim()?.ifBlank { null },
+            overview = overview?.trim()?.ifBlank { null },
+            tableOfContents = tableOfContents?.trim()?.ifBlank { null }
         )
 
         LibraryCatalogStore.books.add(book)
@@ -286,9 +223,38 @@ class LibraryViewModel : ViewModel() {
                     isbn = book.isbn,
                     category = book.category,
                     totalCopies = book.totalCopies,
-                    shelfLocation = book.shelfLocation
+                    shelfLocation = book.shelfLocation,
+                    edition = book.edition,
+                    overview = book.overview,
+                    tableOfContents = book.tableOfContents
                 )
             )
+        }
+    }
+
+    /** Active book lookup state (for UI loading indicators). */
+    var isLookingUpBook by mutableStateOf(false)
+        private set
+
+    /**
+     * Look up book details by ISBN barcode using the cascading Google Books,
+     * OpenLibrary, and ISBNdb providers.
+     */
+    fun lookupBook(isbn: String, onResult: (BookLookupResponse?) -> Unit) {
+        viewModelScope.launch {
+            isLookingUpBook = true
+            try {
+                val result = BookLookupHelper.lookup(isbn)
+                withContext(Dispatchers.Main) {
+                    onResult(result)
+                }
+            } catch (_: Exception) {
+                withContext(Dispatchers.Main) {
+                    onResult(null)
+                }
+            } finally {
+                isLookingUpBook = false
+            }
         }
     }
 
@@ -412,6 +378,9 @@ class LibraryViewModel : ViewModel() {
         category = category,
         totalCopies = totalCopies,
         availableCopies = availableCopies,
-        shelfLocation = shelfLocation ?: "Main Hall"
+        shelfLocation = shelfLocation ?: "Main Hall",
+        edition = edition,
+        overview = overview,
+        tableOfContents = tableOfContents
     )
 }

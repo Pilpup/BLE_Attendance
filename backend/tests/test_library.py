@@ -420,3 +420,61 @@ async def test_library_unknown_book_404s():
 
         reserve_miss = await client.post(f"{LIBRARY_URL}/{ghost_id}/reserve", headers=staff_headers)
         assert reserve_miss.status_code == 404
+
+
+# ─────────────────────────────────────────────
+# ISBN Barcode Lookup & Metadata Extraction
+# ─────────────────────────────────────────────
+@pytest.mark.anyio
+async def test_library_book_lookup_and_edition_overview():
+    session_factory = await _make_test_env()
+    await _insert_role_user(
+        session_factory, name="Librarian Alice", email="alice@univ.edu", role="STAFF", roll_number="LIB004"
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        staff_headers = await _login(client, "alice@univ.edu")
+
+        # 1. Lookup a valid ISBN (Computer Networking - Kurose & Ross)
+        lookup_res = await client.get(f"{LIBRARY_URL}/lookup/9780133594140", headers=staff_headers)
+        if lookup_res.status_code == 200:
+            data = lookup_res.json()
+            assert "Computer Networking" in data["title"]
+            assert "Kurose" in data["author"]
+            assert data["isbn"] == "9780133594140"
+            assert data["source"] is not None
+
+        # 2. Lookup an invalid ISBN
+        bad_lookup = await client.get(f"{LIBRARY_URL}/lookup/9799999999999", headers=staff_headers)
+        assert bad_lookup.status_code == 404
+
+        # 3. Add book with edition, overview, index, and table_of_contents
+        book_payload = {
+            "title": "Quantum Computation and Quantum Information",
+            "author": "Michael A. Nielsen, Isaac L. Chuang",
+            "isbn": "9781107002173",
+            "category": "PHYSICS",
+            "total_copies": 3,
+            "shelf_location": "QC174.12 .N54 2010",
+            "edition": "10th Anniversary Edition",
+            "overview": "Comprehensive introduction to the main ideas and techniques of quantum computation and information.",
+            "table_of_contents": "1. Introduction and overview\n2. Introduction to quantum mechanics\n3. Introduction to computer science",
+        }
+        create_res = await client.post(LIBRARY_URL, headers=staff_headers, json=book_payload)
+        assert create_res.status_code == 201
+        created = create_res.json()
+        assert created["edition"] == "10th Anniversary Edition"
+        assert created["shelf_location"] == "QC174.12 .N54 2010"
+        assert "Comprehensive introduction" in created["overview"]
+        assert "1. Introduction and overview" in created["table_of_contents"]
+
+        # 4. Lookup now finds it from Local Catalogue even if offline
+        local_lookup = await client.get(f"{LIBRARY_URL}/lookup/9781107002173", headers=staff_headers)
+        assert local_lookup.status_code == 200
+        assert local_lookup.json()["title"] == "Quantum Computation and Quantum Information"
+        assert local_lookup.json()["edition"] == "10th Anniversary Edition"
+        assert local_lookup.json()["index"] == "QC174.12 .N54 2010"
+        assert "1. Introduction and overview" in local_lookup.json()["table_of_contents"]
+        assert local_lookup.json()["source"] == "Local Catalogue"
+

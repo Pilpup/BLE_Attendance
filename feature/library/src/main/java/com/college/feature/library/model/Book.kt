@@ -12,7 +12,11 @@ data class Book(
     val category: String,
     val totalCopies: Int,
     val availableCopies: Int,
-    val shelfLocation: String = "Main Hall"
+    val shelfLocation: String = "Main Hall",
+    val edition: String? = null,
+    val overview: String? = null,
+    val tableOfContents: String? = null
 ) {
     val isAvailable: Boolean get() = availableCopies > 0
+    val index: String get() = shelfLocation
 }

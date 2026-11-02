@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     OTP_EXPIRE_MINUTES: int = 5
     OTP_CLEANUP_INTERVAL_SECONDS: int = 300  # 5 minutes
 
+    # Book metadata lookup keys (optional; Google Books & OpenLibrary work without keys)
+    GOOGLE_BOOKS_API_KEY: str = ""
+    ISBNDB_API_KEY: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
