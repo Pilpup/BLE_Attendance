@@ -149,6 +149,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         get() = (challengeTotalTargets == 0 || challengeScorePercentage >= 55) &&
                 (lastFocusReport == null || lastFocusReport?.isPassing == true)
 
+    val isDividedProxy: Boolean
+        get() = lastFocusReport?.classification == com.college.feature.attendance.telemetry.FocusClassification.DIVIDED_ATTENTION_PROXY
+
+    val hasLocalDefenseFailed: Boolean
+        get() = isDividedProxy || !isChallengePassed || faceProxyDetected || ultrasonicProximityDetected
+
     fun recordChallengeResult(hit: Int, total: Int) {
         challengeScore = hit
         challengeTotalTargets = total
@@ -182,10 +188,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
     private val testedUltrasonicPeers = mutableSetOf<String>()
 
-    // Top 3 nearest desk neighbors with signal strength above threshold
+    // Top 3 nearest desk neighbors with signal strength above threshold (median RSSI >= -70 dBm)
     val topDeskNeighbours: List<PeerData>
         get() = discoveredPeers.values
-            .filter { it.medianRssi >= -90 }
+            .filter { it.medianRssi >= -70 }
             .sortedByDescending { it.medianRssi }
             .take(3)
 
@@ -565,6 +571,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val sessId = detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: return
         val neighborIds = topDeskNeighbours.map { it.peerId }
         val facePayload = capturedFaceBase64
+        val dividedAttention = isDividedProxy
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val req = SubmitNeighborsRequest(
@@ -573,14 +580,15 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     sessionSalt = detectedSessionSalt.takeIf { it != "------" },
                     faceImageBase64 = facePayload,
                     ultrasonicProximityDetected = ultrasonicProximityDetected,
-                    coLocatedPeerId = coLocatedPeerId
+                    coLocatedPeerId = coLocatedPeerId,
+                    dividedAttentionDetected = dividedAttention
                 )
                 // AuthInterceptor adds the bearer token when a session is active;
                 val res = api.submitNeighbors(sessId, req)
                 withContext(Dispatchers.Main) {
                     if (res.isSuccessful) {
                         if (!keepRadioActive && studentDiscoverySecondsRemaining == 0) {
-                            if (!isChallengePassed || faceProxyDetected || ultrasonicProximityDetected) {
+                            if (hasLocalDefenseFailed) {
                                 studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                             } else {
                                 studentPhase = StudentPhase.WAITING_FOR_AUDIT
@@ -601,7 +609,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         if (extracted?.contains("Ultrasonic", ignoreCase = true) == true || extracted?.contains("desk", ignoreCase = true) == true) {
                             ultrasonicProximityDetected = true
                         }
-                        studentStatusMessage = extracted ?: "Biometric / Salt / Ultrasonic check rejected"
+                        studentStatusMessage = extracted ?: "Security defense verification rejected"
                         studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                         onStopScanning?.invoke()
                         onStopBroadcasting?.invoke()
@@ -965,16 +973,27 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 val peerId = cleanMsg.removePrefix(detectedSessionId).takeLast(4)
                 if (peerId.isNotEmpty() && peerId != studentShortId) {
                     val existing = discoveredPeers[peerId]
-                    if (existing != null) {
-                        discoveredPeers[peerId] = existing.withSample(rssi)
+                    val updatedPeer = if (existing != null) {
+                        existing.withSample(rssi)
                     } else {
-                        discoveredPeers[peerId] = PeerData(peerId).withSample(rssi)
+                        PeerData(peerId).withSample(rssi)
+                    }
+                    discoveredPeers[peerId] = updatedPeer
+
+                    if (existing == null) {
                         // Push updated peer list to server
                         submitMyNeighborsToCloud(keepRadioActive = true)
                     }
 
-                    // Trigger Layer 4 ultrasonic handshake if peer is in physical vicinity (RSSI >= -70 dBm)
-                    if (rssi >= -70 && !testedUltrasonicPeers.contains(peerId)) {
+                    // Layer 4 proximity check:
+                    // 1) Extreme BLE radio proximity: RSSI >= -52 dBm indicates phones held in same hands (< 25 cm)
+                    if (rssi >= -52 || updatedPeer.medianRssi >= -52) {
+                        ultrasonicProximityDetected = true
+                        coLocatedPeerId = peerId
+                        studentStatusMessage = "Co-location proxy rejected: Devices held on same desk (< 25 cm) with $peerId"
+                        studentPhase = StudentPhase.UNVERIFIED_FLAGGED
+                        submitMyNeighborsToCloud(keepRadioActive = true)
+                    } else if (rssi >= -70 && !testedUltrasonicPeers.contains(peerId)) {
                         testedUltrasonicPeers.add(peerId)
                         triggerUltrasonicProximityHandshake(peerId)
                     }
@@ -990,20 +1009,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         viewModelScope.launch(Dispatchers.Default) {
             val isEmitter = studentShortId < peerId
             if (isEmitter) {
-                // Emitter transmits rapid 12-burst pulse train, then listens for peer return train
-                proximityManager.emitBurstSequence(count = 12, intervalMs = 120L)
-                kotlinx.coroutines.delay(1600L)
-
-                proximityManager.collectBurstEnsemble(listenDurationMs = 1800L) { summary ->
-                    handleEnsembleSummary(summary, peerId)
-                }
+                // Emitter transmits rapid 15-burst pulse train
+                proximityManager.emitBurstSequence(count = 15, intervalMs = 120L)
             } else {
-                // Listener listens first for peer's burst train, then transmits return burst train
-                proximityManager.collectBurstEnsemble(listenDurationMs = 1800L) { summary ->
+                // Listener listens cleanly for incoming pulse train without transmitting over its own mic
+                proximityManager.collectBurstEnsemble(listenDurationMs = 2500L) { summary ->
                     handleEnsembleSummary(summary, peerId)
                 }
-                kotlinx.coroutines.delay(200L)
-                proximityManager.emitBurstSequence(count = 12, intervalMs = 120L)
             }
         }
     }
@@ -1011,8 +1023,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     // Handles statistical ensemble results: only flags when consensus confirms physical same-desk co-location
     private fun handleEnsembleSummary(summary: AcousticStatisticalSummary, peerId: String) {
         viewModelScope.launch(Dispatchers.Main) {
-            if (summary.verdict == EnsembleVerdict.CONFIRMED_SAME_DESK) {
-                // Statistical consensus confirms co-location on same desk (< 25 cm, >= 65% Green)
+            if (summary.verdict == EnsembleVerdict.CONFIRMED_SAME_DESK || (summary.sampleCount >= 3 && summary.greenPercentage >= 60)) {
+                // Statistical consensus confirms co-location on same desk (< 25 cm)
                 ultrasonicProximityDetected = true
                 coLocatedPeerId = peerId
                 ultrasonicSnrDb = summary.trimmedMeanPowerDb
@@ -1048,14 +1060,19 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             withContext(Dispatchers.Main) {
                                 auditedRecord = myRecord
                                 if (myRecord != null) {
-                                    if (myRecord.status == "VERIFIED_PRESENT") {
+                                    if (myRecord.status == "VERIFIED_PRESENT" && !hasLocalDefenseFailed) {
                                         studentPhase = StudentPhase.VERIFIED_PRESENT
                                         studentStatusMessage = myRecord.remarks ?: "Verified by classroom mesh graph"
                                     } else {
                                         studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-                                        studentStatusMessage = when (myRecord.status) {
-                                            "ISOLATED_FLAGGED" -> myRecord.remarks ?: "Zero desk neighbors detected (isolated seat)"
-                                            "SPOOFER_REJECTED" -> myRecord.remarks ?: "Hallway spoofer detected (unreciprocated link)"
+                                        studentStatusMessage = when {
+                                            hasLocalDefenseFailed -> studentStatusMessage ?: "Local anti-proxy defense rejected"
+                                            myRecord.status == "ISOLATED_FLAGGED" -> myRecord.remarks ?: "Zero desk neighbors detected (isolated seat)"
+                                            myRecord.status == "SPOOFER_REJECTED" -> myRecord.remarks ?: "Hallway spoofer detected (unreciprocated link)"
+                                            myRecord.status == "DUPLICATE_FACE_PROXY" -> "Biometric proxy rejected: Duplicate face detected in session"
+                                            myRecord.status == "CO_LOCATED_SAME_DESK_PROXY" -> "Ultrasonic proximity rejected: Co-located on same desk (< 25 cm)"
+                                            myRecord.status == "DIVIDED_ATTENTION_PROXY" -> "Divided attention proxy rejected: Simultaneous multi-device gameplay"
+                                            myRecord.status == "NO_FACE_DETECTED" -> "Biometric verification failed: No human face detected"
                                             else -> myRecord.remarks ?: "Verification criteria not met"
                                         }
                                     }
@@ -1096,14 +1113,19 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         withContext(Dispatchers.Main) {
                             auditedRecord = myRecord
                             if (myRecord != null) {
-                                if (myRecord.status == "VERIFIED_PRESENT") {
+                                if (myRecord.status == "VERIFIED_PRESENT" && !hasLocalDefenseFailed) {
                                     studentPhase = StudentPhase.VERIFIED_PRESENT
                                     studentStatusMessage = myRecord.remarks ?: "Verified by classroom mesh graph"
                                 } else {
                                     studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-                                    studentStatusMessage = when (myRecord.status) {
-                                        "ISOLATED_FLAGGED" -> myRecord.remarks ?: "Zero desk neighbors detected (isolated seat)"
-                                        "SPOOFER_REJECTED" -> myRecord.remarks ?: "Hallway spoofer detected (unreciprocated link)"
+                                    studentStatusMessage = when {
+                                        hasLocalDefenseFailed -> studentStatusMessage ?: "Local anti-proxy defense rejected"
+                                        myRecord.status == "ISOLATED_FLAGGED" -> myRecord.remarks ?: "Zero desk neighbors detected (isolated seat)"
+                                        myRecord.status == "SPOOFER_REJECTED" -> myRecord.remarks ?: "Hallway spoofer detected (unreciprocated link)"
+                                        myRecord.status == "DUPLICATE_FACE_PROXY" -> "Biometric proxy rejected: Duplicate face detected in session"
+                                        myRecord.status == "CO_LOCATED_SAME_DESK_PROXY" -> "Ultrasonic proximity rejected: Co-located on same desk (< 25 cm)"
+                                        myRecord.status == "DIVIDED_ATTENTION_PROXY" -> "Divided attention proxy rejected: Simultaneous multi-device gameplay"
+                                        myRecord.status == "NO_FACE_DETECTED" -> "Biometric verification failed: No human face detected"
                                         else -> myRecord.remarks ?: "Verification criteria not met"
                                     }
                                 }

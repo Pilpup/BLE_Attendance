@@ -222,7 +222,8 @@ object GoertzelDetector {
         val bluePct = (blueCount * 100) / total
 
         val verdict = when {
-            total < 8 -> EnsembleVerdict.COLLECTING_SAMPLES
+            greenCount >= 3 && greenPct >= 60 -> EnsembleVerdict.CONFIRMED_SAME_DESK
+            total < 6 -> EnsembleVerdict.COLLECTING_SAMPLES
             greenPct >= 65 -> EnsembleVerdict.CONFIRMED_SAME_DESK
             bluePct >= 65 -> EnsembleVerdict.CONFIRMED_NEXT_BENCH
             else -> EnsembleVerdict.AMBIGUOUS_BOUNDARY

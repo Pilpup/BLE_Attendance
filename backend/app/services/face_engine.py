@@ -46,7 +46,9 @@ class FaceMatchingEngine:
     def _init_models(self) -> None:
         try:
             if os.path.exists(self.detector_path) and os.path.exists(self.recognizer_path):
-                self.detector = cv2.FaceDetectorYN.create(self.detector_path, "", (320, 320))
+                self.detector = cv2.FaceDetectorYN.create(
+                    self.detector_path, "", (320, 320), score_threshold=0.55, nms_threshold=0.3
+                )
                 self.recognizer = cv2.FaceRecognizerSF.create(self.recognizer_path, "")
                 logger.info(f"[FaceEngine] Loaded YuNet and SFace models from {self.detector_path}")
             else:

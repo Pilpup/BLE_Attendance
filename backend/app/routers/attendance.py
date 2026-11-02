@@ -562,6 +562,41 @@ async def submit_student_neighbors(
             face_base64=payload.face_image_base64,
         )
 
+        if not face_check_result.has_human_face:
+            logger.warning(f"[Layer 3 Face Biometric] No face detected for {student_key}: {face_check_result.remarks}")
+            current_rec_res = await db.execute(
+                select(AttendanceRecord).where(
+                    AttendanceRecord.session_id == session_obj.id,
+                    AttendanceRecord.ble_device_id == student_key,
+                )
+            )
+            current_rec = current_rec_res.scalars().first()
+            if current_rec:
+                current_rec.status = "NO_FACE_DETECTED"
+                current_rec.verification_method = "FACE_BIOMETRIC_FAILED"
+                current_rec.remarks = face_check_result.remarks
+            else:
+                db.add(
+                    AttendanceRecord(
+                        id=uuid.uuid4(),
+                        session_id=session_obj.id,
+                        student_id=current_user.id if current_user else None,
+                        ble_device_id=student_key,
+                        status="NO_FACE_DETECTED",
+                        verification_method="FACE_BIOMETRIC_FAILED",
+                        affinity_score=0.00,
+                        reported_neighbors=normalized_neighbors,
+                        remarks=face_check_result.remarks,
+                        recorded_at=datetime.now(timezone.utc),
+                    )
+                )
+            await db.commit()
+
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Biometric proxy rejected: {face_check_result.remarks}",
+            )
+
         if face_check_result.is_duplicate:
             # Retroactively flag earlier matched student
             if face_check_result.matched_student_key:
@@ -627,11 +662,10 @@ async def submit_student_neighbors(
                 detail=f"Biometric proxy rejected: {face_check_result.remarks}",
             )
 
-    # Ultrasonic proximity check (Layer 4: Ultrasonic Acoustic Handshake)
-    if payload.ultrasonic_proximity_detected:
-        peer_key = payload.co_located_peer_id or "UNKNOWN"
-        remarks = f"Ultrasonic proximity rejected: Co-located on same desk (< 25 cm) with {peer_key}"
-        logger.warning(f"[Layer 4 Ultrasonic Proxy] {student_key} co-located with {peer_key}")
+    # Behaviour telemetry check (Layer 2: Cognitive Reflex & Divided Attention Engine)
+    if payload.divided_attention_detected:
+        remarks = "Divided attention proxy detected (simultaneous multi-device gameplay)"
+        logger.warning(f"[Layer 2 Behaviour Proxy] {student_key} divided attention flagged")
 
         current_rec_res = await db.execute(
             select(AttendanceRecord).where(
@@ -641,8 +675,8 @@ async def submit_student_neighbors(
         )
         current_rec = current_rec_res.scalars().first()
         if current_rec:
-            current_rec.status = "CO_LOCATED_SAME_DESK_PROXY"
-            current_rec.verification_method = "ULTRASONIC_ACOUSTIC_MATCH"
+            current_rec.status = "DIVIDED_ATTENTION_PROXY"
+            current_rec.verification_method = "BEHAVIOUR_ANALYSIS_FAILED"
             current_rec.remarks = remarks
         else:
             db.add(
@@ -651,8 +685,8 @@ async def submit_student_neighbors(
                     session_id=session_obj.id,
                     student_id=current_user.id if current_user else None,
                     ble_device_id=student_key,
-                    status="CO_LOCATED_SAME_DESK_PROXY",
-                    verification_method="ULTRASONIC_ACOUSTIC_MATCH",
+                    status="DIVIDED_ATTENTION_PROXY",
+                    verification_method="BEHAVIOUR_ANALYSIS_FAILED",
                     affinity_score=0.00,
                     reported_neighbors=normalized_neighbors,
                     remarks=remarks,
@@ -664,6 +698,75 @@ async def submit_student_neighbors(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=remarks,
+        )
+
+    # Ultrasonic proximity check (Layer 4: Ultrasonic Acoustic Handshake)
+    if payload.ultrasonic_proximity_detected:
+        peer_key = payload.co_located_peer_id or "UNKNOWN"
+        remarks_current = f"Ultrasonic proximity rejected: Co-located on same desk (< 25 cm) with {peer_key}"
+        remarks_peer = f"Ultrasonic proximity rejected: Co-located on same desk (< 25 cm) with {student_key}"
+        logger.warning(f"[Layer 4 Ultrasonic Proxy] {student_key} co-located with {peer_key}")
+
+        # Retroactively flag co-located peer device
+        if peer_key != "UNKNOWN":
+            peer_rec_res = await db.execute(
+                select(AttendanceRecord).where(
+                    AttendanceRecord.session_id == session_obj.id,
+                    AttendanceRecord.ble_device_id == peer_key,
+                )
+            )
+            peer_rec = peer_rec_res.scalars().first()
+            if peer_rec:
+                peer_rec.status = "CO_LOCATED_SAME_DESK_PROXY"
+                peer_rec.verification_method = "ULTRASONIC_ACOUSTIC_MATCH"
+                peer_rec.remarks = remarks_peer
+            else:
+                db.add(
+                    AttendanceRecord(
+                        id=uuid.uuid4(),
+                        session_id=session_obj.id,
+                        student_id=None,
+                        ble_device_id=peer_key,
+                        status="CO_LOCATED_SAME_DESK_PROXY",
+                        verification_method="ULTRASONIC_ACOUSTIC_MATCH",
+                        affinity_score=0.00,
+                        reported_neighbors=[],
+                        remarks=remarks_peer,
+                        recorded_at=datetime.now(timezone.utc),
+                    )
+                )
+
+        current_rec_res = await db.execute(
+            select(AttendanceRecord).where(
+                AttendanceRecord.session_id == session_obj.id,
+                AttendanceRecord.ble_device_id == student_key,
+            )
+        )
+        current_rec = current_rec_res.scalars().first()
+        if current_rec:
+            current_rec.status = "CO_LOCATED_SAME_DESK_PROXY"
+            current_rec.verification_method = "ULTRASONIC_ACOUSTIC_MATCH"
+            current_rec.remarks = remarks_current
+        else:
+            db.add(
+                AttendanceRecord(
+                    id=uuid.uuid4(),
+                    session_id=session_obj.id,
+                    student_id=current_user.id if current_user else None,
+                    ble_device_id=student_key,
+                    status="CO_LOCATED_SAME_DESK_PROXY",
+                    verification_method="ULTRASONIC_ACOUSTIC_MATCH",
+                    affinity_score=0.00,
+                    reported_neighbors=normalized_neighbors,
+                    remarks=remarks_current,
+                    recorded_at=datetime.now(timezone.utc),
+                )
+            )
+        await db.commit()
+
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=remarks_current,
         )
 
     # Persist student check-in in database (multi-worker safe, crash resilient)
@@ -778,7 +881,13 @@ async def audit_and_finalize_session(
             )
         )
         prior_rec = prior_res.scalars().first()
-        if prior_rec and prior_rec.status in ("DUPLICATE_FACE_PROXY", "SPOOFER_REJECTED"):
+        if prior_rec and prior_rec.status in (
+            "DUPLICATE_FACE_PROXY",
+            "CO_LOCATED_SAME_DESK_PROXY",
+            "DIVIDED_ATTENTION_PROXY",
+            "NO_FACE_DETECTED",
+            "SPOOFER_REJECTED",
+        ):
             continue
 
         if item["status"] == "VERIFIED_PRESENT":
@@ -817,7 +926,13 @@ async def audit_and_finalize_session(
     spoofer_res = await db.execute(
         select(func.count()).select_from(AttendanceRecord).where(
             AttendanceRecord.session_id == session_obj.id,
-            AttendanceRecord.status.in_(["SPOOFER_REJECTED", "DUPLICATE_FACE_PROXY"]),
+            AttendanceRecord.status.in_([
+                "SPOOFER_REJECTED",
+                "DUPLICATE_FACE_PROXY",
+                "CO_LOCATED_SAME_DESK_PROXY",
+                "DIVIDED_ATTENTION_PROXY",
+                "NO_FACE_DETECTED",
+            ]),
         )
     )
     session_obj.total_spoofers = spoofer_res.scalar() or 0

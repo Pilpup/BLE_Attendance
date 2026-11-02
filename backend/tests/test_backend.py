@@ -611,5 +611,26 @@ async def test_ultrasonic_proximity_rejection():
         assert "STUD4" in res.json()["detail"]
 
 
+# Verifies Layer 2: Behaviour Analysis divided attention proxy rejection
+@pytest.mark.anyio
+async def test_divided_attention_proxy_rejection():
+    from httpx import AsyncClient, ASGITransport
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post(
+            "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
+            json={
+                "student_id": "STUD5",
+                "neighbors": ["PEER-X"],
+                "session_salt": "DEMO1",
+                "divided_attention_detected": True,
+            },
+        )
+        assert res.status_code == 403
+        assert "Divided attention proxy detected" in res.json()["detail"]
+
+
+
 
 

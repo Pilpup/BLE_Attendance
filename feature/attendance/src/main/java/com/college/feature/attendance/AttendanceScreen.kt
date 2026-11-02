@@ -691,7 +691,7 @@ private fun StudentSection(
 
                 studentPhase == StudentPhase.VERIFIED_PRESENT || studentPhase == StudentPhase.UNVERIFIED_FLAGGED -> {
                     AntiProxyDefenseResultsScreen(
-                        isVerified = studentPhase == StudentPhase.VERIFIED_PRESENT || auditedRecord?.status == "VERIFIED_PRESENT",
+                        isVerified = studentPhase == StudentPhase.VERIFIED_PRESENT,
                         deskNeighbours = deskNeighbours,
                         targetsHit = targetsHit,
                         activeReport = activeReport,
@@ -1162,13 +1162,18 @@ private fun AntiProxyDefenseResultsScreen(
     ultrasonicWasTriggered: Boolean = false
 ) {
     val isDividedAttention = activeReport?.classification == FocusClassification.DIVIDED_ATTENTION_PROXY ||
-            studentStatusMessage?.contains("Divided attention", ignoreCase = true) == true
+            studentStatusMessage?.contains("Divided attention", ignoreCase = true) == true ||
+            auditedRecord?.status == "DIVIDED_ATTENTION_PROXY"
     val isFaceProxy = faceProxyDetected ||
             studentStatusMessage?.contains("Biometric", ignoreCase = true) == true ||
-            studentStatusMessage?.contains("Duplicate face", ignoreCase = true) == true
+            studentStatusMessage?.contains("Duplicate face", ignoreCase = true) == true ||
+            auditedRecord?.status == "DUPLICATE_FACE_PROXY" ||
+            auditedRecord?.status == "NO_FACE_DETECTED"
     val isUltrasonicProxy = ultrasonicProximityDetected ||
             studentStatusMessage?.contains("Ultrasonic", ignoreCase = true) == true ||
-            studentStatusMessage?.contains("same desk", ignoreCase = true) == true
+            studentStatusMessage?.contains("same desk", ignoreCase = true) == true ||
+            studentStatusMessage?.contains("Co-location", ignoreCase = true) == true ||
+            auditedRecord?.status == "CO_LOCATED_SAME_DESK_PROXY"
 
     // Decode normalized captured face bitmap for visual verification
     val faceBitmap = remember(capturedFaceBase64) {
@@ -1198,10 +1203,14 @@ private fun AntiProxyDefenseResultsScreen(
 
     // Layer 4: Ultrasonic Distance
     val ultrasonicStatus = when {
-        !ultrasonicWasTriggered -> DefenseStatus.DORMANT
         isUltrasonicProxy -> DefenseStatus.FAILED
+        !ultrasonicWasTriggered -> DefenseStatus.DORMANT
         else -> DefenseStatus.PASSED
     }
+
+    // Attendance is ONLY verified if ALL 4 security layers pass!
+    val allDefensesPassed = blePass && reflexPass && facePass && (ultrasonicStatus != DefenseStatus.FAILED)
+    val isOverallVerified = isVerified && allDefensesPassed && (auditedRecord == null || auditedRecord.status == "VERIFIED_PRESENT")
 
     Column(
         modifier = Modifier
@@ -1210,8 +1219,8 @@ private fun AntiProxyDefenseResultsScreen(
             .padding(horizontal = 20.dp, vertical = 28.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        val heroColor = if (isVerified) neonMint else crimsonRed
-        val heroIcon = if (isVerified) Icons.Default.CheckCircle else Icons.Default.Warning
+        val heroColor = if (isOverallVerified) neonMint else crimsonRed
+        val heroIcon = if (isOverallVerified) Icons.Default.CheckCircle else Icons.Default.Warning
 
         // Centered Glowing Status Badge
         Box(
@@ -1233,7 +1242,7 @@ private fun AntiProxyDefenseResultsScreen(
         Spacer(modifier = Modifier.height(16.dp))
 
         Text(
-            text = if (isVerified) "VERIFIED" else "UNVERIFIED",
+            text = if (isOverallVerified) "VERIFIED" else "UNVERIFIED",
             fontSize = 32.sp,
             fontWeight = FontWeight.Black,
             letterSpacing = 2.sp,

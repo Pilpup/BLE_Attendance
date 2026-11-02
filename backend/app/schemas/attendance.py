@@ -132,6 +132,10 @@ class SubmitNeighborsRequest(BaseModel):
         default=None,
         description="The peer student ID detected within ultrasonic range on the same desk"
     )
+    divided_attention_detected: Optional[bool] = Field(
+        default=None,
+        description="Whether divided attention gameplay proxy was detected by local game telemetry"
+    )
 
 
 
