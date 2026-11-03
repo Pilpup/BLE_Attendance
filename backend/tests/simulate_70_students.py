@@ -4,17 +4,6 @@ from typing import Dict, List, Set, Tuple
 from app.services.graph_engine import audit_classroom_mesh
 
 class AuditoriumClassroomSim:
-    """
-    Simulates a 70-student lecture hall / auditorium divided into 3 column banks:
-       ||       |||       ||
-    Left Bank  Aisle 1  Center Bank  Aisle 2  Right Bank
-    (2 seats)  (<= 2m)   (3 seats)   (<= 2m)   (2 seats)
-
-    10 rows deep = 70 total seats.
-    Incorporates physical RF path loss (n=2.4), wall/window attenuation,
-    antenna hardware TX/RX biases, body shielding (pockets/bags),
-    multipath shadow fading (sigma=4.0 dB), and packet loss near -82 dBm.
-    """
     def __init__(self, seed: int = 42):
         random.seed(seed)
         self.tx_power_ref = -65.0       # Calibrated RSSI at 1m (ADVERTISE_TX_POWER_LOW)
@@ -28,15 +17,10 @@ class AuditoriumClassroomSim:
         in_class_ids = set()
         spoofer_ids = set()
 
-        # Two aisles up to 2.0m wide (varied between 1.6m and 2.0m)
         aisle1_w = random.uniform(1.6, 2.0)
         aisle2_w = random.uniform(1.6, 2.0)
         row_spacing = random.uniform(1.1, 1.25)
 
-        # X-coordinates for the 7 seats in each row:
-        # Col 0-1: Left Bank (||)
-        # Col 2-4: Center Bank (|||)
-        # Col 5-6: Right Bank (||)
         col_x = [
             0.5,                                    # Col 0: Left window seat (||)
             1.3,                                    # Col 1: Left aisle seat  (||)
@@ -48,10 +32,6 @@ class AuditoriumClassroomSim:
         ]
         room_x_max = col_x[6] + 0.9
 
-        # Realistic attendance variations across 1,000 trials:
-        # 50% Full (70 students present)
-        # 30% Realistic/Normal (58-68 students present, random empty seats)
-        # 20% Sparse (48-57 students present, larger gaps)
         scenario_roll = random.random()
         if scenario_roll < 0.50:
             target_students = 70
@@ -92,7 +72,6 @@ class AuditoriumClassroomSim:
         for sid in offline_sids:
             phone_profiles[sid]["is_offline"] = True
 
-        # 10 Outside Spoofers in 5 diverse threat scenarios:
         spoofer_configs = [
             # Scenario A: Outside Window cluster (3 students standing under classroom window)
             ("SP_WIN_1", -1.5, random.uniform(3.0, 6.0), "window_cluster", 10.0),
@@ -309,14 +288,14 @@ def run_monte_carlo(trials: int = 1000):
     print(f"Total In-Class Students: {total_in_class:,} (avg {total_in_class / trials:.1f} / session)")
     print(f"Total Outside Spoofer Attacks: {total_spoofers:,} (10 / session)")
     print("-----------------------------------------------------------------")
-    print(f"🚨 CRITICAL SPOOFER BREACHES: {total_breaches} / {total_spoofers} ({total_breaches / total_spoofers * 100:.2f}%)")
-    print(f"🛡️ SPOOFERS QUARANTINED (ISOLATED_FLAGGED): {total_quarantined_spoofers} / {total_spoofers} ({total_quarantined_spoofers / total_spoofers * 100:.2f}%)")
-    print(f"🛑 SPOOFERS REJECTED / DROPPED: {total_rejected_spoofers} / {total_spoofers} ({total_rejected_spoofers / total_spoofers * 100:.2f}%)")
+    print(f"CRITICAL SPOOFER BREACHES: {total_breaches} / {total_spoofers} ({total_breaches / total_spoofers * 100:.2f}%)")
+    print(f"SPOOFERS QUARANTINED (ISOLATED_FLAGGED): {total_quarantined_spoofers} / {total_spoofers} ({total_quarantined_spoofers / total_spoofers * 100:.2f}%)")
+    print(f"SPOOFERS REJECTED / DROPPED: {total_rejected_spoofers} / {total_spoofers} ({total_rejected_spoofers / total_spoofers * 100:.2f}%)")
     print(f"TOTAL SPOOFER CATCH RATE: {(total_quarantined_spoofers + total_rejected_spoofers) / total_spoofers * 100:.2f}%")
     print("-----------------------------------------------------------------")
-    print(f"✅ INNOCENT AUTO-VERIFIED: {total_verified_innocent} / {total_in_class} ({total_verified_innocent / total_in_class * 100:.2f}%)")
-    print(f"⚠️ INNOCENT QUARANTINED:    {total_quarantined_innocent} / {total_in_class} ({total_quarantined_innocent / total_in_class * 100:.2f}%)")
-    print(f"❌ INNOCENT FALSE REJECTIONS: {total_rejected_innocent} / {total_in_class} ({total_rejected_innocent / total_in_class * 100:.2f}%)")
+    print(f"INNOCENT AUTO-VERIFIED: {total_verified_innocent} / {total_in_class} ({total_verified_innocent / total_in_class * 100:.2f}%)")
+    print(f"INNOCENT QUARANTINED:    {total_quarantined_innocent} / {total_in_class} ({total_quarantined_innocent / total_in_class * 100:.2f}%)")
+    print(f"INNOCENT FALSE REJECTIONS: {total_rejected_innocent} / {total_in_class} ({total_rejected_innocent / total_in_class * 100:.2f}%)")
     print("-----------------------------------------------------------------")
     print(f"Breaches by Threat Category: {breaches_by_type}")
     print(f"Innocent Quarantines by Column Bank: {quarantined_by_bank}")

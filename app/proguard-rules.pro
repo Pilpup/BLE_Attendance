@@ -39,8 +39,12 @@
 -keepclassmembers interface * {
     @retrofit2.http.* <methods>;
 }
+-keep interface com.college.core.network.service.AuthApiService { *; }
 -keep interface com.college.feature.attendance.network.AttendanceApiService { *; }
 -keep interface com.college.feature.library.network.LibraryApiService { *; }
+
+# Google Tink / AndroidX Security Crypto
+-dontwarn com.google.errorprone.annotations.**
 
 # CameraX Core & Lifecycle
 -keep class androidx.camera.core.** { *; }

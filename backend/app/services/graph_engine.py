@@ -1,3 +1,4 @@
+from collections import deque
 from typing import Dict, List, Optional, Set
 
 
@@ -5,12 +6,14 @@ from typing import Dict, List, Optional, Set
 def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
     direct_mutuals: Dict[str, List[str]] = {}
     results: List[dict] = []
+    reports_sets: Dict[str, Set[str]] = {k: set(v) for k, v in reports.items()}
+    empty_set: Set[str] = set()
 
     # 1. Identify all direct mutual links (undirected edges: A in reports[B] and B in reports[A])
     for student_id, claimed_neighbors in reports.items():
         mutual_peers = [
             peer for peer in claimed_neighbors
-            if student_id in reports.get(peer, [])
+            if student_id in reports_sets.get(peer, empty_set)
         ]
         direct_mutuals[student_id] = mutual_peers
 
@@ -19,12 +22,12 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
     components: List[Set[str]] = []
 
     for student_id in reports.keys():
-        if student_id not in visited_nodes and len(direct_mutuals.get(student_id, [])) > 0:
+        if student_id not in visited_nodes and direct_mutuals.get(student_id):
             component: Set[str] = set()
-            queue = [student_id]
+            queue = deque([student_id])
             visited_nodes.add(student_id)
             while queue:
-                curr = queue.pop(0)
+                curr = queue.popleft()
                 component.add(curr)
                 for nbr in direct_mutuals.get(curr, []):
                     if nbr not in visited_nodes:
@@ -56,12 +59,11 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
             # reported seeing someone in this candidate component?
             incoming_anchors = sum(
                 1 for m_node in main_component
-                if any(c_node in reports.get(m_node, []) for c_node in comp)
+                if bool(reports_sets.get(m_node, empty_set) & comp)
             )
             # Check if there is ANY cross-link (in or out) connecting this component to the classroom core
-            has_link_to_main = any(
-                any(nbr in main_component for nbr in reports.get(node, [])) or
-                any(node in reports.get(m_node, []) for m_node in main_component)
+            has_link_to_main = incoming_anchors > 0 or any(
+                bool(reports_sets.get(node, empty_set) & main_component)
                 for node in comp
             )
 
@@ -120,7 +122,7 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
 
         else:
             # Node has out-degree claims, but no mutual return link
-            shared_bridges = set(claimed_neighbors) & verified_set
+            shared_bridges = reports_sets.get(student_id, empty_set) & verified_set
             if len(shared_bridges) >= 2:
                 # Student claims >= 2 verified peers, but neither reported them back (Triadic claim)
                 # QUARANTINED: NEVER auto-verified to prevent hallway 2-ID sniffing attacks!

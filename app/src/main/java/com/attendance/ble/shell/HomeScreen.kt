@@ -70,13 +70,11 @@ import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
 import com.college.core.model.Role
 import com.college.core.model.User
+import com.college.core.network.NetworkResult
 import com.college.core.network.SessionManager
+import com.college.core.network.model.RegisterRequest
+import com.college.core.network.repository.AuthRepository
 import com.college.feature.attendance.AttendanceDashboardCard
-import com.college.feature.attendance.network.AttendanceApiClient
-import com.college.feature.attendance.network.LoginRequest
-import com.college.feature.attendance.network.RegisterRequest
-import com.college.feature.attendance.network.ResendOtpRequest
-import com.college.feature.attendance.network.VerifyOtpRequest
 import com.college.feature.library.LibraryDashboardCard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -818,26 +816,16 @@ private fun UserAuthDialog(
                                     isAuthLoading = true
                                     authErrorText = null
                                     scope.launch(Dispatchers.IO) {
-                                        try {
-                                            val res = AttendanceApiClient.service.resendOtp(
-                                                ResendOtpRequest(
-                                                    email = pendingEmail,
-                                                    purpose = if (isRegisterMode) "REGISTER" else "LOGIN"
-                                                )
-                                            )
-                                            withContext(Dispatchers.Main) {
-                                                isAuthLoading = false
-                                                if (res.isSuccessful) {
-                                                    startCooldownTimer()
-                                                } else {
-                                                    val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
-                                                    authErrorText = "Resend failed: ${err ?: "HTTP ${res.code()}"}"
-                                                }
-                                            }
-                                        } catch (e: Exception) {
-                                            withContext(Dispatchers.Main) {
-                                                isAuthLoading = false
-                                                authErrorText = "Network error: ${e.localizedMessage ?: "Cannot reach server"}"
+                                        val result = AuthRepository.default.resendOtp(
+                                            email = pendingEmail,
+                                            purpose = if (isRegisterMode) "REGISTER" else "LOGIN"
+                                        )
+                                        withContext(Dispatchers.Main) {
+                                            isAuthLoading = false
+                                            when (result) {
+                                                is NetworkResult.Success -> startCooldownTimer()
+                                                is NetworkResult.Error -> authErrorText = "Resend failed: ${result.message}"
+                                                is NetworkResult.Exception -> authErrorText = "Network error: ${result.throwable.localizedMessage ?: "Cannot reach server"}"
                                             }
                                         }
                                     }
@@ -884,12 +872,12 @@ private fun UserAuthDialog(
                                 isAuthLoading = true
                                 authErrorText = null
                                 scope.launch(Dispatchers.IO) {
-                                    try {
-                                        val res = AttendanceApiClient.service.login(LoginRequest(email, password))
-                                        withContext(Dispatchers.Main) {
-                                            isAuthLoading = false
-                                            if (res.isSuccessful && res.body() != null) {
-                                                val body = res.body()!!
+                                    val result = AuthRepository.default.login(email, password)
+                                    withContext(Dispatchers.Main) {
+                                        isAuthLoading = false
+                                        when (result) {
+                                            is NetworkResult.Success -> {
+                                                val body = result.data
                                                 if (body.requiresOtp) {
                                                     pendingEmail = body.email
                                                     currentStep = AuthStep.OTP_VERIFICATION
@@ -897,34 +885,15 @@ private fun UserAuthDialog(
                                                     authErrorText = null
                                                     startCooldownTimer()
                                                 } else {
-                                                    val u = body.user
-                                                    val tok = body.accessToken
-                                                    if (tok != null && u != null) {
-                                                        val role = Role.fromBackendName(u.role) ?: Role.STUDENT
-                                                        val authenticatedUser = User(
-                                                            id = u.id,
-                                                            name = u.name,
-                                                            email = u.email,
-                                                            roles = setOf(role),
-                                                            rollNumber = u.rollNumber,
-                                                            department = u.department,
-                                                            program = u.program,
-                                                            semester = u.semester,
-                                                            section = u.section
-                                                        )
-                                                        SessionManager.default.startSession(authenticatedUser, tok)
-                                                        onDismiss()
-                                                    }
+                                                    onDismiss()
                                                 }
-                                            } else {
-                                                val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
-                                                authErrorText = "Sign In failed: HTTP ${res.code()}${if (!err.isNullOrBlank()) " - $err" else ""}"
                                             }
-                                        }
-                                    } catch (e: Exception) {
-                                        withContext(Dispatchers.Main) {
-                                            isAuthLoading = false
-                                            authErrorText = "Network error: ${e.localizedMessage ?: "Cannot reach server"}"
+                                            is NetworkResult.Error -> {
+                                                authErrorText = "Sign In failed: ${result.message}"
+                                            }
+                                            is NetworkResult.Exception -> {
+                                                authErrorText = "Network error: ${result.throwable.localizedMessage ?: "Cannot reach server"}"
+                                            }
                                         }
                                     }
                                 }
@@ -984,25 +953,23 @@ private fun UserAuthDialog(
                             isAuthLoading = true
                             authErrorText = null
                             scope.launch(Dispatchers.IO) {
-                                try {
-                                    val res = AttendanceApiClient.service.register(req)
-                                    withContext(Dispatchers.Main) {
-                                        isAuthLoading = false
-                                        if (res.isSuccessful && res.body() != null) {
-                                            pendingEmail = res.body()!!.email
+                                val result = AuthRepository.default.register(req)
+                                withContext(Dispatchers.Main) {
+                                    isAuthLoading = false
+                                    when (result) {
+                                        is NetworkResult.Success -> {
+                                            pendingEmail = result.data.email
                                             currentStep = AuthStep.OTP_VERIFICATION
                                             otpInput = ""
                                             authErrorText = null
                                             startCooldownTimer()
-                                        } else {
-                                            val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
-                                            authErrorText = "Registration failed: HTTP ${res.code()}${if (!err.isNullOrBlank()) " - $err" else ""}"
                                         }
-                                    }
-                                } catch (e: Exception) {
-                                    withContext(Dispatchers.Main) {
-                                        isAuthLoading = false
-                                        authErrorText = "Network error: ${e.localizedMessage ?: "Cannot reach server"}"
+                                        is NetworkResult.Error -> {
+                                            authErrorText = "Registration failed: ${result.message}"
+                                        }
+                                        is NetworkResult.Exception -> {
+                                            authErrorText = "Network error: ${result.throwable.localizedMessage ?: "Cannot reach server"}"
+                                        }
                                     }
                                 }
                             }
@@ -1026,39 +993,23 @@ private fun UserAuthDialog(
                             isAuthLoading = true
                             authErrorText = null
                             scope.launch(Dispatchers.IO) {
-                                try {
-                                    val res = if (isRegisterMode) {
-                                        AttendanceApiClient.service.verifyRegisterOtp(VerifyOtpRequest(pendingEmail, code))
-                                    } else {
-                                        AttendanceApiClient.service.verifyLoginOtp(VerifyOtpRequest(pendingEmail, code))
-                                    }
-                                    withContext(Dispatchers.Main) {
-                                        isAuthLoading = false
-                                        if (res.isSuccessful && res.body() != null) {
-                                            val body = res.body()!!
-                                            val role = Role.fromBackendName(body.user.role) ?: Role.STUDENT
-                                            val authenticatedUser = User(
-                                                id = body.user.id,
-                                                name = body.user.name,
-                                                email = body.user.email,
-                                                roles = setOf(role),
-                                                rollNumber = body.user.rollNumber,
-                                                department = body.user.department,
-                                                program = body.user.program,
-                                                semester = body.user.semester,
-                                                section = body.user.section
-                                            )
-                                            SessionManager.default.startSession(authenticatedUser, body.accessToken)
+                                val result = if (isRegisterMode) {
+                                    AuthRepository.default.verifyRegisterOtp(pendingEmail, code)
+                                } else {
+                                    AuthRepository.default.verifyLoginOtp(pendingEmail, code)
+                                }
+                                withContext(Dispatchers.Main) {
+                                    isAuthLoading = false
+                                    when (result) {
+                                        is NetworkResult.Success -> {
                                             onDismiss()
-                                        } else {
-                                            val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
-                                            authErrorText = "Verification failed: HTTP ${res.code()}${if (!err.isNullOrBlank()) " - $err" else ""}"
                                         }
-                                    }
-                                } catch (e: Exception) {
-                                    withContext(Dispatchers.Main) {
-                                        isAuthLoading = false
-                                        authErrorText = "Network error: ${e.localizedMessage ?: "Cannot reach server"}"
+                                        is NetworkResult.Error -> {
+                                            authErrorText = "Verification failed: ${result.message}"
+                                        }
+                                        is NetworkResult.Exception -> {
+                                            authErrorText = "Network error: ${result.throwable.localizedMessage ?: "Cannot reach server"}"
+                                        }
                                     }
                                 }
                             }

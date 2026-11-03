@@ -51,8 +51,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Initialize persistent session manager (keeps user signed in across app closures)
+        // Initialize persistent session manager and server configuration
         com.college.core.network.SessionManager.default.init(applicationContext)
+        com.college.core.network.ServerConfigManager.default.init(applicationContext)
 
         // Deep Midnight / Obsidian status & navigation bars
         val obsidianDark = android.graphics.Color.parseColor("#0B0F17")

@@ -1,69 +1,17 @@
 package com.college.feature.attendance.network
 
+import androidx.compose.runtime.Immutable
 import com.google.gson.annotations.SerializedName
 
-// Auth models
-data class LoginRequest(
-    val email: String,
-    val password: String
-)
-
-data class LoginResponse(
-    @SerializedName("requires_otp") val requiresOtp: Boolean = true,
-    val message: String,
-    val email: String,
-    @SerializedName("access_token") val accessToken: String? = null,
-    @SerializedName("token_type") val tokenType: String? = "bearer",
-    val user: UserResponse? = null
-)
-
-data class VerifyOtpRequest(
-    val email: String,
-    @SerializedName("otp_code") val otpCode: String
-)
-
-data class ResendOtpRequest(
-    val email: String,
-    val purpose: String = "LOGIN"
-)
-
-data class OtpSentResponse(
-    val message: String,
-    val email: String,
-    @SerializedName("expires_in_seconds") val expiresInSeconds: Int = 600,
-    @SerializedName("requires_otp") val requiresOtp: Boolean = true
-)
-
-data class RegisterRequest(
-    val name: String,
-    val email: String,
-    val password: String,
-    val role: String,
-    @SerializedName("roll_number") val rollNumber: String,
-    val department: String,
-    val program: String? = null,
-    val semester: Int? = null,
-    val section: String? = null,
-    @SerializedName("faculty_code") val facultyCode: String? = null
-)
-
-data class UserResponse(
-    val id: String,
-    val name: String,
-    val email: String,
-    val role: String,
-    @SerializedName("roll_number") val rollNumber: String? = null,
-    val department: String? = null,
-    val program: String? = null,
-    val semester: Int? = null,
-    val section: String? = null
-)
-
-data class TokenResponse(
-    @SerializedName("access_token") val accessToken: String,
-    @SerializedName("token_type") val tokenType: String,
-    val user: UserResponse
-)
+// Re-export core auth models for feature-level compatibility
+typealias LoginRequest = com.college.core.network.model.LoginRequest
+typealias LoginResponse = com.college.core.network.model.LoginResponse
+typealias VerifyOtpRequest = com.college.core.network.model.VerifyOtpRequest
+typealias ResendOtpRequest = com.college.core.network.model.ResendOtpRequest
+typealias OtpSentResponse = com.college.core.network.model.OtpSentResponse
+typealias RegisterRequest = com.college.core.network.model.RegisterRequest
+typealias UserResponse = com.college.core.network.model.UserResponse
+typealias TokenResponse = com.college.core.network.model.TokenResponse
 
 // Course & Session models
 data class CourseCreateRequest(
@@ -71,6 +19,7 @@ data class CourseCreateRequest(
     @SerializedName("course_name") val courseName: String
 )
 
+@Immutable
 data class CourseResponse(
     val id: String,
     @SerializedName("course_code") val courseCode: String,
@@ -86,6 +35,7 @@ data class SessionCreateRequest(
     @SerializedName("course_name") val courseName: String? = null
 )
 
+@Immutable
 data class AttendanceRecordItem(
     val id: String? = null,
     @SerializedName("ble_device_id") val bleDeviceId: String,
@@ -103,6 +53,7 @@ data class RecordOverrideRequest(
     val remarks: String? = "Verified by instructor"
 )
 
+@Immutable
 data class AttendanceSessionResponse(
     val id: String,
     @SerializedName("course_id") val courseId: String,

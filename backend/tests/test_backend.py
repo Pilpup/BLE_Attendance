@@ -35,11 +35,6 @@ def test_jwt_generation_and_decoding():
 
 
 def test_mesh_audit_topology():
-    # 5-student scenario:
-    # A & B are mutual desk neighbors (1.00)
-    # C is adjacent to A & B, claiming both (Triadic closure -> 0.50)
-    # D is Hallway Spoofer claiming only B without reciprocation (0.00)
-    # E is isolated in corner with 0 neighbors (0.00)
     reports = {
         "A": ["B"],
         "B": ["A"],
@@ -76,9 +71,6 @@ def test_mesh_audit_topology():
 
 
 def test_mesh_audit_satellite_cluster_quarantine():
-    # Classroom Main Web: 6 students (S1-S6) in mutual pairs/chains
-    # Outside Cafeteria Cluster: 3 students (X, Y, Z) who are mutual with each other,
-    # but have ZERO links connecting to the classroom main component!
     reports = {
         "S1": ["S2"],
         "S2": ["S1", "S3"],
@@ -107,11 +99,6 @@ def test_mesh_audit_satellite_cluster_quarantine():
 
 
 def test_mesh_audit_outside_eavesdropping_cluster_quarantine():
-    # Classroom Main Web: 6 students (S1-S6) in mutual pairs/chains
-    # Outside Window Cluster: 3 students (W1, W2, W3) who are mutual with each other.
-    # W1 eavesdrops on S1 through the window and claims S1 in its report.
-    # BUT S1 never saw W1 back (in-degree to cluster = 0).
-    # Out-degree eavesdropping MUST NOT anchor the cluster; W1, W2, W3 must be quarantined!
     reports = {
         "S1": ["S2"],
         "S2": ["S1", "S3"],
@@ -139,9 +126,6 @@ def test_mesh_audit_outside_eavesdropping_cluster_quarantine():
 
 
 def test_mesh_audit_corridor_chain_of_four_quarantine():
-    # Classroom Main Web: 12 students (S1-S12)
-    # Outside corridor chain: 4 spoofers (C1 <-> C2 <-> C3 <-> C4)
-    # Even though len(comp) == 4, dynamic threshold quarantines them
     reports = {
         **{f"S{i}": [f"S{i-1}" if i > 1 else "S2", f"S{i+1}" if i < 12 else "S11"] for i in range(1, 13)},
         # 4 spoofers in corridor
@@ -160,8 +144,6 @@ def test_mesh_audit_corridor_chain_of_four_quarantine():
 
 
 def test_mesh_audit_classroom_row_with_incoming_anchors_verified():
-    # Classroom Main Web: 12 students (S1-S12)
-    # Separated row across aisle: 3 students (R1, R2, R3)
     # 2 in-classroom students (S5 and S6) acknowledge seeing R1 and R2
     reports = {
         **{f"S{i}": [f"S{i-1}" if i > 1 else "S2", f"S{i+1}" if i < 12 else "S11"] for i in range(1, 13)},
@@ -183,10 +165,6 @@ def test_mesh_audit_classroom_row_with_incoming_anchors_verified():
 
 
 def test_mesh_audit_offline_peer_witness():
-    # Online students A and B verify each other
-    # A and B both hear offline student OFF1 at desk range (2 witnesses -> Verified)
-    # A alone hears offline student OFF_SINGLE (1 witness -> Isolated Flagged for Teacher Override)
-    # Hallway spoofer D claims OFF2, but D is unverified (0 verified witnesses -> Ignored)
     reports = {
         "A": ["B", "OFF1", "OFF_SINGLE"],
         "B": ["A", "OFF1"],

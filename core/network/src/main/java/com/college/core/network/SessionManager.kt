@@ -2,6 +2,8 @@ package com.college.core.network
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import com.college.core.model.SessionState
 import com.college.core.model.User
 import com.google.gson.Gson
@@ -12,14 +14,8 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * Single source of truth for the active SessionState.
  *
- * Holds the active user + JWT behind a [StateFlow] so the Home
- * Dashboard, Attendance, and Library features can all react instantly when a
- * user logs in, switches accounts, or is force-logged-out by a 401 (see
- * [AuthInterceptor]). Features read `state` / `currentUser` / `activeToken`
- * — they never import any auth UI or implement token plumbing themselves.
- *
- * Automatically persists to SharedPreferences when [init] is called with the
- * Application Context, ensuring user login state survives app restarts.
+ * Persists credentials via EncryptedSharedPreferences with fallback to standard preferences
+ * to guarantee resilience against Android Keystore corruption.
  */
 class SessionManager {
 
@@ -28,27 +24,42 @@ class SessionManager {
 
     private val _state = MutableStateFlow<SessionState>(SessionState.LoggedOut)
 
-    /** Reactive stream of the global auth state. */
     val state: StateFlow<SessionState> = _state.asStateFlow()
 
     val isLoggedIn: Boolean get() = _state.value is SessionState.Authenticated
 
-    /** Raw JWT for the active session, or null when logged out / loading. */
     val activeToken: String?
         get() = (_state.value as? SessionState.Authenticated)?.token
 
-    /** Active user, or null when logged out / loading. */
     val currentUser: User?
         get() = (_state.value as? SessionState.Authenticated)?.user
 
-    /**
-     * Initializes persistence with the application context and hydrates
-     * any existing authenticated session from SharedPreferences.
-     */
     fun init(context: Context) {
         if (prefs == null) {
-            prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            restoreSession()
+            synchronized(this) {
+                if (prefs == null) {
+                    val appContext = context.applicationContext
+                    prefs = createEncryptedPreferences(appContext)
+                    restoreSession()
+                }
+            }
+        }
+    }
+
+    private fun createEncryptedPreferences(context: Context): SharedPreferences {
+        return try {
+            val masterKey = MasterKey.Builder(context)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            EncryptedSharedPreferences.create(
+                context,
+                SECURE_PREFS_NAME,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        } catch (_: Exception) {
+            context.getSharedPreferences(FALLBACK_PREFS_NAME, Context.MODE_PRIVATE)
         }
     }
 
@@ -63,13 +74,11 @@ class SessionManager {
                     _state.value = SessionState.Authenticated(user = user, token = token)
                 }
             } catch (_: Exception) {
-                // If corrupted, clear
                 sp.edit().clear().apply()
             }
         }
     }
 
-    /** Login or account switch: replaces the whole session atomically and persists it. */
     fun startSession(user: User, token: String) {
         _state.value = SessionState.Authenticated(user = user, token = token)
         prefs?.edit()
@@ -78,26 +87,21 @@ class SessionManager {
             ?.apply()
     }
 
-    /** Session is being created/restored (UI can show a progress state). */
     fun markLoading() {
         _state.value = SessionState.Loading
     }
 
-    /** Logout or forced 401 eviction — every observer flips back to LoggedOut and clears storage. */
     fun endSession() {
         _state.value = SessionState.LoggedOut
         prefs?.edit()?.clear()?.apply()
     }
 
     companion object {
-        private const val PREFS_NAME = "college_auth_session_prefs"
+        private const val SECURE_PREFS_NAME = "college_auth_secure_prefs"
+        private const val FALLBACK_PREFS_NAME = "college_auth_fallback_prefs"
         private const val KEY_TOKEN = "auth_session_token"
         private const val KEY_USER = "auth_session_user_json"
 
-        /**
-         * Shared instance for cross-module access (Retrofit, ViewModels, etc.).
-         * Can still be instantiated independently for testing or mock sessions.
-         */
         val default: SessionManager by lazy { SessionManager() }
     }
 }

@@ -4,30 +4,29 @@ import android.app.Application
 import android.bluetooth.le.AdvertiseSettings
 import android.content.Context
 import android.os.CountDownTimer
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.college.core.model.Role
 import com.college.core.model.User
+import com.college.core.network.NetworkResult
 import com.college.core.network.SessionManager
+import com.college.core.network.repository.AuthRepository
+import com.college.core.network.safeApiCall
+import com.college.core.network.model.RegisterRequest
 import com.college.feature.attendance.network.AttendanceApiClient
 import com.college.feature.attendance.network.AttendanceRecordItem
 import com.college.feature.attendance.network.AttendanceSessionResponse
 import com.college.feature.attendance.network.CourseCreateRequest
 import com.college.feature.attendance.network.CourseResponse
-import com.college.feature.attendance.network.LoginRequest
 import com.college.feature.attendance.network.MeshAuditRunRequest
 import com.college.feature.attendance.network.RecordOverrideRequest
-import com.college.feature.attendance.network.RegisterRequest
-import com.college.feature.attendance.network.ResendOtpRequest
 import com.college.feature.attendance.network.SessionCreateRequest
 import com.college.feature.attendance.network.SubmitNeighborsRequest
-import com.college.feature.attendance.network.TokenResponse
-import com.college.feature.attendance.network.VerifyOtpRequest
 import com.college.feature.attendance.audio.AcousticStatisticalSummary
 import com.college.feature.attendance.audio.EnsembleVerdict
 import kotlin.math.roundToInt
@@ -39,6 +38,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
+@Immutable
 data class PeerData(
     val peerId: String,
     val rssiSamples: List<Int> = emptyList(),
@@ -80,6 +80,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Retrofit service handle
     private val api get() = AttendanceApiClient.service
+    private val authRepo get() = AuthRepository.default
 
     // Current user identity and role derived from active session
     val isTeacherMode: Boolean
@@ -137,7 +138,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var studentPhase by mutableStateOf(StudentPhase.STANDBY)
     var detectedSessionId by mutableStateOf("----")
     var detectedSessionSalt by mutableStateOf("------")
-    val discoveredPeers = mutableStateMapOf<String, PeerData>()
+    private val rawDiscoveredPeers = java.util.concurrent.ConcurrentHashMap<String, PeerData>()
+    private var peerBatchJob: Job? = null
+    val discoveredPeers: Map<String, PeerData> get() = rawDiscoveredPeers
 
     // Interactive reflex challenge state and telemetry
     var challengeScore by mutableIntStateOf(0)
@@ -195,12 +198,37 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
     private val testedUltrasonicPeers = mutableSetOf<String>()
 
-    // Top 3 nearest desk/bench neighbors in the classroom mesh (median RSSI >= -82 dBm)
-    val topDeskNeighbours: List<PeerData>
-        get() = discoveredPeers.values
+    // Batched top 3 nearest desk/bench neighbors (median RSSI >= -82 dBm)
+    var topDeskNeighbours by mutableStateOf<List<PeerData>>(emptyList())
+        private set
+
+    private fun startPeerBatchUpdates() {
+        if (peerBatchJob?.isActive == true) return
+        peerBatchJob = viewModelScope.launch(Dispatchers.Default) {
+            while (isActive) {
+                delay(300L)
+                val top = rawDiscoveredPeers.values
+                    .filter { it.medianRssi >= -82 }
+                    .sortedByDescending { it.medianRssi }
+                    .take(3)
+                withContext(Dispatchers.Main) {
+                    topDeskNeighbours = top
+                }
+            }
+        }
+    }
+
+    private fun stopPeerBatchUpdates() {
+        peerBatchJob?.cancel()
+        peerBatchJob = null
+    }
+
+    private fun flushPeerBatchImmediately() {
+        topDeskNeighbours = rawDiscoveredPeers.values
             .filter { it.medianRssi >= -82 }
             .sortedByDescending { it.medianRssi }
             .take(3)
+    }
 
     // Radio callbacks bound by host activity
     var onStartBroadcasting: ((token: String, txPower: Int) -> Unit)? = null
@@ -214,6 +242,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     init {
         SessionManager.default.init(application.applicationContext)
+        com.college.core.network.ServerConfigManager.default.init(application.applicationContext)
         currentRollNumber = SessionManager.default.currentUser?.rollNumber
             ?: prefs.getString("roll_number", defaultLocalId)
             ?: defaultLocalId
@@ -295,187 +324,154 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         prefs.edit().putString("server_url", AttendanceApiClient.baseUrl).apply()
     }
 
-    // Authenticate user against FastAPI backend (Step 1: password -> triggers 2FA OTP)
     fun login(email: String, pass: String, onOtpRequired: (String) -> Unit = {}, onComplete: (Boolean) -> Unit = {}) {
         isAuthLoading = true
         authErrorText = null
         viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val res = api.login(LoginRequest(email, pass))
-                withContext(Dispatchers.Main) {
-                    isAuthLoading = false
-                    if (res.isSuccessful && res.body() != null) {
-                        val body = res.body()!!
+            val result = authRepo.login(email, pass)
+            withContext(Dispatchers.Main) {
+                isAuthLoading = false
+                when (result) {
+                    is NetworkResult.Success -> {
+                        val body = result.data
+                        val token = body.accessToken
+                        val user = body.user
                         if (body.requiresOtp) {
                             onOtpRequired(body.email)
                             onComplete(true)
-                        } else if (body.accessToken != null && body.user != null) {
-                            onAuthenticated(TokenResponse(body.accessToken, body.tokenType ?: "bearer", body.user))
+                        } else if (token != null && user != null) {
+                            syncLocalSession(user.rollNumber, token, user.name, user.role)
                             if (isTeacherMode) {
                                 loadCourses()
                             }
                             onComplete(true)
+                        } else {
+                            onComplete(true)
                         }
-                    } else {
-                        val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
-                        authErrorText = "Login failed: HTTP ${res.code()}${if (!err.isNullOrBlank()) " - $err" else ""}"
+                    }
+                    is NetworkResult.Error -> {
+                        authErrorText = "Login failed: ${result.message}"
                         onComplete(false)
                     }
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    isAuthLoading = false
-                    authErrorText = "Network error: ${e.localizedMessage ?: "Cannot reach server"}"
-                    onComplete(false)
+                    is NetworkResult.Exception -> {
+                        authErrorText = "Network error: ${result.throwable.localizedMessage ?: "Cannot reach server"}"
+                        onComplete(false)
+                    }
                 }
             }
         }
     }
 
-    // Step 2: Verify login 2FA OTP
     fun verifyLoginOtp(email: String, otpCode: String, onComplete: (Boolean) -> Unit = {}) {
         isAuthLoading = true
         authErrorText = null
         viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val res = api.verifyLoginOtp(VerifyOtpRequest(email, otpCode))
-                withContext(Dispatchers.Main) {
-                    isAuthLoading = false
-                    if (res.isSuccessful && res.body() != null) {
-                        onAuthenticated(res.body()!!)
+            val result = authRepo.verifyLoginOtp(email, otpCode)
+            withContext(Dispatchers.Main) {
+                isAuthLoading = false
+                when (result) {
+                    is NetworkResult.Success -> {
+                        val user = result.data.user
+                        syncLocalSession(user.rollNumber, result.data.accessToken, user.name, user.role)
                         if (isTeacherMode) {
                             loadCourses()
                         }
                         onComplete(true)
-                    } else {
-                        val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
-                        authErrorText = "Verification failed: HTTP ${res.code()}${if (!err.isNullOrBlank()) " - $err" else ""}"
+                    }
+                    is NetworkResult.Error -> {
+                        authErrorText = "Verification failed: ${result.message}"
                         onComplete(false)
                     }
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    isAuthLoading = false
-                    authErrorText = "Network error: ${e.localizedMessage ?: "Cannot reach server"}"
-                    onComplete(false)
+                    is NetworkResult.Exception -> {
+                        authErrorText = "Network error: ${result.throwable.localizedMessage ?: "Cannot reach server"}"
+                        onComplete(false)
+                    }
                 }
             }
         }
     }
 
-    /**
-     * Single write-through point for successful authentication: pushes
-     * identity + JWT into :core:network's [SessionManager] (so AuthInterceptor
-     * and every dashboard screen react) and keeps the prefs mirror for
-     * app-restart restore.
-     */
-    private fun onAuthenticated(body: TokenResponse) {
-        val role = Role.fromBackendName(body.user.role) ?: Role.STUDENT
-        val authenticatedUser = User(
-            id = body.user.id,
-            name = body.user.name,
-            email = body.user.email,
-            roles = setOf(role),
-            rollNumber = body.user.rollNumber,
-            department = body.user.department,
-            program = body.user.program,
-            semester = body.user.semester,
-            section = body.user.section
-        )
-        SessionManager.default.startSession(
-            user = authenticatedUser,
-            token = body.accessToken
-        )
-        body.user.rollNumber?.let { currentRollNumber = it }
+    private fun syncLocalSession(roll: String?, token: String, name: String, role: String) {
+        roll?.let { currentRollNumber = it }
         prefs.edit()
-            .putString("auth_token", body.accessToken)
-            .putString("user_name", body.user.name)
-            .putString("user_role", body.user.role)
+            .putString("auth_token", token)
+            .putString("user_name", name)
+            .putString("user_role", role)
             .putString("roll_number", currentRollNumber)
             .apply()
     }
 
-    // Register user against FastAPI backend (Step 1: details -> sends OTP)
     fun register(req: RegisterRequest, onOtpRequired: (String) -> Unit = {}, onComplete: (Boolean) -> Unit = {}) {
         isAuthLoading = true
         authErrorText = null
         viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val res = api.register(req)
-                withContext(Dispatchers.Main) {
-                    isAuthLoading = false
-                    if (res.isSuccessful && res.body() != null) {
-                        onOtpRequired(res.body()!!.email)
+            val result = authRepo.register(req)
+            withContext(Dispatchers.Main) {
+                isAuthLoading = false
+                when (result) {
+                    is NetworkResult.Success -> {
+                        onOtpRequired(result.data.email)
                         onComplete(true)
-                    } else {
-                        val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
-                        authErrorText = "Registration failed: HTTP ${res.code()}${if (!err.isNullOrBlank()) " - $err" else ""}"
+                    }
+                    is NetworkResult.Error -> {
+                        authErrorText = "Registration failed: ${result.message}"
                         onComplete(false)
                     }
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    isAuthLoading = false
-                    authErrorText = "Network error: ${e.localizedMessage ?: "Cannot reach server"}"
-                    onComplete(false)
+                    is NetworkResult.Exception -> {
+                        authErrorText = "Network error: ${result.throwable.localizedMessage ?: "Cannot reach server"}"
+                        onComplete(false)
+                    }
                 }
             }
         }
     }
 
-    // Step 2: Verify registration OTP
     fun verifyRegisterOtp(email: String, otpCode: String, onComplete: (Boolean) -> Unit = {}) {
         isAuthLoading = true
         authErrorText = null
         viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val res = api.verifyRegisterOtp(VerifyOtpRequest(email, otpCode))
-                withContext(Dispatchers.Main) {
-                    isAuthLoading = false
-                    if (res.isSuccessful && res.body() != null) {
-                        onAuthenticated(res.body()!!)
+            val result = authRepo.verifyRegisterOtp(email, otpCode)
+            withContext(Dispatchers.Main) {
+                isAuthLoading = false
+                when (result) {
+                    is NetworkResult.Success -> {
+                        val user = result.data.user
+                        syncLocalSession(user.rollNumber, result.data.accessToken, user.name, user.role)
                         if (isTeacherMode) {
                             loadCourses()
                         }
                         onComplete(true)
-                    } else {
-                        val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
-                        authErrorText = "Verification failed: HTTP ${res.code()}${if (!err.isNullOrBlank()) " - $err" else ""}"
+                    }
+                    is NetworkResult.Error -> {
+                        authErrorText = "Verification failed: ${result.message}"
                         onComplete(false)
                     }
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    isAuthLoading = false
-                    authErrorText = "Network error: ${e.localizedMessage ?: "Cannot reach server"}"
-                    onComplete(false)
+                    is NetworkResult.Exception -> {
+                        authErrorText = "Network error: ${result.throwable.localizedMessage ?: "Cannot reach server"}"
+                        onComplete(false)
+                    }
                 }
             }
         }
     }
 
-    // Resend OTP
     fun resendOtp(email: String, purpose: String = "LOGIN", onComplete: (Boolean) -> Unit = {}) {
         isAuthLoading = true
         authErrorText = null
         viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val res = api.resendOtp(ResendOtpRequest(email, purpose))
-                withContext(Dispatchers.Main) {
-                    isAuthLoading = false
-                    if (res.isSuccessful) {
-                        onComplete(true)
-                    } else {
-                        val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
-                        authErrorText = "Resend failed: ${err ?: "HTTP ${res.code()}"}"
+            val result = authRepo.resendOtp(email, purpose)
+            withContext(Dispatchers.Main) {
+                isAuthLoading = false
+                when (result) {
+                    is NetworkResult.Success -> onComplete(true)
+                    is NetworkResult.Error -> {
+                        authErrorText = "Resend failed: ${result.message}"
                         onComplete(false)
                     }
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    isAuthLoading = false
-                    authErrorText = "Network error: ${e.localizedMessage ?: "Cannot reach server"}"
-                    onComplete(false)
+                    is NetworkResult.Exception -> {
+                        authErrorText = "Network error: ${result.throwable.localizedMessage ?: "Cannot reach server"}"
+                        onComplete(false)
+                    }
                 }
             }
         }
@@ -579,27 +575,26 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     fun submitMyNeighborsToCloud(keepRadioActive: Boolean = false) {
         val sessId = detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: return
         val neighborIds = topDeskNeighbours.map { it.peerId }
-        val closeNeighborIds = discoveredPeers.values
+        val closeNeighborIds = rawDiscoveredPeers.values
             .filter { it.medianRssi >= -65 }
             .map { it.peerId }
         val facePayload = capturedFaceBase64
         val dividedAttention = isDividedProxy
         viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val req = SubmitNeighborsRequest(
-                    studentId = studentShortId,
-                    neighbors = neighborIds,
-                    closeNeighbors = closeNeighborIds,
-                    sessionSalt = detectedSessionSalt.takeIf { it != "------" },
-                    faceImageBase64 = facePayload,
-                    ultrasonicProximityDetected = ultrasonicProximityDetected,
-                    coLocatedPeerId = coLocatedPeerId,
-                    dividedAttentionDetected = dividedAttention
-                )
-                // AuthInterceptor adds the bearer token when a session is active;
-                val res = api.submitNeighbors(sessId, req)
-                withContext(Dispatchers.Main) {
-                    if (res.isSuccessful) {
+            val req = SubmitNeighborsRequest(
+                studentId = studentShortId,
+                neighbors = neighborIds,
+                closeNeighbors = closeNeighborIds,
+                sessionSalt = detectedSessionSalt.takeIf { it != "------" },
+                faceImageBase64 = facePayload,
+                ultrasonicProximityDetected = ultrasonicProximityDetected,
+                coLocatedPeerId = coLocatedPeerId,
+                dividedAttentionDetected = dividedAttention
+            )
+            val result = safeApiCall { api.submitNeighbors(sessId, req) }
+            withContext(Dispatchers.Main) {
+                when (result) {
+                    is NetworkResult.Success -> {
                         if (!keepRadioActive && studentDiscoverySecondsRemaining == 0) {
                             if (hasLocalDefenseFailed) {
                                 studentPhase = StudentPhase.UNVERIFIED_FLAGGED
@@ -612,50 +607,45 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             onStopScanning?.invoke()
                             onStopBroadcasting?.invoke()
                         }
-                    } else if (res.code() == 403) {
-                        // Handle server rejection caused by session salt mismatch, duplicate face, or ultrasonic proxy
-                        val detail = try { res.errorBody()?.string() } catch (_: Exception) { null }
-                        val extracted = Regex("\"detail\"\\s*:\\s*\"(.*?)\"").find(detail ?: "")?.groupValues?.get(1)
-                        if (extracted?.contains("Biometric", ignoreCase = true) == true || extracted?.contains("Duplicate face", ignoreCase = true) == true) {
-                            faceProxyDetected = true
+                    }
+                    is NetworkResult.Error -> {
+                        val detail = result.errorPayload?.detail ?: result.message
+                        if (result.code == 403) {
+                            if (detail.contains("Biometric", ignoreCase = true) || detail.contains("Duplicate face", ignoreCase = true)) {
+                                faceProxyDetected = true
+                            }
+                            if (detail.contains("Ultrasonic", ignoreCase = true) || detail.contains("desk", ignoreCase = true)) {
+                                ultrasonicProximityDetected = true
+                            }
+                            studentStatusMessage = detail
+                            if (!keepRadioActive || studentDiscoverySecondsRemaining == 0) {
+                                studentPhase = StudentPhase.UNVERIFIED_FLAGGED
+                                onStopScanning?.invoke()
+                                onStopBroadcasting?.invoke()
+                            }
+                        } else {
+                            if (!keepRadioActive || studentDiscoverySecondsRemaining == 0) {
+                                studentStatusMessage = detail
+                                studentPhase = StudentPhase.UNVERIFIED_FLAGGED
+                                onStopScanning?.invoke()
+                                onStopBroadcasting?.invoke()
+                            } else {
+                                android.util.Log.w("AttendanceViewModel", "Intermediate peer sync pending: ${result.code} - $detail")
+                            }
                         }
-                        if (extracted?.contains("Ultrasonic", ignoreCase = true) == true || extracted?.contains("desk", ignoreCase = true) == true) {
-                            ultrasonicProximityDetected = true
-                        }
-                        studentStatusMessage = extracted ?: "Security defense verification rejected"
-                        // Only abort if this is the final check-in or discovery window has ended
+                    }
+                    is NetworkResult.Exception -> {
                         if (!keepRadioActive || studentDiscoverySecondsRemaining == 0) {
-                            studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-                            onStopScanning?.invoke()
-                            onStopBroadcasting?.invoke()
-                        }
-                    } else {
-                        // Intermediate background peer sync (404/500) while session propagates must not crash/abort gameplay
-                        val errDetail = try { res.errorBody()?.string() } catch (_: Exception) { null }
-                        val extracted = Regex("\"detail\"\\s*:\\s*\"(.*?)\"").find(errDetail ?: "")?.groupValues?.get(1)
-                        if (!keepRadioActive || studentDiscoverySecondsRemaining == 0) {
-                            studentStatusMessage = extracted ?: "Attendance server error (${res.code()})"
+                            studentStatusMessage = "Connection failed: Please verify classroom Wi-Fi connection"
                             studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                             onStopScanning?.invoke()
                             onStopBroadcasting?.invoke()
                         } else {
-                            android.util.Log.w("AttendanceViewModel", "Intermediate peer sync pending: ${res.code()} - $extracted")
+                            android.util.Log.w("AttendanceViewModel", "Intermediate peer sync network error: ${result.throwable.message}")
                         }
                     }
-                    Unit
                 }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    if (!keepRadioActive || studentDiscoverySecondsRemaining == 0) {
-                        studentStatusMessage = "Connection failed: Please verify classroom Wi-Fi connection"
-                        studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-                        onStopScanning?.invoke()
-                        onStopBroadcasting?.invoke()
-                    } else {
-                        android.util.Log.w("AttendanceViewModel", "Intermediate peer sync network error: ${e.message}")
-                    }
-                    Unit
-                }
+                Unit
             }
         }
     }
@@ -678,35 +668,32 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         if (SessionManager.default.isLoggedIn && hasRealCloudJwt) {
             isCloudSyncing = true
             viewModelScope.launch(Dispatchers.IO) {
-                try {
-                    val req = SessionCreateRequest(
-                        courseId = targetCourseId,
-                        sessionToken = sessionId,
-                        sessionSalt = sessionSalt,
-                        courseCode = selectedCourse?.courseCode,
-                        courseName = selectedCourse?.courseName
-                    )
-                    val res = api.createSession(req)
-                    withContext(Dispatchers.Main) {
-                        isCloudSyncing = false
-                        if (res.isSuccessful && res.body() != null) {
-                            backendSessionId = res.body()!!.id
+                val req = SessionCreateRequest(
+                    courseId = targetCourseId,
+                    sessionToken = sessionId,
+                    sessionSalt = sessionSalt,
+                    courseCode = selectedCourse?.courseCode,
+                    courseName = selectedCourse?.courseName
+                )
+                val result = safeApiCall { api.createSession(req) }
+                withContext(Dispatchers.Main) {
+                    isCloudSyncing = false
+                    when (result) {
+                        is NetworkResult.Success -> {
+                            backendSessionId = result.data.id
                             cloudStatusMessage = "Cloud session active: $sessionId"
-                            // Start broadcasting in-room beacon AFTER session is safely recorded in cloud DB
-                            onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
-                        } else {
-                            val err = try { res.errorBody()?.string() } catch (_: Exception) { null }
-                            cloudStatusMessage = "Cloud sync warning (HTTP ${res.code()}): running locally ($sessionId)"
-                            android.util.Log.e("AttendanceViewModel", "Session create failed: HTTP ${res.code()} - $err")
                             onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
                         }
-                    }
-                } catch (e: Exception) {
-                    withContext(Dispatchers.Main) {
-                        isCloudSyncing = false
-                        cloudStatusMessage = "Cloud sync error: ${e.localizedMessage ?: "Offline"}"
-                        android.util.Log.e("AttendanceViewModel", "Session create exception", e)
-                        onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
+                        is NetworkResult.Error -> {
+                            cloudStatusMessage = "Cloud sync warning (HTTP ${result.code}): running locally ($sessionId)"
+                            android.util.Log.e("AttendanceViewModel", "Session create failed: HTTP ${result.code} - ${result.message}")
+                            onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
+                        }
+                        is NetworkResult.Exception -> {
+                            cloudStatusMessage = "Cloud sync error: ${result.throwable.localizedMessage ?: "Offline"}"
+                            android.util.Log.e("AttendanceViewModel", "Session create exception", result.throwable)
+                            onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
+                        }
                     }
                 }
             }
@@ -743,15 +730,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         isCloudSyncing = true
         cloudStatusMessage = "Finalizing attendance..."
         viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val reportPayload = MeshAuditRunRequest(emptyMap())
-                val res = api.auditAndFinalize(sessId, reportPayload)
-                withContext(Dispatchers.Main) {
-                    isCloudSyncing = false
-                    if (res.code() == 401) {
-                        handleAuthExpired()
-                    } else if (res.isSuccessful && res.body() != null) {
-                        val body = res.body()!!
+            val reportPayload = MeshAuditRunRequest(emptyMap())
+            val result = safeApiCall { api.auditAndFinalize(sessId, reportPayload) }
+            withContext(Dispatchers.Main) {
+                isCloudSyncing = false
+                when (result) {
+                    is NetworkResult.Success -> {
+                        val body = result.data
                         finalizedRecords = body.records ?: emptyList()
                         recordSessionToHistory(finalizedRecords)
                         val verifiedCount = finalizedRecords.count { it.status == "VERIFIED_PRESENT" }
@@ -762,15 +747,17 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             "Completed • $verifiedCount present"
                         }
                         broadcastAirVerdicts(finalizedRecords)
-                    } else {
-                        val errBody = try { res.errorBody()?.string() } catch (_: Exception) { null }
-                        cloudStatusMessage = "Audit failed: HTTP ${res.code()}${if (!errBody.isNullOrBlank()) " - $errBody" else ""}"
                     }
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    isCloudSyncing = false
-                    cloudStatusMessage = "Finalize failed: ${e.localizedMessage}"
+                    is NetworkResult.Error -> {
+                        if (result.code == 401) {
+                            handleAuthExpired()
+                        } else {
+                            cloudStatusMessage = "Audit failed: HTTP ${result.code} - ${result.message}"
+                        }
+                    }
+                    is NetworkResult.Exception -> {
+                        cloudStatusMessage = "Finalize failed: ${result.throwable.localizedMessage}"
+                    }
                 }
             }
         }
@@ -902,7 +889,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Student scanning start
     fun startStudentScanning() {
-        discoveredPeers.clear()
+        stopPeerBatchUpdates()
+        rawDiscoveredPeers.clear()
+        topDeskNeighbours = emptyList()
         studentStatusMessage = null
         challengeScore = 0
         challengeTotalTargets = 0
@@ -928,6 +917,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Student scanning stop
     fun stopStudentScanning() {
+        stopPeerBatchUpdates()
         studentTimer?.cancel()
         studentTimer = null
         studentDiscoverySecondsRemaining = 0
@@ -940,12 +930,14 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Reset student attendance session back to standby
     fun resetStudentSession() {
+        stopPeerBatchUpdates()
         studentTimer?.cancel()
         studentTimer = null
         studentDiscoverySecondsRemaining = 0
         auditPollingJob?.cancel()
         auditPollingJob = null
-        discoveredPeers.clear()
+        rawDiscoveredPeers.clear()
+        topDeskNeighbours = emptyList()
         studentStatusMessage = null
         challengeScore = 0
         challengeTotalTargets = 0
@@ -994,6 +986,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun startStudentDiscoveryWindow() {
+        startPeerBatchUpdates()
         studentDiscoverySecondsRemaining = 15
         val probePayload = "$detectedSessionId$studentShortId"
         onStartBroadcasting?.invoke(probePayload, AdvertiseSettings.ADVERTISE_TX_POWER_LOW)
@@ -1011,6 +1004,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
             override fun onFinish() {
                 studentDiscoverySecondsRemaining = 0
+                flushPeerBatchImmediately()
                 // Background BLE discovery window complete; sync neighbors to cloud
                 submitMyNeighborsToCloud(keepRadioActive = true)
                 // studentPhase remains PROBING_NEIGHBORS so the score window stays visible
@@ -1033,6 +1027,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 val isMatch = targetId.equals(studentShortId, ignoreCase = true) ||
                         targetId.equals(currentRollNumber, ignoreCase = true)
                 if (isMatch) {
+                    stopPeerBatchUpdates()
                     studentPhase = StudentPhase.VERIFIED_PRESENT
                     studentStatusMessage = "Attendance Confirmed"
                     auditPollingJob?.cancel()
@@ -1071,13 +1066,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             if (cleanMsg.startsWith(detectedSessionId)) {
                 val peerId = cleanMsg.removePrefix(detectedSessionId).takeLast(4)
                 if (peerId.isNotEmpty() && peerId != studentShortId) {
-                    val existing = discoveredPeers[peerId]
+                    val existing = rawDiscoveredPeers[peerId]
                     val updatedPeer = if (existing != null) {
                         existing.withSample(rssi)
                     } else {
                         PeerData(peerId).withSample(rssi)
                     }
-                    discoveredPeers[peerId] = updatedPeer
+                    rawDiscoveredPeers[peerId] = updatedPeer
 
                     if (existing == null) {
                         // Push updated peer list to server
@@ -1119,7 +1114,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     // AND ultrasonic acoustic distance (< 25 cm) independently agree, preventing false positives from either sensor alone.
     private fun handleEnsembleSummary(summary: AcousticStatisticalSummary, peerId: String) {
         viewModelScope.launch(Dispatchers.Main) {
-            val peer = discoveredPeers[peerId]
+            val peer = rawDiscoveredPeers[peerId]
             val peerMedianRssi = peer?.medianRssi ?: -100
             val isRadioTouching = peerMedianRssi >= -55 || (peer?.rssiSamples?.any { it >= -55 } == true)
             val isAcousticClose = summary.verdict == EnsembleVerdict.CONFIRMED_SAME_DESK ||

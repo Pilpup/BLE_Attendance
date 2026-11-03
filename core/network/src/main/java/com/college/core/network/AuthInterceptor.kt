@@ -27,14 +27,17 @@ class AuthInterceptor(
         val request = chain.request()
         val token = sessionManager.activeToken
         val path = request.url.encodedPath.trimEnd('/')
-        val isAuthEndpoint = path.endsWith(AUTH_LOGIN_PATH) || path.endsWith(AUTH_REGISTER_PATH)
+        val isExplicitNoAuth = request.header(NO_AUTH_HEADER)?.equals("true", ignoreCase = true) == true
+        val isAuthEndpoint = isExplicitNoAuth || path.contains("/auth/")
 
-        val authorized = request.newBuilder().apply {
-            if (token != null && !isAuthEndpoint) {
-                // header() (not addHeader) so any stale header is replaced, never duplicated
-                header(AUTHORIZATION_HEADER, "$BEARER_PREFIX$token")
-            }
-        }.build()
+        val requestBuilder = request.newBuilder()
+        if (isExplicitNoAuth) {
+            requestBuilder.removeHeader(NO_AUTH_HEADER)
+        }
+        if (token != null && !isAuthEndpoint) {
+            requestBuilder.header(AUTHORIZATION_HEADER, "$BEARER_PREFIX$token")
+        }
+        val authorized = requestBuilder.build()
 
         val isRealJwt = token?.contains(".") == true
         val response = chain.proceed(authorized)
@@ -46,10 +49,9 @@ class AuthInterceptor(
         return response
     }
 
-    private companion object {
-        const val AUTHORIZATION_HEADER = "Authorization"
-        const val BEARER_PREFIX = "Bearer "
-        const val AUTH_LOGIN_PATH = "/auth/login"
-        const val AUTH_REGISTER_PATH = "/auth/register"
+    companion object {
+        const val NO_AUTH_HEADER = "No-Auth"
+        private const val AUTHORIZATION_HEADER = "Authorization"
+        private const val BEARER_PREFIX = "Bearer "
     }
 }
