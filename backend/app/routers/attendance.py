@@ -743,7 +743,7 @@ async def submit_student_neighbors(
         )
 
     # Flag cognitive reflex challenge failure (Layer 2)
-    if payload.challenge_passed is False:
+    if payload.challenge_passed is False or (payload.challenge_score is not None and payload.challenge_score == 0):
         remarks = f"Cognitive reflex challenge failed (score {payload.challenge_score or 0} below threshold)"
         logger.warning(f"[Layer 2 Challenge Failed] {student_key}: {remarks}")
         await _record_proxy_violation(
@@ -762,11 +762,11 @@ async def submit_student_neighbors(
             detail=remarks,
         )
 
-    # Flag ultrasonic acoustic proximity proxy (< 25 cm)
+    # Flag ultrasonic acoustic proximity proxy (< 20 cm)
     if payload.ultrasonic_proximity_detected:
         peer_key = payload.co_located_peer_id or "UNKNOWN"
-        remarks_current = f"Ultrasonic proximity rejected: Co-located on same desk (< 25 cm) with {peer_key}"
-        remarks_peer = f"Ultrasonic proximity rejected: Co-located on same desk (< 25 cm) with {student_key}"
+        remarks_current = f"Ultrasonic proximity rejected: Co-located on same desk (< 20 cm) with {peer_key}"
+        remarks_peer = f"Ultrasonic proximity rejected: Co-located on same desk (< 20 cm) with {student_key}"
         logger.warning(f"[Layer 4 Ultrasonic Proxy] {student_key} co-located with {peer_key}")
 
         if peer_key != "UNKNOWN":

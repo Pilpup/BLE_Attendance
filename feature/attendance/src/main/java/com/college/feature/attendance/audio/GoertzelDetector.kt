@@ -16,8 +16,8 @@ object GoertzelDetector {
     private const val COEFF_19600_HZ_AT_48K = -1.6781745265551944
     private const val COEFF_20000_HZ_AT_48K = -1.7320508075688772
 
-    // Power attenuation offset for 25.0 cm boundary relative to 20 cm reference: 20 * log10(25/20)
-    private const val SAME_DESK_POWER_OFFSET_DB = 1.938200260161128
+    // Power attenuation offset for 20.0 cm boundary relative to 20 cm reference: 20 * log10(20/20) = 0.0
+    private const val SAME_DESK_POWER_OFFSET_DB = 0.0
 
     @Volatile
     private var cachedHannWindow: DoubleArray? = null
@@ -227,7 +227,7 @@ object GoertzelDetector {
         val medianPowerDb = sorted[total / 2]
         val estimatedDist = calculateDistanceCm(trimmedMeanPowerDb, refPowerDb)
 
-        // 25.0 cm boundary maps to a single constant power threshold, avoiding repeated Math.pow in loop
+        // 20.0 cm boundary maps to a single constant power threshold, avoiding repeated Math.pow in loop
         val sameDeskThresholdPowerDb = refPowerDb - SAME_DESK_POWER_OFFSET_DB
         var greenCount = 0
         for (powerDb in sorted) {

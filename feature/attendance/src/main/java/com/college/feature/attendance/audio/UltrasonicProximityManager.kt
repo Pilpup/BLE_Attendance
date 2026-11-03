@@ -173,7 +173,7 @@ class UltrasonicProximityManager(private val context: Context) {
                                 powerDb = tracker.burstPeakPowerDb,
                                 refPowerDb = calibratedRefPowerDb
                             )
-                            isCoLocated = finalizedDist in 0.1..25.0
+                            isCoLocated = finalizedDist in 0.1..20.0
                             emitFinalized = true
                             tracker.reset()
                         }

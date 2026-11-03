@@ -815,6 +815,27 @@ async def test_cognitive_challenge_failure_rejection():
         assert rec_map["AIL1"]["verification_method"] == "BEHAVIOUR_ANALYSIS_FAILED"
 
 
+# Verifies Layer 2: Server-side rejection when cognitive challenge score is zero
+@pytest.mark.anyio
+async def test_cognitive_challenge_zero_score_server_rejection():
+    from httpx import AsyncClient, ASGITransport
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post(
+            "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
+            json={
+                "student_id": "ZERO1",
+                "neighbors": ["PEER-Z"],
+                "session_salt": "DEMO1",
+                "challenge_passed": True,
+                "challenge_score": 0,
+            },
+        )
+        assert res.status_code == 403
+        assert "Cognitive reflex challenge failed" in res.json()["detail"]
+
+
 # Verifies raw binary image check-in submission with headers bypasses base64
 @pytest.mark.anyio
 async def test_submit_neighbors_binary_upload():
