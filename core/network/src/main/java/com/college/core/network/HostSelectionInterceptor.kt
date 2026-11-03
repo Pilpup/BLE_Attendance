@@ -3,12 +3,6 @@ package com.college.core.network
 import okhttp3.Interceptor
 import okhttp3.Response
 
-/**
- * Interceptor that dynamically routes requests to the active [ServerConfigManager] host.
- *
- * Enables instant server switching at runtime without rebuilding Retrofit or invalidating
- * existing service proxies.
- */
 class HostSelectionInterceptor(
     private val serverConfig: ServerConfigManager = ServerConfigManager.default
 ) : Interceptor {

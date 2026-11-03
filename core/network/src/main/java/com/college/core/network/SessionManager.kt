@@ -11,12 +11,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/**
- * Single source of truth for the active SessionState.
- *
- * Persists credentials via EncryptedSharedPreferences with fallback to standard preferences
- * to guarantee resilience against Android Keystore corruption.
- */
 class SessionManager {
 
     private var prefs: SharedPreferences? = null

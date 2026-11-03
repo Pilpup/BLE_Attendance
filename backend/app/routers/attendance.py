@@ -25,7 +25,6 @@ def _is_session_stale(started_at: Optional[datetime], minutes: int) -> bool:
 from app.core.security import (
     get_current_user,
     get_optional_user,
-    require_student,
     require_teacher,
 )
 from app.database import get_db

@@ -3,22 +3,6 @@ package com.college.core.network
 import okhttp3.Interceptor
 import okhttp3.Response
 
-/**
- * OkHttp interceptor that turns the active session into wire headers:
- *
- *  - Appends `Authorization: Bearer <token>` to every outbound call that is
- *    not an auth endpoint itself (login/register are anonymous by design).
- *  - On a 401 response for an endpoint where we DID attach a real JWT, the
- *    session is considered invalid (expired/revoked) and cleared — every
- *    screen collecting SessionManager.state reacts by returning to the
- *    login flow.
- *
- * A 401 only clears the session if we actually sent **real** credentials:
- * real JWTs are `header.payload.signature`; :app's development mock tokens
- * contain no dots, are local-only identities the backend can neither
- * validate nor judge, and must never evict a developer's mock session.
- * Anonymous or failed login attempts can't wipe an unrelated state either.
- */
 class AuthInterceptor(
     private val sessionManager: SessionManager
 ) : Interceptor {
@@ -28,7 +12,7 @@ class AuthInterceptor(
         val token = sessionManager.activeToken
         val path = request.url.encodedPath.trimEnd('/')
         val isExplicitNoAuth = request.header(NO_AUTH_HEADER)?.equals("true", ignoreCase = true) == true
-        val isAuthEndpoint = isExplicitNoAuth || path.contains("/auth/")
+        val isAuthEndpoint = isExplicitNoAuth || (path.contains("/auth/") && !path.endsWith("/me"))
 
         val requestBuilder = request.newBuilder()
         if (isExplicitNoAuth) {

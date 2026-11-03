@@ -6,9 +6,7 @@ import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
 
-/**
- * Central HTTP client provider delivering a unified OkHttpClient and Retrofit engine.
- */
+// Central HTTP client provider delivering a unified OkHttpClient and Retrofit engine.
 object NetworkClient {
 
     val okHttpClient: OkHttpClient by lazy {
@@ -45,9 +43,7 @@ object NetworkClient {
 
     inline fun <reified T : Any> createService(): T = getService(T::class.java)
 
-    /**
-     * Non-blocking probe of the backend /health endpoint to detect service readiness.
-     */
+    // Non-blocking probe of the backend /health endpoint to detect service readiness.
     suspend fun checkServerHealth(): Boolean = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         try {
             val request = okhttp3.Request.Builder()

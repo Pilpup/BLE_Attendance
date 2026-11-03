@@ -26,7 +26,6 @@ import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -49,7 +48,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
@@ -81,18 +79,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/**
- * Highly optimized, lightweight Home Screen for all devices (including older/slower phones).
- * Shows a sleek Deep Midnight / Obsidian Dark interface with an accessible top bar profile icon.
- */
-
-// Deep Midnight / Obsidian Dark Design Tokens
-private val ObsidianBg = Color(0xFF0B0F17) // Sleek AMOLED-friendly obsidian void
-private val ObsidianCard = Color(0xFF131B2A) // Card & dialog surface
-private val ObsidianCardAlt = Color(0xFF0F172A) // Inset surface / input background
-private val ObsidianBorder = Color(0xFF1E293B) // Structural divider & border
-private val ObsidianBorderHighlight = Color(0xFF334155) // Active outline
-private val ObsidianTextPrimary = Color(0xFFF8FAFC) // Luminescent white
+// Obsidian dark theme color tokens
+private val ObsidianBg = Color(0xFF0B0F17)
+private val ObsidianCard = Color(0xFF131B2A)
+private val ObsidianCardAlt = Color(0xFF0F172A)
+private val ObsidianBorder = Color(0xFF1E293B)
+private val ObsidianBorderHighlight = Color(0xFF334155)
+private val ObsidianTextPrimary = Color(0xFFF8FAFC)
 private val ObsidianTextSecondary = Color(0xFF94A3B8) // Slate 400
 private val ObsidianAccent = Color(0xFF2563EB) // Electric ultramarine
 private val ObsidianAccentGlow = Color(0xFF3B82F6) // Bright blue
@@ -123,7 +116,7 @@ fun HomeScreen(
             .background(ObsidianBg)
             .systemBarsPadding()
     ) {
-        // ---- Top Bar: Title & User Profile Icon -----------------------------
+        // Top bar with branding and user profile action
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -138,7 +131,7 @@ fun HomeScreen(
                 color = ObsidianTextPrimary
             )
 
-            // Right side: Role badge next to profile icon + User Profile Icon
+            // Role badge and profile avatar
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -167,7 +160,7 @@ fun HomeScreen(
                     }
                 }
 
-                // User Profile Icon (Tapping opens user details / sign in)
+                // Profile avatar opening account or auth dialog
                 Surface(
                     onClick = { showAccountDialog = true },
                     shape = CircleShape,
@@ -197,14 +190,14 @@ fun HomeScreen(
             }
         }
 
-        // ---- Two Feature Options in One Row --------------------------------
+        // Feature navigation cards for attendance and library
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp, vertical = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // Attendance
+            // Attendance feature launcher
             Surface(
                 onClick = {
                     if (user != null) {
@@ -248,7 +241,7 @@ fun HomeScreen(
                 }
             }
 
-            // Library
+            // Library feature launcher
             Surface(
                 onClick = {
                     if (user != null) {
@@ -294,7 +287,7 @@ fun HomeScreen(
         }
     }
 
-    // ---- User Details or Sign In / Register Dialog --------------------------
+    // Account details or authentication dialog
     if (showAccountDialog) {
         if (user != null) {
             UserDetailsDialog(
@@ -309,9 +302,7 @@ fun HomeScreen(
     }
 }
 
-/**
- * Dialog displaying active user details and quick account switching in Obsidian Dark.
- */
+// Dialog displaying authenticated user profile details and session sign out
 @Composable
 private fun UserDetailsDialog(
     user: User,
@@ -436,9 +427,7 @@ private fun UserDetailsDialog(
     )
 }
 
-/**
- * Clean Auth Dialog in Obsidian Dark with dedicated Sign In and Register tabs.
- */
+// Authentication steps for credentials and OTP verification
 private enum class AuthStep {
     CREDENTIALS,
     OTP_VERIFICATION
@@ -1161,9 +1150,6 @@ private fun AppDropdownField(
         }
     }
 }
-
-private fun String.capitalizeWords(): String =
-    split(" ").joinToString(" ") { word -> word.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() } }
 
 private fun roleBadgeColor(role: Role): Color = when (role) {
     Role.TEACHER -> Color(0xFF60A5FA)

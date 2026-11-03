@@ -19,14 +19,7 @@ import com.college.feature.attendance.viewmodel.TeacherViewMode
 import com.college.feature.library.LibraryDashboardCard
 import com.college.feature.library.LibraryScreen
 
-/**
- * The :app shell's navigation. Holds the active destination and maps the
- * routes featured cards emit ("feature_attendance", "feature_library") onto
- * the corresponding module screens.
- *
- * [:app] is the ONLY module that knows every feature, so it is also the one
- * place where each feature's DashboardCard is registered exactly once.
- */
+// Shell navigation routing between dashboard and feature screens
 @Composable
 fun AppNavigation(
     viewModel: AttendanceViewModel,
@@ -36,14 +29,13 @@ fun AppNavigation(
     val sessionState by SessionManager.default.state.collectAsState()
     val user = (sessionState as? SessionState.Authenticated)?.user
 
-    // Register feature card contributions (registry de-duplicates by id).
+    // Register feature cards with the dashboard registry
     LaunchedEffect(Unit) {
         DashboardRegistry.register(AttendanceDashboardCard)
         DashboardRegistry.register(LibraryDashboardCard)
     }
 
-    // If the session drops (mock switch / 401), the shell falls back to sign-in
-    // and remembers where the user was heading.
+    // Fall back to home screen if user session is absent
     val effectiveDestination = if (user != null) destination else Destination.HOME
 
     when (effectiveDestination) {
@@ -70,17 +62,19 @@ fun AppNavigation(
         }
 
         Destination.ATTENDANCE -> if (user != null) {
-            val handleBack = {
-                if (user.canTakeAttendance() && !viewModel.isSessionActive && viewModel.finalizedRecords.isEmpty()) {
-                    if (viewModel.selectedSessionForDetails != null) {
-                        viewModel.selectedSessionForDetails = null
-                    } else if (viewModel.teacherViewMode != TeacherViewMode.MENU) {
-                        viewModel.teacherViewMode = TeacherViewMode.MENU
+            val handleBack = remember(user, viewModel) {
+                {
+                    if (user.canTakeAttendance() && !viewModel.isSessionActive && viewModel.finalizedRecords.isEmpty()) {
+                        if (viewModel.selectedSessionForDetails != null) {
+                            viewModel.selectedSessionForDetails = null
+                        } else if (viewModel.teacherViewMode != TeacherViewMode.MENU) {
+                            viewModel.teacherViewMode = TeacherViewMode.MENU
+                        } else {
+                            destination = Destination.HOME
+                        }
                     } else {
                         destination = Destination.HOME
                     }
-                } else {
-                    destination = Destination.HOME
                 }
             }
 

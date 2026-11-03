@@ -5,6 +5,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
+// Dark color scheme mapping theme tokens to Material3 slots
 private val PersonaDarkColorScheme = darkColorScheme(
     primary = P3ElectricCyan,
     onPrimary = P3VoidBlack,
@@ -33,6 +34,7 @@ private val PersonaDarkColorScheme = darkColorScheme(
     outlineVariant = Color(0x2000E5FF),
 )
 
+// Global theme composable applying the dark color scheme
 @Composable
 fun PersonaTheme(
     content: @Composable () -> Unit

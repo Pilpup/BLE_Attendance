@@ -9,12 +9,6 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
-/**
- * Centralized source of truth for the target backend API endpoint.
- *
- * Exposes a reactive [baseUrl] flow and persists user-configured endpoints
- * across application restarts. Caches parsed [HttpUrl] to avoid string parsing on network calls.
- */
 class ServerConfigManager {
 
     private var prefs: SharedPreferences? = null
@@ -62,7 +56,15 @@ class ServerConfigManager {
         }
     }
 
-    private fun formatBaseUrl(url: String): String {
+    private fun formatBaseUrl(raw: String): String {
+        var url = raw.trim()
+        if (!url.startsWith("http://", ignoreCase = true) && !url.startsWith("https://", ignoreCase = true)) {
+            url = if (url.startsWith("localhost") || url.startsWith("10.") || url.startsWith("192.168.") || url.startsWith("127.")) {
+                "http://$url"
+            } else {
+                "https://$url"
+            }
+        }
         return if (url.endsWith("/")) url else "$url/"
     }
 

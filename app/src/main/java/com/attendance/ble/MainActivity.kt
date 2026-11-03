@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
@@ -24,12 +25,7 @@ import com.college.feature.attendance.ble.BleConstants
 import com.college.feature.attendance.ble.BleScanner
 import com.college.feature.attendance.viewmodel.AttendanceViewModel
 
-/**
- * Thin host Activity. After the Step 4 migration the whole attendance engine
- * lives in :feature:attendance; this class only wires what an Activity owns:
- * runtime BLE permission gating, the hardware advertising/scanning bridge, and
- * the CSV share intent — everything else is resolved through the modules.
- */
+// Host activity managing window configuration, BLE radio bridging, and runtime permissions
 class MainActivity : ComponentActivity() {
 
     private val viewModel: AttendanceViewModel by viewModels()
@@ -96,61 +92,66 @@ class MainActivity : ComponentActivity() {
                 contract = ActivityResultContracts.StartActivityForResult()
             ) { }
 
-            val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+            val bluetoothManager = remember(context) {
+                context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+            }
 
-            val checkAndExecute = { action: () -> Unit ->
-                val hasPermissions = BleConstants.neededPermissions.all { perm ->
-                    ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
-                }
-                if (!hasPermissions) {
-                    permissionLauncher.launch(BleConstants.neededPermissions)
-                } else {
-                    try {
-                        if (bluetoothManager.adapter?.isEnabled == false) {
-                            val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
-                            enableBluetoothLauncher.launch(enableBtIntent)
-                        } else {
-                            action()
-                        }
-                    } catch (_: SecurityException) {
+            // Checks runtime permissions and bluetooth state before executing action
+            val checkAndExecute: (() -> Unit) -> Unit = remember(context, bluetoothManager, permissionLauncher, enableBluetoothLauncher) {
+                { action ->
+                    val hasPermissions = BleConstants.neededPermissions.all { perm ->
+                        ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
+                    }
+                    if (!hasPermissions) {
                         permissionLauncher.launch(BleConstants.neededPermissions)
+                    } else {
+                        try {
+                            if (bluetoothManager.adapter?.isEnabled == false) {
+                                val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                                enableBluetoothLauncher.launch(enableBtIntent)
+                            } else {
+                                action()
+                            }
+                        } catch (_: SecurityException) {
+                            permissionLauncher.launch(BleConstants.neededPermissions)
+                        }
                     }
                 }
             }
 
-            // :app-owned hooks handed to the feature screen (permission gating,
-            // BLE radio start/stop, CSV export). All other behavior is internal
-            // to :feature:attendance via the ViewModel + SessionManager.
-            val shellCallbacks = AttendanceScreenCallbacks(
-                onStartTeacherSession = {
-                    checkAndExecute {
-                        viewModel.startTeacherSession(durationSeconds = 60)
+            // Attendance feature callbacks for BLE radio, session lifecycle, and CSV export
+            val shellCallbacks = remember(viewModel, checkAndExecute) {
+                AttendanceScreenCallbacks(
+                    onStartTeacherSession = {
+                        checkAndExecute {
+                            viewModel.startTeacherSession(durationSeconds = 60)
+                        }
+                    },
+                    onStopTeacherSession = {
+                        viewModel.finalizeSessionAndAudit()
+                    },
+                    onShareAttendance = {
+                        shareAttendanceCsv(viewModel.generateCsvReport(), viewModel.sessionId)
+                    },
+                    onResetSession = {
+                        viewModel.resetSession()
+                    },
+                    onStartStudentScanning = {
+                        checkAndExecute {
+                            viewModel.startStudentScanning()
+                        }
+                    },
+                    onStopStudentScanning = {
+                        viewModel.stopStudentScanning()
+                    },
+                    onUpdateRollNumber = { roll ->
+                        viewModel.updateRollNumber(roll)
+                    },
+                    onRequestPermissions = {
+                        permissionLauncher.launch(BleConstants.neededPermissions)
                     }
-                },
-                onStopTeacherSession = {
-                    viewModel.finalizeSessionAndAudit()
-                },
-                onShareAttendance = {
-                    shareAttendanceCsv(viewModel.generateCsvReport(), viewModel.sessionId)
-                },
-                onResetSession = {
-                    viewModel.resetSession()
-                },
-                onStartStudentScanning = {
-                    checkAndExecute {
-                        viewModel.startStudentScanning()
-                    }
-                },
-                onStopStudentScanning = {
-                    viewModel.stopStudentScanning()
-                },
-                onUpdateRollNumber = { roll ->
-                    viewModel.updateRollNumber(roll)
-                },
-                onRequestPermissions = {
-                    permissionLauncher.launch(BleConstants.neededPermissions)
-                }
-            )
+                )
+            }
 
             Surface(
                 modifier = Modifier.fillMaxSize(),

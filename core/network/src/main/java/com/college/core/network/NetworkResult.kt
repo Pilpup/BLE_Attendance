@@ -58,7 +58,8 @@ suspend fun <T> safeApiCall(apiCall: suspend () -> Response<T>): NetworkResult<T
             val message = errorPayload?.detail ?: "HTTP ${response.code()}"
             NetworkResult.Error(response.code(), message, errorPayload)
         }
-    } catch (e: java.lang.Exception) {
+    } catch (e: Exception) {
+        if (e is kotlinx.coroutines.CancellationException) throw e
         NetworkResult.Exception(e)
     }
 }
