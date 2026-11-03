@@ -1,4 +1,9 @@
+import os
 import pytest
+
+# Ensures pytest uses isolated SQLite database during test runs
+os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///ble_attendance.db")
+
 from app.config import settings
 
 
