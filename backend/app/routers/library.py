@@ -23,27 +23,29 @@ from app.services.book_lookup import lookup_book_by_isbn
 router = APIRouter(prefix="/library", tags=["Library"])
 
 
+# Normalize ISBN string by removing hyphens and converting to uppercase
 def _normalize_isbn(raw: str) -> str:
-    """Matches the Android client: trim, drop hyphens, uppercase."""
     return raw.strip().replace("-", "").upper()
 
 
+# Normalize category string to uppercase
 def _normalize_category(raw: str) -> str:
     return raw.strip().upper()
 
 
-# ─────────────────────────────────────────────
-# Catalogue browsing — ALL authenticated roles
-# ─────────────────────────────────────────────
+# List books in catalogue with optional search, category filter, and pagination
 @router.get("/books", response_model=List[BookResponse])
 async def list_books(
     search: Optional[str] = Query(None, description="Matches title, author or ISBN"),
     category: Optional[str] = Query(None, description="Exact category, case-insensitive (CS, MATH…)"),
+    limit: Optional[int] = Query(None, ge=1, le=200, description="Max books to return"),
+    offset: Optional[int] = Query(None, ge=0, description="Number of books to skip"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     query = select(Book)
 
+    # Filter by search keyword matching title, author, or ISBN
     if search and search.strip():
         pattern = f"%{search.strip()}%"
         query = query.where(
@@ -54,28 +56,34 @@ async def list_books(
             )
         )
 
+    # Filter by category
     if category and category.strip():
         query = query.where(func.lower(Book.category) == category.strip().lower())
 
     query = query.order_by(Book.created_at.desc(), Book.title.asc())
+
+    # Apply pagination offset and limit if provided
+    if offset is not None:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+
     result = await db.execute(query)
     return result.scalars().all()
 
 
+# Look up book details by ISBN from local catalogue or external APIs
 @router.get("/books/lookup/{isbn}", response_model=BookLookupResponse)
 async def lookup_book(
     isbn: str,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    Look up book details by ISBN barcode using Google Books API, OpenLibrary API,
-    and ISBNdb API. Checks local catalog first to return locally held details.
-    """
     clean_isbn = _normalize_isbn(isbn)
+
+    # Check local catalogue first
     existing = await db.execute(select(Book).where(Book.isbn == clean_isbn))
     local_book = existing.scalars().first()
-
     if local_book:
         return BookLookupResponse(
             title=local_book.title,
@@ -89,6 +97,7 @@ async def lookup_book(
             source="Local Catalogue",
         )
 
+    # Query external book metadata providers
     lookup_result = await lookup_book_by_isbn(clean_isbn)
     if not lookup_result:
         raise HTTPException(
@@ -99,9 +108,7 @@ async def lookup_book(
     return lookup_result
 
 
-# ─────────────────────────────────────────────
-# Inventory management — STAFF / DEVELOPER only
-# ─────────────────────────────────────────────
+# Add new book to library inventory
 @router.post("/books", response_model=BookResponse, status_code=status.HTTP_201_CREATED)
 async def add_book(
     payload: BookCreateRequest,
@@ -111,7 +118,7 @@ async def add_book(
     normalized_isbn = _normalize_isbn(payload.isbn)
     normalized_category = _normalize_category(payload.category)
 
-    # New intake starts with every copy on the shelf.
+    # Initialize book with all copies available on shelf
     new_book = Book(
         title=payload.title.strip(),
         author=payload.author.strip(),
@@ -125,6 +132,7 @@ async def add_book(
         table_of_contents=payload.table_of_contents.strip() if payload.table_of_contents and payload.table_of_contents.strip() else None,
     )
 
+    # Verify ISBN uniqueness before insert
     existing = await db.execute(select(Book).where(Book.isbn == normalized_isbn))
     if existing.scalars().first():
         raise HTTPException(
@@ -145,6 +153,7 @@ async def add_book(
     return new_book
 
 
+# Update book details and inventory counts
 @router.put("/books/{book_id}", response_model=BookResponse)
 async def update_book(
     book_id: uuid.UUID,
@@ -157,6 +166,7 @@ async def update_book(
     if not book:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
 
+    # Validate updated ISBN uniqueness
     updates = payload.model_dump(exclude_unset=True)
     if "isbn" in updates and updates["isbn"] is not None:
         normalized = _normalize_isbn(updates["isbn"])
@@ -176,8 +186,7 @@ async def update_book(
     for field, value in updates.items():
         setattr(book, field, value)
 
-    # Preserve the stock invariant across partial updates
-    # (the schema validator only sees both-fields updates).
+    # Ensure available copies do not exceed total inventory
     if book.available_copies > book.total_copies:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -196,6 +205,7 @@ async def update_book(
     return book
 
 
+# Delete book from library catalogue
 @router.delete("/books/{book_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_book(
     book_id: uuid.UUID,
@@ -212,29 +222,27 @@ async def delete_book(
     return None
 
 
-# ─────────────────────────────────────────────
-# Reservation — ALL authenticated roles
-# ─────────────────────────────────────────────
+# Reserve a copy of a book with row-level locking
 @router.post("/books/{book_id}/reserve", response_model=BookResponse)
 async def reserve_book(
     book_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Row lock: two students tapping Reserve on the last copy at the same
-    # millisecond serialize here — the second one sees 0 copies (409),
-    # never a negative counter.
+    # Lock row to prevent concurrent over-reservation
     result = await db.execute(select(Book).where(Book.id == book_id).with_for_update())
     book = result.scalars().first()
     if not book:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
 
+    # Check copy availability
     if book.available_copies <= 0:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="No copies available: this title is fully checked out",
         )
 
+    # Decrement available count and save reservation
     book.available_copies -= 1
     db.add(
         BookReservation(
@@ -246,3 +254,4 @@ async def reserve_book(
     await db.commit()
     await db.refresh(book)
     return book
+

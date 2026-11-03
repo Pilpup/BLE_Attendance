@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -28,13 +28,29 @@ from app.services.email import generate_otp, send_otp_email
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
 
+# Ensure datetime is timezone-aware UTC
 def ensure_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
 
 
-# Step 1 of Registration: validate details and send verification OTP
+# Convert User model instance to UserResponse schema
+def _to_user_response(user: User) -> UserResponse:
+    return UserResponse(
+        id=user.id,
+        name=user.full_name,
+        email=user.email,
+        role=user.role,
+        roll_number=user.roll_number,
+        department=user.department,
+        program=user.program,
+        semester=user.semester,
+        section=user.section,
+    )
+
+
+# Initiate registration and send email OTP
 @router.post(
     "/register",
     response_model=OtpSentResponse,
@@ -45,6 +61,7 @@ async def register_send_otp(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
+    # Validate requested role
     normalized_role = payload.role.strip().upper()
     if normalized_role not in ["STUDENT", "TEACHER", "STAFF"]:
         raise HTTPException(
@@ -52,7 +69,7 @@ async def register_send_otp(
             detail="Role must be STUDENT, TEACHER, or STAFF",
         )
 
-    # enforce faculty/staff secret passcode
+    # Enforce faculty or staff registration passcode
     if normalized_role in ["TEACHER", "STAFF"]:
         if payload.faculty_code != settings.FACULTY_SIGNUP_SECRET:
             raise HTTPException(
@@ -60,6 +77,7 @@ async def register_send_otp(
                 detail="Invalid faculty or staff registration passcode",
             )
 
+    # Reject common email typo domains
     email_clean = payload.email.strip().lower()
     if "@mgail.com" in email_clean or "@gamil.com" in email_clean:
         raise HTTPException(
@@ -67,7 +85,7 @@ async def register_send_otp(
             detail="Did you mean @gmail.com? Please check your email address spelling.",
         )
 
-    # check if user with same email or roll number already exists
+    # Check if email or roll number is already registered
     existing = await db.execute(
         select(User).where(
             or_(User.email == payload.email, User.roll_number == payload.roll_number)
@@ -79,11 +97,11 @@ async def register_send_otp(
             detail="User with this email or roll number already registered",
         )
 
-    # generate 6-digit OTP
+    # Generate 6-digit OTP and expiration
     otp_code = generate_otp()
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
 
-    # store temporary registration payload alongside OTP
+    # Package temporary registration details
     temp_data = {
         "name": payload.name.strip(),
         "email": payload.email.strip().lower(),
@@ -96,16 +114,15 @@ async def register_send_otp(
         "section": payload.section.strip() if payload.section else None,
     }
 
-    # remove any prior registration OTPs for this email
-    prior = await db.execute(
-        select(EmailOTP).where(
+    # Delete prior registration OTPs for this email in bulk
+    await db.execute(
+        delete(EmailOTP).where(
             EmailOTP.email == payload.email.strip().lower(),
             EmailOTP.purpose == "REGISTER",
         )
     )
-    for p in prior.scalars().all():
-        await db.delete(p)
 
+    # Save new OTP with registration payload
     new_otp = EmailOTP(
         id=uuid.uuid4(),
         email=payload.email.strip().lower(),
@@ -118,7 +135,7 @@ async def register_send_otp(
     db.add(new_otp)
     await db.commit()
 
-    # dispatch email in background
+    # Dispatch verification email in background
     background_tasks.add_task(send_otp_email, payload.email.strip().lower(), otp_code, purpose="REGISTER")
 
     return OtpSentResponse(
@@ -129,7 +146,7 @@ async def register_send_otp(
     )
 
 
-# Step 2 of Registration: verify OTP and commit user to database
+# Verify registration OTP and create user account
 @router.post(
     "/register/verify-otp",
     response_model=TokenResponse,
@@ -142,6 +159,7 @@ async def register_verify_otp(
     email = payload.email.strip().lower()
     now = datetime.now(timezone.utc)
 
+    # Find latest registration OTP record
     result = await db.execute(
         select(EmailOTP)
         .where(EmailOTP.email == email, EmailOTP.purpose == "REGISTER")
@@ -149,6 +167,7 @@ async def register_verify_otp(
     )
     otp_record = result.scalars().first()
 
+    # Validate OTP record and expiration
     if not otp_record or now > ensure_utc(otp_record.expires_at):
         if otp_record:
             await db.delete(otp_record)
@@ -158,6 +177,7 @@ async def register_verify_otp(
             detail="Verification code is invalid or has expired. Please request a new code.",
         )
 
+    # Enforce attempt rate limit
     if otp_record.attempts >= 5:
         await db.delete(otp_record)
         await db.commit()
@@ -166,6 +186,7 @@ async def register_verify_otp(
             detail="Too many incorrect attempts. Please request a new code.",
         )
 
+    # Check submitted OTP code against stored code
     if otp_record.otp_code != payload.otp_code.strip():
         otp_record.attempts += 1
         await db.commit()
@@ -175,7 +196,7 @@ async def register_verify_otp(
             detail=f"Incorrect verification code ({remaining} attempts remaining).",
         )
 
-    # Valid OTP -> commit user
+    # Create and persist new user
     data = otp_record.temp_payload or {}
     new_user = User(
         id=uuid.uuid4(),
@@ -194,6 +215,7 @@ async def register_verify_otp(
     await db.commit()
     await db.refresh(new_user)
 
+    # Generate JWT access token
     token_data = {
         "sub": str(new_user.id),
         "name": new_user.full_name,
@@ -202,26 +224,14 @@ async def register_verify_otp(
     }
     token = create_access_token(data=token_data)
 
-    user_resp = UserResponse(
-        id=new_user.id,
-        name=new_user.full_name,
-        email=new_user.email,
-        role=new_user.role,
-        roll_number=new_user.roll_number,
-        department=new_user.department,
-        program=new_user.program,
-        semester=new_user.semester,
-        section=new_user.section,
-    )
-
     return TokenResponse(
         access_token=token,
         token_type="bearer",
-        user=user_resp,
+        user=_to_user_response(new_user),
     )
 
 
-# Step 1 of Login (Two-Factor Auth): verify password, generate and send 2FA OTP
+# Verify password and send two-factor OTP
 @router.post("/login", response_model=LoginResponse)
 async def login(
     payload: LoginRequest,
@@ -229,29 +239,29 @@ async def login(
     db: AsyncSession = Depends(get_db),
 ):
     email = payload.email.strip().lower()
+
+    # Look up user by email and verify password
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalars().first()
-
     if not user or not verify_password(payload.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
 
-    # Password is correct! Generate and dispatch 2FA OTP
+    # Generate 2FA OTP code and expiration
     otp_code = generate_otp()
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
 
-    # Remove any previous login OTPs
-    prior = await db.execute(
-        select(EmailOTP).where(
+    # Delete prior login OTPs in bulk
+    await db.execute(
+        delete(EmailOTP).where(
             EmailOTP.email == email,
             EmailOTP.purpose == "LOGIN",
         )
     )
-    for p in prior.scalars().all():
-        await db.delete(p)
 
+    # Save new login OTP record
     new_otp = EmailOTP(
         id=uuid.uuid4(),
         email=email,
@@ -263,7 +273,7 @@ async def login(
     db.add(new_otp)
     await db.commit()
 
-    # Send 2FA email in background
+    # Dispatch 2FA email in background
     background_tasks.add_task(send_otp_email, email, otp_code, purpose="LOGIN")
 
     return LoginResponse(
@@ -273,7 +283,7 @@ async def login(
     )
 
 
-# Step 2 of Login (Two-Factor Auth): verify OTP and return JWT access token
+# Verify two-factor login OTP and issue token
 @router.post("/login/verify-otp", response_model=TokenResponse)
 async def login_verify_otp(
     payload: VerifyOtpRequest,
@@ -282,6 +292,7 @@ async def login_verify_otp(
     email = payload.email.strip().lower()
     now = datetime.now(timezone.utc)
 
+    # Find latest login OTP record
     result = await db.execute(
         select(EmailOTP)
         .where(EmailOTP.email == email, EmailOTP.purpose == "LOGIN")
@@ -289,6 +300,7 @@ async def login_verify_otp(
     )
     otp_record = result.scalars().first()
 
+    # Validate OTP record and expiration
     if not otp_record or now > ensure_utc(otp_record.expires_at):
         if otp_record:
             await db.delete(otp_record)
@@ -298,6 +310,7 @@ async def login_verify_otp(
             detail="Verification code is invalid or has expired. Please request a new code.",
         )
 
+    # Enforce attempt rate limit
     if otp_record.attempts >= 5:
         await db.delete(otp_record)
         await db.commit()
@@ -306,6 +319,7 @@ async def login_verify_otp(
             detail="Too many incorrect attempts. Please request a new code.",
         )
 
+    # Check submitted OTP code against stored code
     if otp_record.otp_code != payload.otp_code.strip():
         otp_record.attempts += 1
         await db.commit()
@@ -315,15 +329,17 @@ async def login_verify_otp(
             detail=f"Incorrect verification code ({remaining} attempts remaining).",
         )
 
-    # Valid OTP -> complete 2FA login
+    # Remove verified OTP record
     await db.delete(otp_record)
     await db.commit()
 
+    # Look up authenticated user
     u_res = await db.execute(select(User).where(User.email == email))
     user = u_res.scalars().first()
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
+    # Generate access token
     token_data = {
         "sub": str(user.id),
         "name": user.full_name,
@@ -332,26 +348,14 @@ async def login_verify_otp(
     }
     token = create_access_token(data=token_data)
 
-    user_resp = UserResponse(
-        id=user.id,
-        name=user.full_name,
-        email=user.email,
-        role=user.role,
-        roll_number=user.roll_number,
-        department=user.department,
-        program=user.program,
-        semester=user.semester,
-        section=user.section,
-    )
-
     return TokenResponse(
         access_token=token,
         token_type="bearer",
-        user=user_resp,
+        user=_to_user_response(user),
     )
 
 
-# Resend OTP endpoint (with cooldown check)
+# Resend OTP with cooldown check
 @router.post("/otp/resend", response_model=OtpSentResponse)
 async def resend_otp(
     payload: ResendOtpRequest,
@@ -362,7 +366,7 @@ async def resend_otp(
     purpose = payload.purpose.strip().upper()
     now = datetime.now(timezone.utc)
 
-    # Check for recent OTP to prevent spam (45 seconds cooldown)
+    # Check recent OTP to enforce 45s cooldown
     recent = await db.execute(
         select(EmailOTP)
         .where(EmailOTP.email == email, EmailOTP.purpose == purpose)
@@ -378,9 +382,11 @@ async def resend_otp(
                 detail=f"Please wait {wait_time}s before requesting a new code.",
             )
 
+    # Generate new OTP code
     otp_code = generate_otp()
     expires_at = now + timedelta(minutes=settings.OTP_EXPIRE_MINUTES)
 
+    # Update existing OTP record or create new one
     if last_otp:
         last_otp.otp_code = otp_code
         last_otp.attempts = 0
@@ -398,6 +404,8 @@ async def resend_otp(
         db.add(new_otp)
 
     await db.commit()
+
+    # Dispatch email in background
     background_tasks.add_task(send_otp_email, email, otp_code, purpose=purpose)
 
     return OtpSentResponse(
@@ -408,17 +416,8 @@ async def resend_otp(
     )
 
 
-# retrieve profile of current authenticated user
+# Retrieve profile of current authenticated user
 @router.get("/me", response_model=UserResponse)
 async def get_my_profile(current_user: User = Depends(get_current_user)):
-    return UserResponse(
-        id=current_user.id,
-        name=current_user.full_name,
-        email=current_user.email,
-        role=current_user.role,
-        roll_number=current_user.roll_number,
-        department=current_user.department,
-        program=current_user.program,
-        semester=current_user.semester,
-        section=current_user.section,
-    )
+    return _to_user_response(current_user)
+
