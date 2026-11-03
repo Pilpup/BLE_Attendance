@@ -11,6 +11,14 @@ from typing import Optional
 import cv2
 import numpy as np
 
+# Optional ONNX Runtime hardware acceleration provider
+try:
+    import onnxruntime as ort
+    ORT_AVAILABLE = True
+except ImportError:
+    ort = None
+    ORT_AVAILABLE = False
+
 logger = logging.getLogger("uvicorn.error")
 
 # Standard OpenCV SFace cosine distance threshold (0.363 achieves 99.9% verification accuracy, FAR < 0.1%)
@@ -46,24 +54,86 @@ class FaceMatchingEngine:
         self.recognizer_path = recognizer_path or SFACE_MODEL_PATH
         self.detector: Optional[cv2.FaceDetectorYN] = None
         self.recognizer: Optional[cv2.FaceRecognizerSF] = None
+        self.ort_recognizer_session = None
+        self.execution_provider: str = "CPU"
         self._lock = threading.Lock()
+        self._tune_threading()
         self._init_models()
 
-    # Initializes YuNet face detector and SFace deep facial recognizer
+    # Optimizes OpenCV worker thread pool to prevent thread oversubscription
+    def _tune_threading(self) -> None:
+        try:
+            num_cores = os.cpu_count() or 1
+            cv2.setNumThreads(min(4, num_cores))
+        except Exception:
+            pass
+
+    # Initializes YuNet face detector and SFace recognizer with hardware execution backends
     def _init_models(self) -> None:
         try:
             if os.path.exists(self.detector_path) and os.path.exists(self.recognizer_path):
+                backend_id = cv2.dnn.DNN_BACKEND_OPENCV
+                target_id = cv2.dnn.DNN_TARGET_CPU
+                self.execution_provider = "OpenCV-CPU"
+
+                # Probes hardware execution providers (CUDA GPU -> OpenCL -> CPU SIMD)
+                if hasattr(cv2, "cuda") and cv2.cuda.getCudaEnabledDeviceCount() > 0:
+                    backend_id = cv2.dnn.DNN_BACKEND_CUDA
+                    target_id = cv2.dnn.DNN_TARGET_CUDA
+                    self.execution_provider = "CUDA"
+                elif cv2.ocl.haveOpenCL():
+                    backend_id = cv2.dnn.DNN_BACKEND_OPENCV
+                    target_id = cv2.dnn.DNN_TARGET_OPENCL
+                    self.execution_provider = "OpenCL"
+
                 self.detector = cv2.FaceDetectorYN.create(
-                    self.detector_path, "", (320, 320), score_threshold=0.55, nms_threshold=0.3
+                    self.detector_path,
+                    "",
+                    (320, 320),
+                    score_threshold=0.55,
+                    nms_threshold=0.3,
+                    top_k=5000,
+                    backend_id=backend_id,
+                    target_id=target_id,
                 )
-                self.recognizer = cv2.FaceRecognizerSF.create(self.recognizer_path, "")
-                logger.info(f"[FaceEngine] Loaded YuNet and SFace models from {self.detector_path}")
+                self.recognizer = cv2.FaceRecognizerSF.create(
+                    self.recognizer_path,
+                    "",
+                    backend_id=backend_id,
+                    target_id=target_id,
+                )
+                logger.info(f"[FaceEngine] Loaded YuNet and SFace models ({self.execution_provider}) from {self.detector_path}")
+
+                # Initializes optimized ONNX Runtime session if library is installed
+                if ORT_AVAILABLE and ort is not None:
+                    try:
+                        opts = ort.SessionOptions()
+                        opts.log_severity_level = 3
+                        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                        opts.intra_op_num_threads = min(4, os.cpu_count() or 1)
+                        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if self.execution_provider == "CUDA" else ["CPUExecutionProvider"]
+                        self.ort_recognizer_session = ort.InferenceSession(self.recognizer_path, opts, providers=providers)
+                        logger.info(f"[FaceEngine] Initialized ONNX Runtime session with providers: {self.ort_recognizer_session.get_providers()}")
+                    except Exception as e:
+                        logger.warning(f"[FaceEngine] Could not initialize ONNX Runtime session: {e}")
+                        self.ort_recognizer_session = None
             else:
                 logger.warning("[FaceEngine] Model weights not found. Falling back to basic feature extractor.")
         except Exception as e:
             logger.error(f"[FaceEngine] Failed to initialize YuNet/SFace: {e}")
             self.detector = None
             self.recognizer = None
+
+    # Returns active hardware acceleration diagnostics
+    def get_hardware_acceleration_info(self) -> dict:
+        return {
+            "execution_provider": self.execution_provider,
+            "cv2_threads": cv2.getNumThreads(),
+            "onnxruntime_available": ORT_AVAILABLE,
+            "onnxruntime_providers": self.ort_recognizer_session.get_providers() if self.ort_recognizer_session else [],
+            "cuda_available": (hasattr(cv2, "cuda") and cv2.cuda.getCudaEnabledDeviceCount() > 0),
+            "opencl_available": cv2.ocl.haveOpenCL(),
+        }
 
     # Detects face and extracts 128-d aligned SFace embedding vector from raw image bytes
     def extract_face_and_embedding(self, image_bytes: bytes) -> tuple[bool, Optional[np.ndarray], str]:
@@ -192,6 +262,12 @@ class SessionFaceRegistry:
         # session_id -> list of duplicate match dictionaries for instructor review
         self._flagged_pairs: dict[str, list[dict]] = {}
         self._session_timestamps: dict[str, float] = {}
+        # session_id -> list of student keys in matrix row order
+        self._session_keys: dict[str, list[str]] = {}
+        # session_id -> 2D numpy array of shape (N, 128) for BLAS SIMD matching
+        self._session_matrices: dict[str, np.ndarray] = {}
+        # session_id -> list of cluster peer sets corresponding to matrix rows
+        self._session_clusters: dict[str, list[set[str]]] = {}
 
     # Evicts in-memory session registries inactive for more than 24 hours
     def _prune_stale_sessions(self) -> None:
@@ -209,25 +285,43 @@ class SessionFaceRegistry:
         session_id: str,
         student_key: str,
         roll_number: Optional[str],
-        face_base64: str,
+        face_base64: Optional[str] = None,
+        face_bytes: Optional[bytes] = None,
         cluster_peers: Optional[set[str] | list[str]] = None,
         threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     ) -> FaceCheckResult:
         try:
-            # Strip data URI prefix and trim whitespace
-            clean_b64 = face_base64.strip()
-            if "," in clean_b64:
-                clean_b64 = clean_b64.split(",", 1)[1].strip()
+            if face_bytes is not None:
+                # Rejects oversized raw image bytes to prevent memory exhaustion
+                if len(face_bytes) > MAX_PAYLOAD_BYTES:
+                    return FaceCheckResult(
+                        is_duplicate=False,
+                        has_human_face=False,
+                        remarks="REJECTED: Face image payload exceeds maximum allowed size (3MB)"
+                    )
+                raw_bytes = face_bytes
+            elif face_base64:
+                # Strip data URI prefix and trim whitespace
+                clean_b64 = face_base64.strip()
+                if "," in clean_b64:
+                    clean_b64 = clean_b64.split(",", 1)[1].strip()
 
-            # Rejects oversized image payloads to prevent memory exhaustion
-            if len(clean_b64) > MAX_PAYLOAD_BYTES:
+                # Rejects oversized image payloads to prevent memory exhaustion
+                if len(clean_b64) > MAX_PAYLOAD_BYTES:
+                    return FaceCheckResult(
+                        is_duplicate=False,
+                        has_human_face=False,
+                        remarks="REJECTED: Face image payload exceeds maximum allowed size (3MB)"
+                    )
+
+                raw_bytes = base64.b64decode(clean_b64)
+            else:
                 return FaceCheckResult(
                     is_duplicate=False,
                     has_human_face=False,
-                    remarks="REJECTED: Face image payload exceeds maximum allowed size (3MB)"
+                    remarks="REJECTED: No face payload provided"
                 )
 
-            raw_bytes = base64.b64decode(clean_b64)
             has_face, embedding, remarks = self.engine.extract_face_and_embedding(raw_bytes)
         except Exception as e:
             logger.error(f"[FaceRegistry] Failed to decode face image for {student_key}: {e}")
@@ -250,36 +344,51 @@ class SessionFaceRegistry:
         self._session_timestamps[session_id] = time.time()
 
         session_store = self._registry.setdefault(session_id, {})
+        keys = self._session_keys.setdefault(session_id, [])
+        clusters = self._session_clusters.setdefault(session_id, [])
+        matrix = self._session_matrices.get(session_id)
+        target_cluster = set(cluster_peers) if cluster_peers is not None else None
+
+        # Normalize query embedding to unit norm float32 vector of shape (128,)
+        q_flat = embedding.flatten()[:128].astype(np.float32)
+        q_norm = float(np.linalg.norm(q_flat))
+        q_vec = q_flat / q_norm if q_norm > 1e-6 else np.ones(128, dtype=np.float32) / np.sqrt(128)
+
         max_similarity = -1.0
         matched_key: Optional[str] = None
         matched_roll: Optional[str] = None
-        target_cluster = set(cluster_peers) if cluster_peers is not None else None
 
-        # Compare against existing registered student faces in this active session
-        for existing_key, record in session_store.items():
-            if existing_key == student_key:
-                continue
+        # Parallel cosine similarity computation across all session faces using BLAS SIMD
+        if matrix is not None and len(keys) > 0:
+            scores = matrix @ q_vec
 
-            sim = self.engine.compute_similarity(embedding, record["embedding"])
+            # Apply cluster-aware similarity thresholds per student
+            thresholds = np.full(len(keys), 0.70, dtype=np.float32)
+            for idx, (ex_key, ex_cluster) in enumerate(zip(keys, clusters)):
+                if ex_key == student_key:
+                    thresholds[idx] = 999.0
+                    continue
+                if target_cluster is None or ex_key in target_cluster or student_key in ex_cluster:
+                    thresholds[idx] = threshold
 
-            # Applies cluster-aware similarity threshold to prevent lookalike false positives
-            existing_cluster = record.get("cluster_peers", set())
-            is_in_cluster = (
-                target_cluster is None or
-                existing_key in target_cluster or
-                student_key in existing_cluster
-            )
-            effective_threshold = threshold if is_in_cluster else 0.70
-
-            if sim >= effective_threshold and sim > max_similarity:
-                max_similarity = sim
-                matched_key = existing_key
-                matched_roll = record.get("roll")
+            # Identify duplicate proxy candidates exceeding cluster thresholds
+            valid_mask = (scores >= thresholds) & (np.array(keys) != student_key)
+            if np.any(valid_mask):
+                matching_indices = np.where(valid_mask)[0]
+                best_idx = matching_indices[np.argmax(scores[matching_indices])]
+                max_similarity = float(scores[best_idx])
+                matched_key = keys[best_idx]
+                matched_roll = session_store.get(matched_key, {}).get("roll")
+            else:
+                other_indices = [i for i, k in enumerate(keys) if k != student_key]
+                if other_indices:
+                    max_similarity = float(np.max(scores[other_indices]))
 
         is_duplicate = (matched_key is not None)
 
         if is_duplicate:
-            # Records duplicate face match for instructor dashboard review up to session cap
+            # Encodes raw image to Base64 only when flagged for instructor review
+            image_b64 = base64.b64encode(raw_bytes).decode("utf-8")
             flagged_list = self._flagged_pairs.setdefault(session_id, [])
             if len(flagged_list) < MAX_FLAGGED_PAIRS_PER_SESSION:
                 flag_entry = {
@@ -288,19 +397,33 @@ class SessionFaceRegistry:
                     "student_b_key": student_key,
                     "student_b_roll": roll_number,
                     "similarity_score": round(max_similarity, 3),
-                    "image_a_b64": session_store[matched_key].get("image_b64"),
-                    "image_b_b64": clean_b64,
+                    "image_a_b64": session_store.get(matched_key, {}).get("image_b64"),
+                    "image_b_b64": image_b64,
                 }
                 flagged_list.append(flag_entry)
-            session_store[matched_key]["flagged"] = True
+            if matched_key in session_store:
+                session_store[matched_key]["flagged"] = True
 
             session_store[student_key] = {
                 "embedding": embedding,
                 "roll": roll_number,
                 "cluster_peers": target_cluster or set(),
                 "flagged": True,
-                "image_b64": clean_b64,
+                "image_b64": image_b64,
             }
+
+            # Update matrix with duplicate student record
+            if student_key in keys:
+                idx = keys.index(student_key)
+                matrix[idx] = q_vec
+                clusters[idx] = target_cluster or set()
+            else:
+                keys.append(student_key)
+                clusters.append(target_cluster or set())
+                if matrix is None:
+                    self._session_matrices[session_id] = q_vec.reshape(1, 128)
+                else:
+                    self._session_matrices[session_id] = np.vstack([matrix, q_vec.reshape(1, 128)])
 
             logger.warning(
                 f"[FaceRegistry] Duplicate face detected in session {session_id}: "
@@ -326,6 +449,19 @@ class SessionFaceRegistry:
             "image_b64": None,
         }
 
+        # Update matrix with verified student embedding
+        if student_key in keys:
+            idx = keys.index(student_key)
+            matrix[idx] = q_vec
+            clusters[idx] = target_cluster or set()
+        else:
+            keys.append(student_key)
+            clusters.append(target_cluster or set())
+            if matrix is None:
+                self._session_matrices[session_id] = q_vec.reshape(1, 128)
+            else:
+                self._session_matrices[session_id] = np.vstack([matrix, q_vec.reshape(1, 128)])
+
         return FaceCheckResult(
             is_duplicate=False,
             has_human_face=True,
@@ -342,6 +478,18 @@ class SessionFaceRegistry:
         self._registry.pop(session_id, None)
         self._flagged_pairs.pop(session_id, None)
         self._session_timestamps.pop(session_id, None)
+        self._session_keys.pop(session_id, None)
+        self._session_matrices.pop(session_id, None)
+        self._session_clusters.pop(session_id, None)
+
+    # Clears all cached session registries and matrices across all sessions
+    def clear_all(self) -> None:
+        self._registry.clear()
+        self._flagged_pairs.clear()
+        self._session_timestamps.clear()
+        self._session_keys.clear()
+        self._session_matrices.clear()
+        self._session_clusters.clear()
 
 
 # Global singleton instance for application-wide session deduplication

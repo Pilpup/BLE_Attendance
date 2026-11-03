@@ -139,21 +139,43 @@ class PassiveFaceCaptureManager(
         }, ContextCompat.getMainExecutor(context))
     }
 
+    data class FaceCaptureResult(val bytes: ByteArray, val base64: String)
+
     // Captures the current locked candidate without stopping the camera feed
     fun captureCurrentCandidate(): String? {
         val bestCandidate = analyzer?.getBestCandidate() ?: return null
         return FaceImageProcessor.processCandidate(bestCandidate)
     }
 
-    // Unbinds camera, processes best candidate frame, and returns Base64 encoded payload
-    fun stopAndExtract(): String? {
+    // Captures raw JPEG bytes of the locked candidate without stopping the camera feed
+    fun captureCurrentCandidateBytes(): ByteArray? {
+        val bestCandidate = analyzer?.getBestCandidate() ?: return null
+        return FaceImageProcessor.processCandidateToBytes(bestCandidate)
+    }
+
+    // Unbinds camera, processes best candidate frame into both raw JPEG bytes and Base64 string
+    fun stopAndExtractResult(): FaceCaptureResult? {
         if (!isCapturing.get()) {
             return null
         }
-        val bestCandidate = analyzer?.getBestCandidate()
-        val base64Result = bestCandidate?.let { FaceImageProcessor.processCandidate(it) }
+        val bestCandidate = analyzer?.getBestCandidate() ?: run {
+            stopCamera()
+            return null
+        }
+        val bytes = FaceImageProcessor.processCandidateToBytes(bestCandidate)
+        val b64 = bytes?.let { android.util.Base64.encodeToString(it, android.util.Base64.NO_WRAP) }
         stopCamera()
-        return base64Result
+        return if (bytes != null && b64 != null) FaceCaptureResult(bytes, b64) else null
+    }
+
+    // Unbinds camera, processes best candidate frame, and returns Base64 encoded payload
+    fun stopAndExtract(): String? {
+        return stopAndExtractResult()?.base64
+    }
+
+    // Unbinds camera, processes best candidate frame, and returns raw JPEG bytes
+    fun stopAndExtractBytes(): ByteArray? {
+        return stopAndExtractResult()?.bytes
     }
 
     // Stops camera analysis without extracting candidate

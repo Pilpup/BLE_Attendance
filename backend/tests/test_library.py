@@ -1,11 +1,4 @@
-"""
-Library /api/v1/library route suite (Phase 4).
-
-Runs on an in-memory SQLite database per test (same pattern as test_backend.py):
-users register/log in through the real /auth endpoints, with STAFF and
-DEVELOPER identities injected straight into the DB — self-registration never
-mints those roles, matching production behavior.
-"""
+# Library router integration test suite
 import uuid
 from uuid import UUID
 
@@ -27,8 +20,8 @@ LIBRARY_URL = "/api/v1/library/books"
 _current_session_factory = None
 
 
+# Creates isolated in-memory test database session
 async def _make_test_env():
-    """Fresh per-test database + FastAPI dependency override."""
     global _current_session_factory
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with test_engine.begin() as conn:
@@ -44,8 +37,8 @@ async def _make_test_env():
     return session_factory
 
 
+# Builds sample book creation request payload
 def _book_payload(isbn: str, title: str = "Computer Networks", copies: int = 3) -> dict:
-    """Lowercase category on purpose: the API must normalize to 'CS'."""
     return {
         "title": title,
         "author": "Andrew S. Tanenbaum",
@@ -90,8 +83,8 @@ async def _register_and_login(
     return {"Authorization": f"Bearer {v.json()['access_token']}"}
 
 
+# Inserts privileged role user directly into database
 async def _insert_role_user(session_factory, *, name: str, email: str, role: str, roll_number: str):
-    """Seed a STAFF / DEVELOPER identity directly (no self-registration route)."""
     async with session_factory() as session:
         session.add(
             User(

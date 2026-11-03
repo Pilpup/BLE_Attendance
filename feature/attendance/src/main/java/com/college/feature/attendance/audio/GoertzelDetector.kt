@@ -99,6 +99,23 @@ object GoertzelDetector {
             )
         }
 
+        // Delegates to native C++ ARM NEON vector engine if compiled binary is loaded
+        if (NativeAcousticEngine.isNativeLoaded) {
+            val nativeRes = NativeAcousticEngine.evaluateChirpNative(
+                samples, sampleRate, targetFreqHz, snrThresholdDb, refPowerDb
+            )
+            if (nativeRes != null && nativeRes.size >= 6) {
+                return UltrasonicDetectionResult(
+                    isDetected = nativeRes[0] > 0.5,
+                    snrDb = nativeRes[1],
+                    targetPower = nativeRes[2],
+                    powerLevelDb = nativeRes[3],
+                    estimatedDistanceCm = nativeRes[4],
+                    noisePower = nativeRes[5]
+                )
+            }
+        }
+
         // Hann window suppresses sidelobe leakage into adjacent guard bands
         val window = getOrCreateHannWindow(samples.size)
 

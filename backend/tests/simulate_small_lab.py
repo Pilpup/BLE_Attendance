@@ -3,12 +3,8 @@ import random
 from typing import Dict, List, Set, Tuple
 from app.services.graph_engine import audit_classroom_mesh
 
+# Simulates small seminar sessions to test graph mesh behaviors against spoofers
 class SmallLabSim:
-    """
-    Simulates a small seminar / computer lab session with 5 to 15 students.
-    Tests how the graph mesh behaves when class size is small,
-    especially against outside spoofers (door eavesdroppers, window sniffers, cafeteria cliques).
-    """
     def __init__(self, seed: int = 42):
         random.seed(seed)
         self.tx_power_ref = -65.0

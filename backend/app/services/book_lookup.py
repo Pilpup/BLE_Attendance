@@ -1,10 +1,6 @@
-"""
-Multi-provider book metadata lookup service.
-Queries Google Books API, OpenLibrary API, and ISBNdb API to resolve book details
-from an ISBN barcode scan.
-"""
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Optional
@@ -16,19 +12,20 @@ from app.schemas.library import BookLookupResponse
 logger = logging.getLogger("uvicorn.error")
 
 
+# Strips non-alphanumeric characters and normalizes ISBN string
 def _normalize_isbn(raw: str) -> str:
-    """Strip spaces, hyphens, and uppercase."""
     return re.sub(r"[^0-9X]", "", raw.strip().upper())
 
 
+# Strips HTML tags and excessive whitespace from metadata text
 def _clean_text(text: Optional[str]) -> Optional[str]:
     if not text:
         return None
-    # Strip HTML tags if present (Google Books volume descriptions often contain HTML)
     clean = re.sub(r"<[^>]+>", "", text).strip()
     return clean if clean else None
 
 
+# Converts 13-digit ISBN to legacy 10-digit format for fallback lookups
 def _isbn13_to_10(isbn13: str) -> Optional[str]:
     if len(isbn13) != 13 or not isbn13.startswith("978"):
         return None
@@ -41,6 +38,7 @@ def _isbn13_to_10(isbn13: str) -> Optional[str]:
         return None
 
 
+# Parses and formats raw table of contents data into plain text lines
 def _extract_toc(toc_raw) -> Optional[str]:
     if not toc_raw:
         return None
@@ -68,6 +66,7 @@ def _extract_toc(toc_raw) -> Optional[str]:
     return None
 
 
+# Fetches volume metadata from Google Books API
 async def query_google_books(isbn: str, client: httpx.AsyncClient) -> Optional[dict]:
     params = {"q": f"isbn:{isbn}"}
     api_key = getattr(settings, "GOOGLE_BOOKS_API_KEY", "")
@@ -110,6 +109,7 @@ async def query_google_books(isbn: str, client: httpx.AsyncClient) -> Optional[d
     return None
 
 
+# Fetches volume metadata from OpenLibrary API with TOC fallback
 async def query_open_library(isbn: str, client: httpx.AsyncClient) -> Optional[dict]:
     url = "https://openlibrary.org/api/books"
     params = {
@@ -185,6 +185,7 @@ async def query_open_library(isbn: str, client: httpx.AsyncClient) -> Optional[d
     return None
 
 
+# Fetches volume metadata from ISBNdb API when API key is provided
 async def query_isbndb(isbn: str, client: httpx.AsyncClient) -> Optional[dict]:
     api_key = getattr(settings, "ISBNDB_API_KEY", "")
     if not api_key:
@@ -218,16 +219,19 @@ async def query_isbndb(isbn: str, client: httpx.AsyncClient) -> Optional[dict]:
     return None
 
 
+# Resolves comprehensive book details by querying multiple providers concurrently
 async def lookup_book_by_isbn(isbn: str) -> Optional[BookLookupResponse]:
     clean_isbn = _normalize_isbn(isbn)
     if not clean_isbn:
         return None
 
+    # Queries providers concurrently via HTTP client
     async with httpx.AsyncClient() as client:
-        # Query providers
-        gb_data = await query_google_books(clean_isbn, client)
-        ol_data = await query_open_library(clean_isbn, client)
-        isbndb_data = await query_isbndb(clean_isbn, client)
+        gb_data, ol_data, isbndb_data = await asyncio.gather(
+            query_google_books(clean_isbn, client),
+            query_open_library(clean_isbn, client),
+            query_isbndb(clean_isbn, client),
+        )
 
     sources = [s for s in (gb_data, ol_data, isbndb_data) if s]
     if not sources:
@@ -243,7 +247,7 @@ async def lookup_book_by_isbn(isbn: str) -> Optional[BookLookupResponse]:
     index = primary["index"]
     source = primary["source"]
 
-    # Fill in missing fields from remaining sources
+    # Fills in missing fields from remaining providers
     for secondary in sources[1:]:
         if not title and secondary.get("title"):
             title = secondary["title"]

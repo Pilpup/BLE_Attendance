@@ -1,16 +1,18 @@
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
+# Base declarative class for all SQLAlchemy database models
 class Base(DeclarativeBase):
     pass
 
 
+# User account record for students, teachers, and administrators
 class User(Base):
     __tablename__ = "users"
 
@@ -30,6 +32,7 @@ class User(Base):
     )
 
 
+# Academic course metadata assigned to instructor
 class Course(Base):
     __tablename__ = "courses"
 
@@ -39,6 +42,7 @@ class Course(Base):
     teacher_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
 
 
+# Attendance session initiated by instructor for class verification
 class AttendanceSession(Base):
     __tablename__ = "attendance_sessions"
 
@@ -46,8 +50,6 @@ class AttendanceSession(Base):
     course_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("courses.id"))
     teacher_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     session_token: Mapped[str] = mapped_column(String(32), nullable=False)
-    # Layer 2 anti-remote-submission salt, distributed only via the teacher's BLE beacon.
-    # Nullable in DB (pre-salt legacy rows); enforced as required at the API layer.
     session_salt: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="ACTIVE")
     started_at: Mapped[datetime] = mapped_column(
@@ -58,12 +60,13 @@ class AttendanceSession(Base):
     total_verified: Mapped[int] = mapped_column(default=0)
     total_spoofers: Mapped[int] = mapped_column(default=0)
 
-    # Relationship: one session → many records
-    records: Mapped[List["AttendanceRecord"]] = relationship(
+    # One-to-many relationship linking session to audited student records
+    records: Mapped[list["AttendanceRecord"]] = relationship(
         back_populates="session", cascade="all, delete-orphan", lazy="selectin"
     )
 
 
+# Final audited attendance record for an individual student in a session
 class AttendanceRecord(Base):
     __tablename__ = "attendance_records"
 
@@ -85,10 +88,11 @@ class AttendanceRecord(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
 
-    # Relationship: many records → one session
+    # Many-to-one relationship linking record back to parent attendance session
     session: Mapped["AttendanceSession"] = relationship(back_populates="records")
 
 
+# Staging buffer table for client peer reports during active discovery
 class SessionSubmission(Base):
     __tablename__ = "session_submissions"
 
@@ -112,13 +116,14 @@ class SessionSubmission(Base):
     )
 
 
+# Short-lived one-time password record for authentication and registration
 class EmailOTP(Base):
     __tablename__ = "email_otps"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     email: Mapped[str] = mapped_column(String(255), index=True, nullable=False)
     otp_code: Mapped[str] = mapped_column(String(10), nullable=False)
-    purpose: Mapped[str] = mapped_column(String(30), nullable=False)  # "REGISTER" or "LOGIN"
+    purpose: Mapped[str] = mapped_column(String(30), nullable=False)
     temp_payload: Mapped[Optional[dict]] = mapped_column(
         JSON().with_variant(JSONB, "postgresql"), nullable=True
     )
@@ -127,4 +132,3 @@ class EmailOTP(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
-

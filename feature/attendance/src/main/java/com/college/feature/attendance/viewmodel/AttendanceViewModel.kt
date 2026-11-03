@@ -29,6 +29,8 @@ import com.college.feature.attendance.network.SessionCreateRequest
 import com.college.feature.attendance.network.SubmitNeighborsRequest
 import com.college.feature.attendance.audio.AcousticStatisticalSummary
 import com.college.feature.attendance.audio.EnsembleVerdict
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.RequestBody.Companion.toRequestBody
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -168,10 +170,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     var capturedFaceBase64 by mutableStateOf<String?>(null)
+    var capturedFaceBytes by mutableStateOf<ByteArray?>(null)
 
     // Records the locked face biometric payload and immediately uploads to cloud registry
-    fun recordFaceCapture(faceB64: String) {
+    fun recordFaceCapture(faceB64: String, faceBytes: ByteArray? = null) {
         capturedFaceBase64 = faceB64
+        capturedFaceBytes = faceBytes
         submitMyNeighborsToCloud(keepRadioActive = true)
     }
 
@@ -579,23 +583,48 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             .filter { it.medianRssi >= -65 }
             .map { it.peerId }
         val facePayload = capturedFaceBase64
+        val faceBytes = capturedFaceBytes
         val dividedAttention = isDividedProxy
         val challengePassed = isChallengePassed
         val challengeHits = challengeScore
         viewModelScope.launch(Dispatchers.IO) {
-            val req = SubmitNeighborsRequest(
-                studentId = studentShortId,
-                neighbors = neighborIds,
-                closeNeighbors = closeNeighborIds,
-                sessionSalt = detectedSessionSalt.takeIf { it != "------" },
-                faceImageBase64 = facePayload,
-                ultrasonicProximityDetected = ultrasonicProximityDetected,
-                coLocatedPeerId = coLocatedPeerId,
-                dividedAttentionDetected = dividedAttention,
-                challengePassed = challengePassed,
-                challengeScore = challengeHits
-            )
-            val result = safeApiCall { api.submitNeighbors(sessId, req) }
+            val result = if (faceBytes != null) {
+                // Submits attendance report with raw binary JPEG payload bypassing Base64 overhead
+                val requestBody = faceBytes.toRequestBody("image/jpeg".toMediaTypeOrNull())
+                val saltHeader = detectedSessionSalt.takeIf { it != "------" }
+                val neighborsHeader = neighborIds.joinToString(",")
+                val closeHeader = closeNeighborIds.joinToString(",").takeIf { it.isNotEmpty() }
+                safeApiCall {
+                    api.submitNeighborsBinary(
+                        sessionId = sessId,
+                        sessionSalt = saltHeader,
+                        studentId = studentShortId,
+                        neighbors = neighborsHeader,
+                        closeNeighbors = closeHeader,
+                        coLocatedPeerId = coLocatedPeerId,
+                        challengePassed = challengePassed,
+                        challengeScore = challengeHits,
+                        dividedAttentionDetected = dividedAttention,
+                        ultrasonicProximityDetected = ultrasonicProximityDetected,
+                        relayedReportsJson = null,
+                        imageBytes = requestBody
+                    )
+                }
+            } else {
+                val req = SubmitNeighborsRequest(
+                    studentId = studentShortId,
+                    neighbors = neighborIds,
+                    closeNeighbors = closeNeighborIds,
+                    sessionSalt = detectedSessionSalt.takeIf { it != "------" },
+                    faceImageBase64 = facePayload,
+                    ultrasonicProximityDetected = ultrasonicProximityDetected,
+                    coLocatedPeerId = coLocatedPeerId,
+                    dividedAttentionDetected = dividedAttention,
+                    challengePassed = challengePassed,
+                    challengeScore = challengeHits
+                )
+                safeApiCall { api.submitNeighbors(sessId, req) }
+            }
             withContext(Dispatchers.Main) {
                 when (result) {
                     is NetworkResult.Success -> {
@@ -899,6 +928,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         challengeTotalTargets = 0
         lastFocusReport = null
         capturedFaceBase64 = null
+        capturedFaceBytes = null
         faceProxyDetected = false
         ultrasonicProximityDetected = false
         coLocatedPeerId = null
@@ -945,6 +975,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         challengeTotalTargets = 0
         lastFocusReport = null
         capturedFaceBase64 = null
+        capturedFaceBytes = null
         faceProxyDetected = false
         ultrasonicProximityDetected = false
         coLocatedPeerId = null

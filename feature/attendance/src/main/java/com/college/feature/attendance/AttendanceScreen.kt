@@ -185,7 +185,7 @@ fun AttendanceScreen(
                     isRefreshingAudit = viewModel.isRefreshingAudit,
                     onChallengeResult = { hit, total -> viewModel.recordChallengeResult(hit, total) },
                     onBehavioralReport = { report -> viewModel.recordBehavioralReport(report) },
-                    onFaceCaptured = { viewModel.recordFaceCapture(it) },
+                    onFaceCaptured = { b64, bytes -> viewModel.recordFaceCapture(b64, bytes) },
                     onStartScanning = callbacks.onStartStudentScanning,
                     onStopScanning = callbacks.onStopStudentScanning,
                     onNext = { viewModel.proceedStudentToNext() }

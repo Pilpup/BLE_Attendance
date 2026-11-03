@@ -1,15 +1,14 @@
 from collections import deque
-from typing import Dict, List, Optional, Set
 
 
-# Social mesh graph topology engine with Giant Component Anchor & Quarantine Gates
-def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
-    direct_mutuals: Dict[str, List[str]] = {}
-    results: List[dict] = []
-    reports_sets: Dict[str, Set[str]] = {k: set(v) for k, v in reports.items()}
-    empty_set: Set[str] = set()
+# Audits classroom BLE discovery reports to verify attendance using mesh graph topology
+def audit_classroom_mesh(reports: dict[str, list[str]]) -> list[dict]:
+    direct_mutuals: dict[str, list[str]] = {}
+    results: list[dict] = []
+    reports_sets: dict[str, set[str]] = {k: set(v) for k, v in reports.items()}
+    empty_set: set[str] = set()
 
-    # 1. Identify all direct mutual links (undirected edges: A in reports[B] and B in reports[A])
+    # Identifies direct mutual links where peer A sees B and peer B sees A
     for student_id, claimed_neighbors in reports.items():
         mutual_peers = [
             peer for peer in claimed_neighbors
@@ -17,13 +16,13 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
         ]
         direct_mutuals[student_id] = mutual_peers
 
-    # 2. Find Connected Components of mutual edges using BFS
-    visited_nodes: Set[str] = set()
-    components: List[Set[str]] = []
+    # Discovers connected mutual components using breadth-first search
+    visited_nodes: set[str] = set()
+    components: list[set[str]] = []
 
     for student_id in reports.keys():
         if student_id not in visited_nodes and direct_mutuals.get(student_id):
-            component: Set[str] = set()
+            component: set[str] = set()
             queue = deque([student_id])
             visited_nodes.add(student_id)
             while queue:
@@ -35,17 +34,14 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
                         queue.append(nbr)
             components.append(component)
 
-    # Sort components by size descending
+    # Sorts connected components by size descending
     components.sort(key=len, reverse=True)
 
-    # 3. Identify the Classroom Main/Giant Component
-    # A component is considered the in-room classroom core if it is the largest,
-    # or if it has connections to the majority of reporting students.
-    verified_set: Set[str] = set()
-    satellite_clusters: Dict[str, Set[str]] = {}  # student_id -> component set
+    # Identifies the dominant in-room classroom component and isolates outside satellites
+    verified_set: set[str] = set()
+    satellite_clusters: dict[str, set[str]] = {}
 
     if len(components) == 1:
-        # All mutual students belong to a single classroom web
         verified_set = set(components[0])
     elif len(components) > 1:
         main_component = components[0]
@@ -55,21 +51,18 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
         in_degree_req = 2 if len(main_component) >= 12 else 1
 
         for comp in components[1:]:
-            # Count INCOMING acknowledgements: How many distinct students in main_component
-            # reported seeing someone in this candidate component?
+            # Counts incoming links from classroom core to candidate cluster
             incoming_anchors = sum(
                 1 for m_node in main_component
                 if bool(reports_sets.get(m_node, empty_set) & comp)
             )
-            # Check if there is ANY cross-link (in or out) connecting this component to the classroom core
+            # Checks for cross-links between candidate cluster and classroom core
             has_link_to_main = incoming_anchors > 0 or any(
                 bool(reports_sets.get(node, empty_set) & main_component)
                 for node in comp
             )
 
-            # Rule 1: In small seminar/lab sessions (<= 12 total reporting participants),
-            # any secondary cluster MUST have direct incoming acknowledgements from the seminar core (incoming_anchors >= 1)
-            # and cross-links; otherwise it is quarantined as an outside satellite.
+            # Enforces quarantine for disconnected clusters in small seminar rooms
             if total_reporters <= 12:
                 if not has_link_to_main or incoming_anchors < 1:
                     for node in comp:
@@ -77,26 +70,24 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
                 else:
                     verified_set.update(comp)
 
-            # Rule 2: In standard classrooms, a completely isolated component with zero cross-links is quarantined
+            # Quarantines completely isolated components in standard classrooms
             elif not has_link_to_main and len(main_component) >= 6:
                 for node in comp:
                     satellite_clusters[node] = comp
 
-            # Rule 3: In standard classrooms, out-degree eavesdropping claims (comp reporting main_component)
-            # are strictly rejected; the classroom core must provide at least in_degree_req incoming acknowledgements.
+            # Rejects unreciprocated out-degree claims without classroom anchors
             elif incoming_anchors < in_degree_req and len(comp) <= max_satellite_size and len(main_component) >= 6:
                 for node in comp:
                     satellite_clusters[node] = comp
             else:
-                # Legitimate separated classroom row/bench confirmed by in-room peers
                 verified_set.update(comp)
 
-    # 4. Classify Presence Status & Compute Affinity Scores
+    # Evaluates presence status and calculates affinity scores for all reporting devices
     for student_id, claimed_neighbors in reports.items():
         mutuals = direct_mutuals.get(student_id, [])
 
         if student_id in satellite_clusters:
-            # Satellite cluster gathered outside the classroom
+            # Flags disconnected satellite cluster detected outside classroom
             comp_nodes = sorted(list(satellite_clusters[student_id]))
             status = "ISOLATED_FLAGGED"
             method = "NONE"
@@ -105,7 +96,7 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
             remarks = f"Disconnected satellite cluster [{', '.join(comp_nodes)}] (Likely outside classroom) - Teacher manual override recommended"
 
         elif student_id in verified_set:
-            # Direct mutual desk neighbor in the classroom web
+            # Verifies student with mutual peer confirmations inside classroom core
             status = "VERIFIED_PRESENT"
             method = "DIRECT_MUTUAL"
             affinity = 1.00
@@ -113,7 +104,7 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
             remarks = f"Direct mutual desk neighbor with [{', '.join(mutuals)}]"
 
         elif len(claimed_neighbors) == 0:
-            # Corner desk / solitary student with 0 neighbors
+            # Flags corner desk or solitary student reporting zero neighbors
             status = "ISOLATED_FLAGGED"
             method = "NONE"
             affinity = 0.00
@@ -121,11 +112,9 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
             remarks = "Zero desk neighbors detected (isolated seat)"
 
         else:
-            # Node has out-degree claims, but no mutual return link
+            # Evaluates unreciprocated claims against verified classroom nodes
             shared_bridges = reports_sets.get(student_id, empty_set) & verified_set
             if len(shared_bridges) >= 2:
-                # Student claims >= 2 verified peers, but neither reported them back (Triadic claim)
-                # QUARANTINED: NEVER auto-verified to prevent hallway 2-ID sniffing attacks!
                 status = "ISOLATED_FLAGGED"
                 method = "TRIADIC_CLOSURE"
                 affinity = 0.50
@@ -134,7 +123,6 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
                 remarks = f"Unreciprocated link to [{', '.join(sorted_bridges)}] (Pending Teacher Confirmation)"
 
             elif len(shared_bridges) == 1:
-                # Unreciprocated link to only 1 verified classmate (Hallway spoofer)
                 status = "SPOOFER_REJECTED"
                 method = "NONE"
                 affinity = 0.00
@@ -142,7 +130,6 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
                 remarks = f"Unreciprocated link to [{', '.join(claimed_neighbors)}] (Hallway Spoofer)"
 
             else:
-                # Claims unverified or non-existent nodes
                 status = "SPOOFER_REJECTED"
                 method = "NONE"
                 affinity = 0.00
@@ -160,16 +147,16 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
             "mutuals": mutuals,
         })
 
-    # 5. Offline Peer Witnessing (In-Degree >= 2 from verified classroom nodes)
-    witness_map: Dict[str, List[str]] = {}
+    # Verifies offline peers reported by multiple in-room classmate witnesses
+    witness_map: dict[str, list[str]] = {}
     for reporter_id in verified_set:
         for neighbor in reports.get(reporter_id, []):
             if neighbor not in reports:
                 witness_map.setdefault(neighbor, []).append(reporter_id)
 
+    # Flags or confirms offline peers based on witness threshold
     for offline_id, witnesses in witness_map.items():
         if len(witnesses) >= 2:
-            # Verified via multiple independent in-room classmate witnesses
             results.append({
                 "ble_device_id": offline_id,
                 "status": "VERIFIED_PRESENT",
@@ -181,7 +168,6 @@ def audit_classroom_mesh(reports: Dict[str, List[str]]) -> List[dict]:
                 "mutuals": witnesses,
             })
         else:
-            # Single witness requiring teacher manual verification
             results.append({
                 "ble_device_id": offline_id,
                 "status": "ISOLATED_FLAGGED",

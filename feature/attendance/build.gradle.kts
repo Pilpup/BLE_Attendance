@@ -2,9 +2,22 @@ plugins { id("com.android.library"); id("org.jetbrains.kotlin.android") }
 android {
     namespace = "com.college.feature.attendance"
     compileSdk = 34
+    ndkVersion = "26.1.10909125"
+
     defaultConfig {
         minSdk = 24
         consumerProguardFiles("consumer-rules.pro")
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+            }
+        }
+    }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
     buildFeatures {
         compose = true

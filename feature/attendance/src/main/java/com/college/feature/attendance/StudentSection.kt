@@ -78,7 +78,7 @@ internal fun StudentSection(
     isRefreshingAudit: Boolean = false,
     onChallengeResult: (hit: Int, total: Int) -> Unit = { _, _ -> },
     onBehavioralReport: (CognitiveFocusReport) -> Unit = {},
-    onFaceCaptured: (String) -> Unit = {},
+    onFaceCaptured: (String, ByteArray?) -> Unit = { _, _ -> },
     onStartScanning: () -> Unit,
     onStopScanning: () -> Unit,
     onNext: () -> Unit = {}
@@ -311,10 +311,10 @@ internal fun StudentSection(
                         },
                         onComplete = { taps, expired, totalGoal ->
                             isGameOver = true
-                            val faceB64 = faceCaptureManager.stopAndExtract()
-                            if (faceB64 != null) {
-                                lastCapturedFaceBase64 = faceB64
-                                onFaceCaptured(faceB64)
+                            val faceResult = faceCaptureManager.stopAndExtractResult()
+                            if (faceResult != null) {
+                                lastCapturedFaceBase64 = faceResult.base64
+                                onFaceCaptured(faceResult.base64, faceResult.bytes)
                             }
                             val report = GameTelemetryEngine.analyze(
                                 taps = taps,

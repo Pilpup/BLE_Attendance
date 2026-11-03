@@ -1,8 +1,10 @@
 package com.college.feature.attendance.network
 
+import okhttp3.RequestBody
 import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.GET
+import retrofit2.http.Header
 import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.Path
@@ -38,6 +40,24 @@ interface AttendanceApiService {
     suspend fun submitNeighbors(
         @Path("sessionId") sessionId: String,
         @Body body: SubmitNeighborsRequest
+    ): Response<Unit>
+
+    // Submits attendance report with raw binary JPEG payload bypassing Base64 overhead
+    @POST("api/v1/attendance/sessions/{sessionId}/submit-neighbors")
+    suspend fun submitNeighborsBinary(
+        @Path("sessionId") sessionId: String,
+        @Header("Content-Type") contentType: String = "image/jpeg",
+        @Header("X-Session-Salt") sessionSalt: String?,
+        @Header("X-Student-Id") studentId: String?,
+        @Header("X-Neighbors") neighbors: String?,
+        @Header("X-Close-Neighbors") closeNeighbors: String?,
+        @Header("X-Co-Located-Peer-Id") coLocatedPeerId: String?,
+        @Header("X-Challenge-Passed") challengePassed: Boolean?,
+        @Header("X-Challenge-Score") challengeScore: Int?,
+        @Header("X-Divided-Attention-Detected") dividedAttentionDetected: Boolean?,
+        @Header("X-Ultrasonic-Proximity-Detected") ultrasonicProximityDetected: Boolean?,
+        @Header("X-Relayed-Reports") relayedReportsJson: String?,
+        @Body imageBytes: RequestBody
     ): Response<Unit>
 
     @GET("api/v1/attendance/sessions/history")

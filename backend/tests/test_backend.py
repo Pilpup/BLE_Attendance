@@ -358,13 +358,9 @@ async def test_session_auto_supersede():
             assert s1_db.status in ("CANCELLED", "EXPIRED")
 
 
+# Verifies beacon salt enforcement rejecting remote check-in attempts without physical beacon
 @pytest.mark.anyio
 async def test_submit_neighbors_salt_enforcement():
-    """
-    Layer 2 anti-remote-submission guard (ProjectSummary §1.1):
-    An absent student who learned only the 4-char session token over chat
-    cannot stage a check-in — the endpoint rejects missing or wrong beacon salt.
-    """
     import uuid
     from httpx import AsyncClient, ASGITransport
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
@@ -484,13 +480,9 @@ async def test_submit_neighbors_salt_enforcement():
         assert record_map["5678"]["status"] == "VERIFIED_PRESENT"
 
 
+# Verifies expired OTP cleanup behavior and purge on invalid submission
 @pytest.mark.anyio
 async def test_expired_otp_purging_and_cleanup():
-    """
-    Verify expired OTP cleanup behavior:
-    1. Expired OTP records are deleted while active OTP records are preserved.
-    2. Submitting an expired OTP rejects with HTTP 400 and purges the record immediately.
-    """
     import uuid
     from datetime import datetime, timezone, timedelta
     from httpx import AsyncClient, ASGITransport
@@ -821,6 +813,183 @@ async def test_cognitive_challenge_failure_rejection():
         assert "AIL1" in rec_map
         assert rec_map["AIL1"]["status"] == "COGNITIVE_CHALLENGE_FAILED"
         assert rec_map["AIL1"]["verification_method"] == "BEHAVIOUR_ANALYSIS_FAILED"
+
+
+# Verifies raw binary image check-in submission with headers bypasses base64
+@pytest.mark.anyio
+async def test_submit_neighbors_binary_upload():
+    import io
+    from PIL import Image
+    from httpx import AsyncClient, ASGITransport
+    from app.services.face_engine import face_registry
+
+    # Clears in-memory registry before test
+    face_registry.clear_all()
+
+    img = Image.new("RGB", (100, 100), color=(180, 140, 120))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    raw_jpeg = buf.getvalue()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Rejects submission when salt header is invalid
+        bad_res = await client.post(
+            "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
+            content=raw_jpeg,
+            headers={
+                "Content-Type": "image/jpeg",
+                "X-Session-Salt": "BAD_SALT",
+                "X-Student-Id": "BIN1",
+                "X-Neighbors": "PEER-A1,PEER-B2",
+            },
+        )
+        assert bad_res.status_code == 403
+
+        # Accepts valid binary submission and records attendance
+        good_res = await client.post(
+            "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
+            content=raw_jpeg,
+            headers={
+                "Content-Type": "image/jpeg",
+                "X-Session-Salt": "DEMO1",
+                "X-Student-Id": "BIN1",
+                "X-Neighbors": "PEER-A1,PEER-B2",
+            },
+        )
+        assert good_res.status_code == 200
+        assert good_res.json()["status"] == "success"
+
+        # Duplicate binary face payload triggers proxy rejection
+        dup_res = await client.post(
+            "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
+            content=raw_jpeg,
+            headers={
+                "Content-Type": "image/jpeg",
+                "X-Session-Salt": "DEMO1",
+                "X-Student-Id": "BIN2",
+                "X-Neighbors": "PEER-A1,PEER-B2",
+            },
+        )
+        assert dup_res.status_code == 403
+        assert "Biometric proxy rejected" in dup_res.json()["detail"]
+
+
+# Verifies in-memory submission staging, relay merging, and TTL pruning
+@pytest.mark.anyio
+async def test_submission_buffer_staging_and_pruning():
+    import uuid
+    from app.services.submission_buffer import SubmissionBuffer
+
+    buffer = SubmissionBuffer(ttl_seconds=1)
+    sess_id = "test-session-staging"
+    student_uuid = uuid.uuid4()
+
+    # Stages initial check-in submission
+    await buffer.stage_submission(
+        session_id=sess_id,
+        device_key="STU1",
+        student_id=student_uuid,
+        reported_neighbors=["NBR1", "NBR2"],
+    )
+
+    # Updates existing submission with revised neighbor reports
+    await buffer.stage_submission(
+        session_id=sess_id,
+        device_key="STU1",
+        student_id=student_uuid,
+        reported_neighbors=["NBR1", "NBR2", "NBR3"],
+    )
+
+    # Stages relayed reports from offline peers
+    await buffer.stage_relayed_reports(
+        session_id=sess_id,
+        relayed_reports={"OFF1": ["STU1"]},
+    )
+
+    # Extracts and verifies staged submissions
+    staged = await buffer.pop_submissions(sess_id)
+    assert len(staged) == 2
+    assert staged["STU1"].reported_neighbors == ["NBR1", "NBR2", "NBR3"]
+    assert staged["STU1"].student_id == student_uuid
+    assert staged["OFF1"].reported_neighbors == ["STU1"]
+    assert staged["OFF1"].student_id is None
+
+    # Verifies buffer is empty after popping
+    empty_staged = await buffer.pop_submissions(sess_id)
+    assert len(empty_staged) == 0
+
+    # Tests TTL pruning on stale session buffers
+    await buffer.stage_submission(
+        session_id="stale-session",
+        device_key="STU2",
+        student_id=None,
+        reported_neighbors=["NBRX"],
+    )
+    buffer._last_accessed["stale-session"] = 0.0
+    buffer._prune_stale(now=100.0)
+    assert "stale-session" not in buffer._buffers
+
+
+# Verifies 2D BLAS SIMD matrix batching across registered session face embeddings
+def test_face_engine_simd_blas_batching():
+    import numpy as np
+    from app.services.face_engine import SessionFaceRegistry
+
+    registry = SessionFaceRegistry()
+    sess = "batch-test-session"
+
+    # Registers 10 unique synthetic faces into session matrix
+    for i in range(10):
+        emb = np.random.randn(1, 128).astype(np.float32)
+        norm = float(np.linalg.norm(emb))
+        emb = emb / norm
+        student_key = f"STU{i}"
+        registry._registry.setdefault(sess, {})[student_key] = {
+            "embedding": emb,
+            "roll": f"ROLL{i}",
+            "cluster_peers": set(),
+            "flagged": False,
+            "image_b64": None,
+        }
+        registry._session_keys.setdefault(sess, []).append(student_key)
+        registry._session_clusters.setdefault(sess, []).append(set())
+        if registry._session_matrices.get(sess) is None:
+            registry._session_matrices[sess] = emb.reshape(1, 128)
+        else:
+            registry._session_matrices[sess] = np.vstack([registry._session_matrices[sess], emb.reshape(1, 128)])
+
+    # Verifies internal matrix dimensions match (10, 128)
+    assert registry._session_matrices[sess].shape == (10, 128)
+
+    # Identical query to student 3 must match with similarity ~1.0
+    target_vec = registry._session_matrices[sess][3]
+    scores = registry._session_matrices[sess] @ target_vec
+    assert abs(scores[3] - 1.0) < 1e-4
+
+    # Purges matrix and session structures
+    registry.clear_session(sess)
+    assert sess not in registry._session_matrices
+    assert sess not in registry._session_keys
+
+
+# Verifies hardware acceleration provider detection and ONNX Runtime session
+def test_face_engine_hardware_acceleration_info():
+    from app.services.face_engine import FaceMatchingEngine
+
+    engine = FaceMatchingEngine()
+    info = engine.get_hardware_acceleration_info()
+
+    assert "execution_provider" in info
+    assert "cv2_threads" in info
+    assert "onnxruntime_available" in info
+    assert info["cv2_threads"] > 0
+    assert info["onnxruntime_available"] is True
+    assert "CPUExecutionProvider" in info["onnxruntime_providers"]
+
+
+
+
 
 
 

@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 logger = logging.getLogger("uvicorn.error")
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -46,6 +47,7 @@ from app.schemas.attendance import (
 )
 from app.services.face_engine import face_registry
 from app.services.graph_engine import audit_classroom_mesh
+from app.services.submission_buffer import submission_buffer
 
 router = APIRouter(prefix="/attendance", tags=["Attendance"])
 
@@ -450,6 +452,7 @@ async def cancel_attendance_session(
     await _populate_course_metadata(session_obj, db)
 
     face_registry.clear_session(str(session_obj.id))
+    await submission_buffer.clear_session(str(session_obj.id))
     logger.info(f"[Session Cancelled] Session: {session_obj.id}")
     return session_obj
 
@@ -486,32 +489,39 @@ async def finalize_attendance_session(
     verified_count = 0
     spoofer_count = 0
 
+    records_to_create = []
     for item in payload.records:
         if item.status == "VERIFIED_PRESENT":
             verified_count += 1
         elif item.status == "SPOOFER_REJECTED":
             spoofer_count += 1
 
-        record = AttendanceRecord(
-            id=uuid.uuid4(),
-            session_id=session_obj.id,
-            student_id=item.student_id,
-            ble_device_id=item.ble_device_id.upper(),
-            status=item.status,
-            verification_method=item.verification_method,
-            affinity_score=item.affinity_score,
-            bridge_device_id=item.bridge_device_id.upper() if item.bridge_device_id else None,
-            reported_neighbors=item.reported_neighbors,
-            remarks=item.remarks,
-            recorded_at=datetime.now(timezone.utc),
+        records_to_create.append(
+            AttendanceRecord(
+                id=uuid.uuid4(),
+                session_id=session_obj.id,
+                student_id=item.student_id,
+                ble_device_id=item.ble_device_id.upper(),
+                status=item.status,
+                verification_method=item.verification_method,
+                affinity_score=item.affinity_score,
+                bridge_device_id=item.bridge_device_id.upper() if item.bridge_device_id else None,
+                reported_neighbors=item.reported_neighbors,
+                remarks=item.remarks,
+                recorded_at=datetime.now(timezone.utc),
+            )
         )
-        db.add(record)
+
+    # Batch inserts all records and cleans staged submissions
+    if records_to_create:
+        db.add_all(records_to_create)
 
     session_obj.status = "COMPLETED"
     session_obj.ended_at = datetime.now(timezone.utc)
     session_obj.total_verified = verified_count
     session_obj.total_spoofers = spoofer_count
 
+    await submission_buffer.clear_session(str(session_obj.id))
     await db.commit()
     await db.refresh(session_obj)
 
@@ -526,10 +536,52 @@ async def finalize_attendance_session(
 )
 async def submit_student_neighbors(
     session_id: str,
-    payload: SubmitNeighborsRequest,
+    request: Request,
+    payload: Union[SubmitNeighborsRequest, bytes] = Body(...),
     db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_user),
 ):
+    # Extracts binary face bytes and headers if request is raw image payload
+    raw_face_bytes = None
+    if isinstance(payload, bytes):
+        raw_face_bytes = payload
+        session_salt = request.headers.get("x-session-salt")
+        student_id = request.headers.get("x-student-id")
+        neighbors_raw = request.headers.get("x-neighbors", "")
+        neighbors = [n.strip() for n in neighbors_raw.split(",") if n.strip()] if neighbors_raw else []
+        close_raw = request.headers.get("x-close-neighbors", "")
+        close_neighbors = [n.strip() for n in close_raw.split(",") if n.strip()] if close_raw else []
+        co_located_peer_id = request.headers.get("x-co-located-peer-id")
+        challenge_passed_str = request.headers.get("x-challenge-passed")
+        challenge_passed = challenge_passed_str.lower() in ("true", "1") if challenge_passed_str is not None else None
+        challenge_score_str = request.headers.get("x-challenge-score")
+        challenge_score = int(challenge_score_str) if challenge_score_str and challenge_score_str.isdigit() else None
+        divided_attention_str = request.headers.get("x-divided-attention-detected")
+        divided_attention = divided_attention_str.lower() in ("true", "1") if divided_attention_str is not None else False
+        ultrasonic_proximity_str = request.headers.get("x-ultrasonic-proximity-detected")
+        ultrasonic_proximity = ultrasonic_proximity_str.lower() in ("true", "1") if ultrasonic_proximity_str is not None else False
+        relayed_raw = request.headers.get("x-relayed-reports")
+        relayed_reports = None
+        if relayed_raw:
+            try:
+                relayed_reports = json.loads(relayed_raw)
+            except Exception:
+                relayed_reports = None
+
+        payload = SubmitNeighborsRequest(
+            student_id=student_id,
+            neighbors=neighbors,
+            close_neighbors=close_neighbors,
+            session_salt=session_salt,
+            face_image_base64=None,
+            ultrasonic_proximity_detected=ultrasonic_proximity,
+            co_located_peer_id=co_located_peer_id,
+            divided_attention_detected=divided_attention,
+            challenge_passed=challenge_passed,
+            challenge_score=challenge_score,
+            relayed_reports=relayed_reports,
+        )
+
     session_obj = await _resolve_session(session_id, db)
     if not session_obj:
         raise HTTPException(status_code=404, detail="Attendance session not found")
@@ -604,7 +656,7 @@ async def submit_student_neighbors(
 
     # Face deduplication check (Layer 3: Camera Face Biometric Deduplication)
     face_check_result = None
-    if payload.face_image_base64:
+    if payload.face_image_base64 or raw_face_bytes:
         raw_roll = (current_user.roll_number if current_user else None) or payload.student_id or student_key
 
         # Compile proximity cluster peers: close peers (RSSI >= -65), reported desk neighbors, and co-located peer
@@ -619,6 +671,7 @@ async def submit_student_neighbors(
             student_key=student_key,
             roll_number=raw_roll,
             face_base64=payload.face_image_base64,
+            face_bytes=raw_face_bytes,
             cluster_peers=cluster_peers,
         )
 
@@ -741,52 +794,20 @@ async def submit_student_neighbors(
             detail=remarks_current,
         )
 
-    # Persist student check-in submission
-    existing_stmt = select(SessionSubmission).where(
-        SessionSubmission.session_id == target_session_id,
-        SessionSubmission.device_key == student_key,
+    # Stage student check-in submission into in-memory buffer
+    await submission_buffer.stage_submission(
+        session_id=str(target_session_id),
+        device_key=student_key,
+        student_id=user_id,
+        reported_neighbors=normalized_neighbors,
     )
-    existing_res = await db.execute(existing_stmt)
-    existing_sub = existing_res.scalar_one_or_none()
 
-    if existing_sub:
-        existing_sub.reported_neighbors = normalized_neighbors
-        if user_id:
-            existing_sub.student_id = user_id
-    else:
-        new_sub = SessionSubmission(
-            session_id=target_session_id,
-            student_id=user_id,
-            device_key=student_key,
-            reported_neighbors=normalized_neighbors,
-        )
-        db.add(new_sub)
-
-    # Save relayed neighbor reports from offline peers in batch
+    # Save relayed neighbor reports from offline peers in memory buffer
     if payload.relayed_reports:
-        sender_keys = [
-            offline_sender[-4:].upper() if len(offline_sender) >= 4 else offline_sender.upper()
-            for offline_sender in payload.relayed_reports
-        ]
-        relay_check = await db.execute(
-            select(SessionSubmission.device_key).where(
-                SessionSubmission.session_id == target_session_id,
-                SessionSubmission.device_key.in_(sender_keys),
-            )
+        await submission_buffer.stage_relayed_reports(
+            session_id=str(target_session_id),
+            relayed_reports=payload.relayed_reports,
         )
-        existing_relay_keys = set(relay_check.scalars().all())
-
-        for offline_sender, offline_nbrs in payload.relayed_reports.items():
-            sender_key = offline_sender[-4:].upper() if len(offline_sender) >= 4 else offline_sender.upper()
-            if sender_key not in existing_relay_keys:
-                norm_nbrs = [n[-4:].upper() if len(n) >= 4 else n.upper() for n in offline_nbrs]
-                relay_sub = SessionSubmission(
-                    session_id=target_session_id,
-                    student_id=None,
-                    device_key=sender_key,
-                    reported_neighbors=norm_nbrs,
-                )
-                db.add(relay_sub)
 
     # For in-flight submissions arriving during the grace period of an already COMPLETED session,
     # immediately evaluate and record their attendance so they don't get orphaned without an AttendanceRecord.
@@ -852,9 +873,8 @@ async def submit_student_neighbors(
                 recorded_at=datetime.now(timezone.utc),
             )
             db.add(new_record)
+            await db.commit()
             logger.info(f"[In-Flight Grace Audit] Generated {rec_status} record for late arrival {student_key} in session {session_obj.id}")
-
-    await db.commit()
 
     logger.info(f"[Check-In] Student: {student_key} submitted {len(normalized_neighbors)} neighbors: {normalized_neighbors} for session: {target_session_id}")
     return {
@@ -895,16 +915,22 @@ async def audit_and_finalize_session(
     if session_obj.status == "COMPLETED":
         return session_obj
 
-    # Fetch all cloud-submitted student and relay reports from the database
+    # Fetch all cloud-submitted student and relay reports from memory buffer and fallback database
+    staged = await submission_buffer.pop_submissions(str(session_obj.id))
+
     sub_stmt = select(SessionSubmission).where(SessionSubmission.session_id == session_obj.id)
     sub_res = await db.execute(sub_stmt)
     submissions = sub_res.scalars().all()
+    if submissions:
+        await db.execute(delete(SessionSubmission).where(SessionSubmission.session_id == session_obj.id))
 
     cloud_reports: dict[str, List[str]] = {s.device_key: s.reported_neighbors for s in submissions}
     user_map: dict[str, uuid.UUID] = {s.device_key: s.student_id for s in submissions if s.student_id}
 
-    # Clean up ephemeral session submissions now that attendance records are finalized
-    await db.execute(delete(SessionSubmission).where(SessionSubmission.session_id == session_obj.id))
+    for dev_key, staged_sub in staged.items():
+        cloud_reports[dev_key] = staged_sub.reported_neighbors
+        if staged_sub.student_id:
+            user_map[dev_key] = staged_sub.student_id
 
     combined_reports = {**cloud_reports, **payload.reports}
 
@@ -934,6 +960,7 @@ async def audit_and_finalize_session(
 
     verified_count = 0
     spoofer_count = 0
+    records_to_create = []
 
     for item in audit_results:
         device_id = item["ble_device_id"].upper()
@@ -957,20 +984,25 @@ async def audit_and_finalize_session(
 
         resolved_student_id = user_map.get(device_id)
 
-        record = AttendanceRecord(
-            id=uuid.uuid4(),
-            session_id=session_obj.id,
-            student_id=resolved_student_id,
-            ble_device_id=device_id,
-            status=item["status"],
-            verification_method=item["verification_method"],
-            affinity_score=item["affinity_score"],
-            bridge_device_id=item["bridge_device_id"].upper() if item["bridge_device_id"] else None,
-            reported_neighbors=item["reported_neighbors"],
-            remarks=item["remarks"],
-            recorded_at=datetime.now(timezone.utc),
+        records_to_create.append(
+            AttendanceRecord(
+                id=uuid.uuid4(),
+                session_id=session_obj.id,
+                student_id=resolved_student_id,
+                ble_device_id=device_id,
+                status=item["status"],
+                verification_method=item["verification_method"],
+                affinity_score=item["affinity_score"],
+                bridge_device_id=item["bridge_device_id"].upper() if item["bridge_device_id"] else None,
+                reported_neighbors=item["reported_neighbors"],
+                remarks=item["remarks"],
+                recorded_at=datetime.now(timezone.utc),
+            )
         )
-        db.add(record)
+
+    # Batch insert all attendance records in a single database operation
+    if records_to_create:
+        db.add_all(records_to_create)
 
     session_obj.status = "COMPLETED"
     session_obj.ended_at = datetime.now(timezone.utc)

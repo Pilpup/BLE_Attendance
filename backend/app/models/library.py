@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Optional
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
@@ -9,19 +9,13 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.attendance import Base
 
 
+# Library catalogue entry storing book metadata and physical inventory counts
 class Book(Base):
-    """
-    Library catalogue entry (Phase 4).
-
-    Zero dependencies on the attendance tables — isolated domain with its own
-    RBAC rules, linked to `users` only through `book_reservations` (FK below).
-    """
     __tablename__ = "books"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     title: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     author: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-    # unique constraint implies the index; matches the Android ISBN normalization
     isbn: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
     category: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     total_copies: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -42,13 +36,8 @@ class Book(Base):
     )
 
 
+# Active or fulfilled library book reservation held by a user
 class BookReservation(Base):
-    """
-    One student/teacher holding a specific book copy (Phase 4).
-
-    Cascades on user or book deletion; status transitions handled by staff
-    workflows (ACTIVE -> FULFILLED/CANCELLED).
-    """
     __tablename__ = "book_reservations"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
