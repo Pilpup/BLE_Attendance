@@ -689,6 +689,26 @@ async def submit_student_neighbors(
             detail=remarks,
         )
 
+    # Flag cognitive reflex challenge failure (Layer 2)
+    if payload.challenge_passed is False:
+        remarks = f"Cognitive reflex challenge failed (score {payload.challenge_score or 0} below threshold)"
+        logger.warning(f"[Layer 2 Challenge Failed] {student_key}: {remarks}")
+        await _record_proxy_violation(
+            db=db,
+            session_id=session_obj.id,
+            device_id=student_key,
+            status="COGNITIVE_CHALLENGE_FAILED",
+            verification_method="BEHAVIOUR_ANALYSIS_FAILED",
+            remarks=remarks,
+            student_id=current_user.id if current_user else None,
+            reported_neighbors=normalized_neighbors,
+        )
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=remarks,
+        )
+
     # Flag ultrasonic acoustic proximity proxy (< 25 cm)
     if payload.ultrasonic_proximity_detected:
         peer_key = payload.co_located_peer_id or "UNKNOWN"
@@ -924,6 +944,7 @@ async def audit_and_finalize_session(
             "DUPLICATE_FACE_PROXY",
             "CO_LOCATED_SAME_DESK_PROXY",
             "DIVIDED_ATTENTION_PROXY",
+            "COGNITIVE_CHALLENGE_FAILED",
             "NO_FACE_DETECTED",
             "SPOOFER_REJECTED",
         ):
@@ -964,6 +985,7 @@ async def audit_and_finalize_session(
                 "DUPLICATE_FACE_PROXY",
                 "CO_LOCATED_SAME_DESK_PROXY",
                 "DIVIDED_ATTENTION_PROXY",
+                "COGNITIVE_CHALLENGE_FAILED",
                 "NO_FACE_DETECTED",
             ]),
         )

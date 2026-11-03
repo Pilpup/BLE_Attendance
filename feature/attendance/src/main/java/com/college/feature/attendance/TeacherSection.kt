@@ -68,11 +68,14 @@ import com.college.feature.attendance.viewmodel.TeacherViewMode
 // Maps attendance audit records to display status categories
 private fun getRecordAuditStatus(rec: AttendanceRecordItem): String {
     return when {
+        rec.status == "VERIFIED_PRESENT" -> "Verified"
         rec.status == "FLAGGED_SPOOFER" || rec.status == "SPOOFER_REJECTED" ||
-                rec.status.contains("SPOOF") || rec.status.contains("REJECT") -> "Flagged"
+                rec.status.contains("SPOOF") || rec.status.contains("REJECT") ||
+                rec.status.contains("PROXY") || rec.status.contains("FAILED") ||
+                rec.status == "NO_FACE_DETECTED" -> "Flagged"
         rec.status.contains("ISOLAT") || rec.status == "UNVERIFIED" ||
                 rec.verificationMethod == "NONE" || rec.affinityScore < 0.5 -> "Unverified"
-        else -> "Verified"
+        else -> "Unverified"
     }
 }
 

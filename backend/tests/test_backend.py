@@ -762,6 +762,40 @@ async def test_divided_attention_proxy_rejection():
         assert "Divided attention proxy detected" in res.json()["detail"]
 
 
+# Verifies Layer 2: Cognitive reflex challenge failure rejection and audit recording
+@pytest.mark.anyio
+async def test_cognitive_challenge_failure_rejection():
+    from httpx import AsyncClient, ASGITransport
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.post(
+            "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
+            json={
+                "student_id": "FAIL1",
+                "neighbors": ["PEER-Y"],
+                "session_salt": "DEMO1",
+                "challenge_passed": False,
+                "challenge_score": 3,
+            },
+        )
+        assert res.status_code == 403
+        assert "Cognitive reflex challenge failed" in res.json()["detail"]
+
+        audit_res = await client.post(
+            "/api/v1/attendance/sessions/AUTO-101/audit-and-finalize",
+            headers={"Authorization": "Bearer mock-teacher-token"},
+            json={"reports": {}},
+        )
+        assert audit_res.status_code == 200
+        audit_data = audit_res.json()
+        rec_map = {r["ble_device_id"]: r for r in audit_data["records"]}
+        assert "AIL1" in rec_map
+        assert rec_map["AIL1"]["status"] == "COGNITIVE_CHALLENGE_FAILED"
+        assert rec_map["AIL1"]["verification_method"] == "BEHAVIOUR_ANALYSIS_FAILED"
+
+
+
 
 
 

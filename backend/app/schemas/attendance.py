@@ -140,6 +140,14 @@ class SubmitNeighborsRequest(BaseModel):
         default=None,
         description="Whether divided attention gameplay proxy was detected by local game telemetry"
     )
+    challenge_passed: Optional[bool] = Field(
+        default=None,
+        description="Whether student passed the cognitive reflex challenge (score >= 55% and targets >= 6)"
+    )
+    challenge_score: Optional[int] = Field(
+        default=None,
+        description="Total targets hit in the attention challenge"
+    )
 
 
 

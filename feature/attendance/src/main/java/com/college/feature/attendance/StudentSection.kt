@@ -62,7 +62,6 @@ import com.college.feature.attendance.network.AttendanceRecordItem
 import com.college.feature.attendance.telemetry.CognitiveFocusReport
 import com.college.feature.attendance.telemetry.FocusClassification
 import com.college.feature.attendance.ui.theme.*
-import com.college.feature.attendance.viewmodel.PeerData
 import com.college.feature.attendance.viewmodel.StudentPhase
 
 @Composable
@@ -71,12 +70,9 @@ internal fun StudentSection(
     detectedSessionId: String,
     sessionSalt: String = "",
     studentId: String = "",
-    deskNeighbours: List<PeerData>,
     studentStatusMessage: String? = null,
     lastFocusReport: CognitiveFocusReport? = null,
     capturedFacePayload: String? = null,
-    faceProxyDetected: Boolean = false,
-    ultrasonicProximityDetected: Boolean = false,
     auditedRecord: AttendanceRecordItem? = null,
     onRefreshAudit: (() -> Unit)? = null,
     isRefreshingAudit: Boolean = false,
@@ -435,14 +431,8 @@ internal fun StudentSection(
 
                 studentPhase == StudentPhase.VERIFIED_PRESENT || studentPhase == StudentPhase.UNVERIFIED_FLAGGED -> {
                     AntiProxyDefenseResultsScreen(
-                        isVerified = studentPhase == StudentPhase.VERIFIED_PRESENT,
-                        deskNeighbours = deskNeighbours,
-                        targetsHit = targetsHit,
-                        activeReport = activeReport,
                         studentStatusMessage = studentStatusMessage,
                         capturedFaceBase64 = lastCapturedFaceBase64 ?: capturedFacePayload,
-                        faceProxyDetected = faceProxyDetected,
-                        ultrasonicProximityDetected = ultrasonicProximityDetected,
                         auditedRecord = auditedRecord
                     )
                 }
@@ -884,39 +874,13 @@ private fun WaitingForAuditScreen() {
     }
 }
 
-private enum class DefenseStatus(val label: String) {
-    PASSED("Pass"),
-    FAILED("Fail"),
-    DORMANT("Dormant")
-}
-
-// Displays multi-layer anti-proxy verification audit results across radio, reflex, biometric, and acoustic layers
+// Displays server-authoritative attendance audit result
 @Composable
 private fun AntiProxyDefenseResultsScreen(
-    isVerified: Boolean,
-    deskNeighbours: List<PeerData>,
-    targetsHit: Int,
-    activeReport: CognitiveFocusReport?,
     studentStatusMessage: String?,
     capturedFaceBase64: String? = null,
-    faceProxyDetected: Boolean = false,
-    ultrasonicProximityDetected: Boolean = false,
     auditedRecord: AttendanceRecordItem? = null
 ) {
-    val isDividedAttention = activeReport?.classification == FocusClassification.DIVIDED_ATTENTION_PROXY ||
-            studentStatusMessage?.contains("Divided attention", ignoreCase = true) == true ||
-            auditedRecord?.status == "DIVIDED_ATTENTION_PROXY"
-    val isFaceProxy = faceProxyDetected ||
-            studentStatusMessage?.contains("Biometric", ignoreCase = true) == true ||
-            studentStatusMessage?.contains("Duplicate face", ignoreCase = true) == true ||
-            auditedRecord?.status == "DUPLICATE_FACE_PROXY" ||
-            auditedRecord?.status == "NO_FACE_DETECTED"
-    val isUltrasonicProxy = ultrasonicProximityDetected ||
-            studentStatusMessage?.contains("Ultrasonic", ignoreCase = true) == true ||
-            studentStatusMessage?.contains("same desk", ignoreCase = true) == true ||
-            studentStatusMessage?.contains("Co-location", ignoreCase = true) == true ||
-            auditedRecord?.status == "CO_LOCATED_SAME_DESK_PROXY"
-
     // Decode normalized captured face bitmap for visual verification
     val faceBitmap = remember(capturedFaceBase64) {
         capturedFaceBase64?.let { b64 ->
@@ -930,29 +894,8 @@ private fun AntiProxyDefenseResultsScreen(
         }
     }
 
-    // Layer 1: BLE Mesh passes if device is part of classroom mutual mesh (fails for isolated seats or outside spoofers)
-    val isBleSpooferOrIsolated = auditedRecord?.status == "ISOLATED_FLAGGED" ||
-            auditedRecord?.status == "SPOOFER_REJECTED" ||
-            auditedRecord?.status == "SALT_REJECTED" ||
-            (auditedRecord == null && deskNeighbours.isEmpty())
-
-    val blePass = !isBleSpooferOrIsolated
-
-    // Layer 2: Behaviour Analysis
-    val reflexPass = !isDividedAttention && targetsHit >= 6
-
-    // Layer 3: Face Matching
-    val facePass = !isFaceProxy
-
-    // Layer 4: Ultrasonic Distance (Pass unless acoustic or radio proximity detected same-desk co-location)
-    val ultrasonicStatus = when {
-        isUltrasonicProxy -> DefenseStatus.FAILED
-        else -> DefenseStatus.PASSED
-    }
-
-    // Attendance is ONLY verified if ALL 4 security layers pass!
-    val allDefensesPassed = blePass && reflexPass && facePass && (ultrasonicStatus != DefenseStatus.FAILED)
-    val isOverallVerified = isVerified && allDefensesPassed && (auditedRecord == null || auditedRecord.status == "VERIFIED_PRESENT")
+    // Server-authoritative audit verification
+    val isOverallVerified = auditedRecord?.status == "VERIFIED_PRESENT"
 
     Column(
         modifier = Modifier
@@ -999,7 +942,7 @@ private fun AntiProxyDefenseResultsScreen(
             text = if (isOverallVerified) {
                 "You have been successfully checked in."
             } else {
-                "Please show this screen to your instructor."
+                studentStatusMessage ?: "Please show this screen to your instructor."
             },
             fontSize = 14.sp,
             color = textSecondary,
@@ -1087,103 +1030,4 @@ private fun AntiProxyDefenseResultsScreen(
     }
 }
 
-// Sleek modern security layer card with clean tick/cross indicator and optional face photo preview
-@Composable
-private fun SecurityDefenseCard(
-    title: String,
-    status: DefenseStatus,
-    photoBitmap: androidx.compose.ui.graphics.ImageBitmap? = null
-) {
-    val tintColor = when (status) {
-        DefenseStatus.PASSED -> neonMint
-        DefenseStatus.FAILED -> crimsonRed
-        DefenseStatus.DORMANT -> textMuted
-    }
-    val badgeBg = when (status) {
-        DefenseStatus.PASSED -> neonMint.copy(alpha = 0.12f)
-        DefenseStatus.FAILED -> crimsonRed.copy(alpha = 0.12f)
-        DefenseStatus.DORMANT -> Color.White.copy(alpha = 0.04f)
-    }
-    val badgeBorder = when (status) {
-        DefenseStatus.PASSED -> neonMint.copy(alpha = 0.35f)
-        DefenseStatus.FAILED -> crimsonRed.copy(alpha = 0.35f)
-        DefenseStatus.DORMANT -> cardBorder
-    }
-    val badgeIcon = when (status) {
-        DefenseStatus.PASSED -> Icons.Default.Check
-        DefenseStatus.FAILED -> Icons.Default.Close
-        DefenseStatus.DORMANT -> null
-    }
-
-    Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = cardBg,
-        border = BorderStroke(1.dp, cardBorder),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 14.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = title,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = textPrimary
-                )
-
-                Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = badgeBg,
-                    border = BorderStroke(1.dp, badgeBorder)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        if (badgeIcon != null) {
-                            Icon(
-                                imageVector = badgeIcon,
-                                contentDescription = null,
-                                tint = tintColor,
-                                modifier = Modifier.size(14.dp)
-                            )
-                        }
-                        Text(
-                            text = status.label,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = tintColor
-                        )
-                    }
-                }
-            }
-
-            if (photoBitmap != null) {
-                Spacer(modifier = Modifier.height(14.dp))
-                Box(
-                    modifier = Modifier.fillMaxWidth(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Image(
-                        bitmap = photoBitmap,
-                        contentDescription = "Face Capture",
-                        modifier = Modifier
-                            .size(112.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .border(1.5.dp, tintColor.copy(alpha = 0.6f), RoundedCornerShape(14.dp)),
-                        contentScale = ContentScale.Crop
-                    )
-                }
-            }
-        }
-    }
-}
 

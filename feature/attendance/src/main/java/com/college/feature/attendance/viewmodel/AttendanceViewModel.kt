@@ -580,6 +580,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             .map { it.peerId }
         val facePayload = capturedFaceBase64
         val dividedAttention = isDividedProxy
+        val challengePassed = isChallengePassed
+        val challengeHits = challengeScore
         viewModelScope.launch(Dispatchers.IO) {
             val req = SubmitNeighborsRequest(
                 studentId = studentShortId,
@@ -589,19 +591,17 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 faceImageBase64 = facePayload,
                 ultrasonicProximityDetected = ultrasonicProximityDetected,
                 coLocatedPeerId = coLocatedPeerId,
-                dividedAttentionDetected = dividedAttention
+                dividedAttentionDetected = dividedAttention,
+                challengePassed = challengePassed,
+                challengeScore = challengeHits
             )
             val result = safeApiCall { api.submitNeighbors(sessId, req) }
             withContext(Dispatchers.Main) {
                 when (result) {
                     is NetworkResult.Success -> {
                         if (!keepRadioActive && studentDiscoverySecondsRemaining == 0) {
-                            if (hasLocalDefenseFailed) {
-                                studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-                            } else {
-                                studentPhase = StudentPhase.WAITING_FOR_AUDIT
-                                startPollingForAudit(sessId)
-                            }
+                            studentPhase = if (hasLocalDefenseFailed) StudentPhase.UNVERIFIED_FLAGGED else StudentPhase.WAITING_FOR_AUDIT
+                            startPollingForAudit(sessId)
                         }
                         if (!keepRadioActive) {
                             onStopScanning?.invoke()
@@ -620,6 +620,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             studentStatusMessage = detail
                             if (!keepRadioActive || studentDiscoverySecondsRemaining == 0) {
                                 studentPhase = StudentPhase.UNVERIFIED_FLAGGED
+                                startPollingForAudit(sessId)
                                 onStopScanning?.invoke()
                                 onStopBroadcasting?.invoke()
                             }
@@ -627,6 +628,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             if (!keepRadioActive || studentDiscoverySecondsRemaining == 0) {
                                 studentStatusMessage = detail
                                 studentPhase = StudentPhase.UNVERIFIED_FLAGGED
+                                startPollingForAudit(sessId)
                                 onStopScanning?.invoke()
                                 onStopBroadcasting?.invoke()
                             } else {
@@ -963,20 +965,22 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         studentTimer?.cancel()
         studentTimer = null
         studentDiscoverySecondsRemaining = 0
-        val isDividedProxy = lastFocusReport?.classification == com.college.feature.attendance.telemetry.FocusClassification.DIVIDED_ATTENTION_PROXY
-        if (isDividedProxy || !isChallengePassed || faceProxyDetected || ultrasonicProximityDetected) {
+        val sessId = detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: ""
+        if (hasLocalDefenseFailed) {
             if (studentStatusMessage == null) {
                 studentStatusMessage = "Attendance not confirmed. Please see instructor."
             }
             studentPhase = StudentPhase.UNVERIFIED_FLAGGED
             submitMyNeighborsToCloud(keepRadioActive = false)
+            if (sessId.isNotBlank()) {
+                startPollingForAudit(sessId)
+            }
             onStartScanning?.invoke()
             onStopBroadcasting?.invoke()
         } else {
             studentPhase = StudentPhase.WAITING_FOR_AUDIT
             studentStatusMessage = null
             submitMyNeighborsToCloud(keepRadioActive = false)
-            val sessId = detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: ""
             if (sessId.isNotBlank()) {
                 startPollingForAudit(sessId)
             }
@@ -1161,7 +1165,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             withContext(Dispatchers.Main) {
                                 auditedRecord = myRecord
                                 if (myRecord != null) {
-                                    if (myRecord.status == "VERIFIED_PRESENT" && !hasLocalDefenseFailed) {
+                                    if (myRecord.status == "VERIFIED_PRESENT") {
                                         studentPhase = StudentPhase.VERIFIED_PRESENT
                                         studentStatusMessage = "Attendance Confirmed"
                                         onStopScanning?.invoke()
@@ -1169,9 +1173,14 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                     } else {
                                         studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                                         studentStatusMessage = when {
-                                            hasLocalDefenseFailed -> "Attendance not confirmed. Please see instructor."
+                                            myRecord.status == "COGNITIVE_CHALLENGE_FAILED" -> "Cognitive challenge failed"
+                                            myRecord.status == "DIVIDED_ATTENTION_PROXY" -> "Divided attention proxy detected"
+                                            myRecord.status == "CO_LOCATED_SAME_DESK_PROXY" -> "Desk co-location rejected"
+                                            myRecord.status == "DUPLICATE_FACE_PROXY" -> "Duplicate face biometric rejected"
+                                            myRecord.status == "NO_FACE_DETECTED" -> "No face detected in check-in"
+                                            myRecord.status == "SALT_REJECTED" || myRecord.status == "SPOOFER_REJECTED" -> "In-room beacon verification failed"
                                             myRecord.status == "ISOLATED_FLAGGED" -> "Needs instructor confirmation"
-                                            else -> "Attendance not confirmed"
+                                            else -> myRecord.remarks ?: "Attendance not confirmed"
                                         }
                                         onStartScanning?.invoke()
                                     }
