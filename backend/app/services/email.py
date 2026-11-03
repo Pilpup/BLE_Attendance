@@ -1,39 +1,24 @@
 import asyncio
-import json
 import logging
 import secrets
 import smtplib
-import urllib.error
-import urllib.request
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+
+import httpx
 
 from app.config import settings
 
 logger = logging.getLogger("email_service")
 
 
+# Generates a cryptographically secure 6-digit numeric OTP code
 def generate_otp() -> str:
-    """Generate a cryptographically secure 6-digit numeric OTP code."""
     return f"{secrets.randbelow(900000) + 100000}"
 
 
-def _post_https_json_sync(url: str, headers: dict, payload: dict) -> tuple[int, str]:
-    """Helper using Python standard library urllib to send HTTPS requests without external dependencies."""
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status, resp.read().decode("utf-8", errors="ignore")
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="ignore") if e.fp else ""
-        return e.code, body
-    except Exception as e:
-        return 0, str(e)
-
-
+# Dispatches email via Brevo HTTPS API
 async def _send_brevo_email_async(to_email: str, subject: str, text_content: str, html_content: str) -> bool:
-    """Dispatch email via Brevo HTTPS API (Port 443). Works on Render Free Tier and sends to any recipient."""
     if not settings.BREVO_API_KEY:
         return False
 
@@ -51,49 +36,52 @@ async def _send_brevo_email_async(to_email: str, subject: str, text_content: str
         "textContent": text_content,
         "htmlContent": html_content,
     }
-    code, resp_text = await asyncio.to_thread(_post_https_json_sync, url, headers, payload)
-    if code in (200, 201, 202):
-        logger.info(f"Successfully dispatched OTP email via Brevo to {to_email}")
-        return True
-    logger.error(f"Failed to send email via Brevo API ({code}): {resp_text}")
-    return False
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            if resp.status_code in (200, 201, 202):
+                logger.info(f"Successfully dispatched OTP email via Brevo to {to_email}")
+                return True
+            logger.error(f"Failed to send email via Brevo API ({resp.status_code}): {resp.text}")
+            return False
+    except Exception as e:
+        logger.error(f"Brevo API request failed: {e}")
+        return False
 
 
+# Sends email using standard SMTP with TLS or SSL
 def _send_smtp_email_sync(to_email: str, subject: str, text_content: str, html_content: str) -> bool:
     if not settings.SMTP_HOST:
         return False
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    from_addr = f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>"
-    msg["From"] = from_addr
+    msg["From"] = f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>"
     msg["To"] = to_email
 
     msg.attach(MIMEText(text_content, "plain"))
     msg.attach(MIMEText(html_content, "html"))
 
     try:
-        if settings.SMTP_PORT == 465:
-            with smtplib.SMTP_SSL(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10) as server:
-                if settings.SMTP_USER and settings.SMTP_PASSWORD:
-                    server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-                server.sendmail(settings.SMTP_FROM_EMAIL, [to_email], msg.as_string())
-        else:
-            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10) as server:
+        server_cls = smtplib.SMTP_SSL if settings.SMTP_PORT == 465 else smtplib.SMTP
+        with server_cls(settings.SMTP_HOST, settings.SMTP_PORT, timeout=10) as server:
+            if settings.SMTP_PORT != 465:
                 server.starttls()
-                if settings.SMTP_USER and settings.SMTP_PASSWORD:
-                    server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
-                server.sendmail(settings.SMTP_FROM_EMAIL, [to_email], msg.as_string())
+            if settings.SMTP_USER and settings.SMTP_PASSWORD:
+                server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
+            server.sendmail(settings.SMTP_FROM_EMAIL, [to_email], msg.as_string())
         return True
     except Exception as e:
         logger.error(f"Failed to send email via SMTP to {to_email}: {e}")
         return False
 
 
+# Dispatches OTP verification email via Brevo API or SMTP fallback
 async def send_otp_email(to_email: str, otp_code: str, purpose: str = "LOGIN") -> bool:
     action_text = "sign in to your account (Two-Factor Authentication)" if purpose == "LOGIN" else "complete your account registration"
     subject = f"{otp_code} is your College Hub verification code"
 
+    # Formats plain text fallback body
     text_content = (
         f"College Hub Verification\n\n"
         f"Your verification code is: {otp_code}\n\n"
@@ -102,6 +90,7 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "LOGIN") -
         f"If you did not request this, please ignore this email."
     )
 
+    # Formats responsive HTML email template
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -128,18 +117,18 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "LOGIN") -
     </html>
     """
 
-    # Always log clearly to console for local testing / development
+    # Logs OTP code to console for local testing and debugging
     print(f"\n==================================================================")
     print(f"[OTP DISPATCH] To: {to_email} | Purpose: {purpose}")
     print(f">>> CODE: {otp_code} <<< (Expires in {settings.OTP_EXPIRE_MINUTES} min)")
     print(f"==================================================================\n")
 
-    # 1. Prefer Brevo HTTPS API (Port 443 - works on Render Free Tier where raw SMTP 587 is blocked)
+    # Dispatches email via Brevo HTTPS API if configured
     if settings.BREVO_API_KEY:
         if await _send_brevo_email_async(to_email, subject, text_content, html_content):
             return True
 
-    # 2. Fall back to SMTP (works for local development or non-firewalled servers)
+    # Falls back to SMTP server if configured
     if settings.SMTP_HOST:
         return await asyncio.to_thread(_send_smtp_email_sync, to_email, subject, text_content, html_content)
 
