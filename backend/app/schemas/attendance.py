@@ -1,18 +1,17 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-# ─────────────────────────────────────────────
-# Course
-# ─────────────────────────────────────────────
+# Course creation payload
 class CourseCreateRequest(BaseModel):
     course_code: str = Field(..., min_length=2, max_length=20, description="e.g. CS401")
     course_name: str = Field(..., min_length=2, max_length=100, description="e.g. Distributed Systems")
 
 
+# Public course response
 class CourseResponse(BaseModel):
     id: UUID
     course_code: str
@@ -22,9 +21,7 @@ class CourseResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-# ─────────────────────────────────────────────
-# BLE Audit Record (one student's mesh result)
-# ─────────────────────────────────────────────
+# BLE discovery audit record for a single student node
 class BLEAuditRecordItem(BaseModel):
     ble_device_id: str = Field(
         ..., min_length=1, max_length=50, description="BLE ID or Roll Number (e.g. 'A4B1' or '22BCSE104')"
@@ -44,7 +41,7 @@ class BLEAuditRecordItem(BaseModel):
         None, min_length=1, max_length=50,
         description="Bridge node ID for TRIADIC_CLOSURE verifications"
     )
-    reported_neighbors: List[str] = Field(
+    reported_neighbors: list[str] = Field(
         default_factory=list, description="Top-3 observed peer IDs from BLE discovery"
     )
     remarks: Optional[str] = Field(None, description="Human-readable audit note")
@@ -52,6 +49,7 @@ class BLEAuditRecordItem(BaseModel):
     student_name: Optional[str] = None
 
 
+# Persisted attendance record response including session metadata
 class AttendanceRecordResponse(BLEAuditRecordItem):
     id: UUID
     session_id: UUID
@@ -60,6 +58,7 @@ class AttendanceRecordResponse(BLEAuditRecordItem):
     model_config = ConfigDict(from_attributes=True)
 
 
+# Manual attendance status override request by instructor
 class RecordOverrideRequest(BaseModel):
     status: str = Field(
         default="VERIFIED_PRESENT",
@@ -71,9 +70,7 @@ class RecordOverrideRequest(BaseModel):
     )
 
 
-# ─────────────────────────────────────────────
-# Session
-# ─────────────────────────────────────────────
+# Session creation request payload
 class SessionCreateRequest(BaseModel):
     course_id: Optional[str] = Field(
         None, description="Course UUID or synthetic code. Leave null to use the default demo course"
@@ -90,33 +87,36 @@ class SessionCreateRequest(BaseModel):
     total_enrolled: int = Field(default=0, ge=0)
 
 
+# Session finalization request containing complete mesh audit records
 class SessionFinalizeRequest(BaseModel):
-    records: List[BLEAuditRecordItem] = Field(
+    records: list[BLEAuditRecordItem] = Field(
         ..., description="Full mesh audit results from performMeshAudit() on the teacher's phone"
     )
 
 
+# Teacher trigger payload to run server-side mesh audit
 class MeshAuditRunRequest(BaseModel):
-    reports: dict[str, List[str]] = Field(
+    reports: dict[str, list[str]] = Field(
         default_factory=dict,
         description="Classroom BLE discovery dictionary: {student_ble_id: [top_3_neighbor_ids]}"
     )
 
 
+# Student check-in payload with BLE neighbors, biometric and telemetry proofs
 class SubmitNeighborsRequest(BaseModel):
     student_id: Optional[str] = Field(
         default=None,
         description="Student roll number or 4-char BLE ID if unauthenticated"
     )
-    neighbors: List[str] = Field(
+    neighbors: list[str] = Field(
         ...,
         description="Top-3 discovered peer IDs or roll numbers (median RSSI >= -82 dBm)"
     )
-    close_neighbors: Optional[List[str]] = Field(
+    close_neighbors: Optional[list[str]] = Field(
         default=None,
         description="Peers detected in close proximity cluster (RSSI >= -65 dBm)"
     )
-    relayed_reports: Optional[dict[str, List[str]]] = Field(
+    relayed_reports: Optional[dict[str, list[str]]] = Field(
         default=None,
         description="Vouchers collected from offline peers over BLE: {offline_student_id: [nbr1, nbr2, nbr3]}"
     )
@@ -149,8 +149,24 @@ class SubmitNeighborsRequest(BaseModel):
         description="Total targets hit in the attention challenge"
     )
 
+    # Strips whitespace from student identifier
+    @field_validator("student_id", mode="before")
+    @classmethod
+    def clean_student_id(cls, v: Optional[str]) -> Optional[str]:
+        if isinstance(v, str):
+            return v.strip()
+        return v
+
+    # Strips whitespace from session salt
+    @field_validator("session_salt", mode="before")
+    @classmethod
+    def clean_salt(cls, v: Optional[str]) -> Optional[str]:
+        if isinstance(v, str):
+            return v.strip()
+        return v
 
 
+# Active or completed attendance session response with audit totals
 class AttendanceSessionResponse(BaseModel):
     id: UUID
     course_id: UUID
@@ -162,27 +178,31 @@ class AttendanceSessionResponse(BaseModel):
     total_enrolled: int
     total_verified: int
     total_spoofers: int
-    records: Optional[List[AttendanceRecordResponse]] = None
+    records: Optional[list[AttendanceRecordResponse]] = None
     course_code: Optional[str] = None
     course_name: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
 
+# Developer lab test request for face detection validation
 class FaceLabCheckRequest(BaseModel):
     face_image_base64: str
 
 
+# Developer lab test response for face detection verification
 class FaceLabCheckResponse(BaseModel):
     has_face: bool
     remarks: str
 
 
+# Developer lab test request comparing two facial images
 class FaceLabCompareRequest(BaseModel):
     image_a_base64: str
     image_b_base64: str
 
 
+# Developer lab test response with facial similarity metrics
 class FaceLabCompareResponse(BaseModel):
     has_face_a: bool
     has_face_b: bool

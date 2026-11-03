@@ -2,13 +2,10 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-# ─────────────────────────────────────────────
-# Book catalogue (wire format matches the Android @SerializedName tags:
-# total_copies, available_copies, shelf_location)
-# ─────────────────────────────────────────────
+# Request payload for cataloguing a new library book
 class BookCreateRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
     author: str = Field(..., min_length=1, max_length=255)
@@ -20,7 +17,16 @@ class BookCreateRequest(BaseModel):
     overview: Optional[str] = Field(None, max_length=5000)
     table_of_contents: Optional[str] = Field(None, max_length=20000)
 
+    # Strips whitespace from ISBN
+    @field_validator("isbn", mode="before")
+    @classmethod
+    def clean_isbn(cls, v: str) -> str:
+        if isinstance(v, str):
+            return v.strip()
+        return v
 
+
+# Request payload for updating library book details and inventory
 class BookUpdateRequest(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=255)
     author: Optional[str] = Field(None, min_length=1, max_length=255)
@@ -33,6 +39,15 @@ class BookUpdateRequest(BaseModel):
     overview: Optional[str] = Field(None, max_length=5000)
     table_of_contents: Optional[str] = Field(None, max_length=20000)
 
+    # Strips whitespace from ISBN
+    @field_validator("isbn", mode="before")
+    @classmethod
+    def clean_isbn(cls, v: Optional[str]) -> Optional[str]:
+        if isinstance(v, str):
+            return v.strip()
+        return v
+
+    # Validates that available copies do not exceed total stock
     @model_validator(mode="after")
     def validate_stock_bounds(self):
         total = self.total_copies
@@ -42,6 +57,7 @@ class BookUpdateRequest(BaseModel):
         return self
 
 
+# Public library book response schema
 class BookResponse(BaseModel):
     id: UUID
     title: str
@@ -59,6 +75,7 @@ class BookResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+# External book metadata lookup response
 class BookLookupResponse(BaseModel):
     title: str
     author: str
