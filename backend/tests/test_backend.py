@@ -678,6 +678,34 @@ def test_session_face_registry_cluster_interrogation():
     registry.clear_session("session_202")
 
 
+# Verifies face engine robustness guards against oversized payloads and non-finite vectors
+def test_face_engine_robustness_guards():
+    import numpy as np
+    from app.services.face_engine import FaceMatchingEngine, SessionFaceRegistry
+
+    engine = FaceMatchingEngine()
+    registry = SessionFaceRegistry(engine=engine)
+
+    # 1. Rejects oversized base64 payload (> 4MB)
+    huge_payload = "A" * 4_000_001
+    res = registry.register_and_check("sess_guard", "STU1", "ROLL1", huge_payload)
+    assert res.is_duplicate is False
+    assert res.has_human_face is False
+    assert "exceeds maximum allowed size" in res.remarks
+
+    # 2. Handles non-finite NaN vector similarity safely
+    nan_vec = np.full((128,), np.nan, dtype=np.float32)
+    valid_vec = np.ones((128,), dtype=np.float32)
+    sim = engine.compute_similarity(nan_vec, valid_vec)
+    assert sim == 0.0
+
+    # 3. Prunes stale sessions based on TTL
+    registry._session_timestamps["old_sess"] = 100.0
+    registry._registry["old_sess"] = {"foo": {}}
+    registry._prune_stale_sessions()
+    assert "old_sess" not in registry._registry
+
+
 # Verifies debug session auto-provisioning and duplicate face detection via API endpoint
 @pytest.mark.anyio
 async def test_debug_session_auto_provision_and_duplicate_rejection():

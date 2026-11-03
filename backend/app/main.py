@@ -115,11 +115,8 @@ END $$;
 """
 
 
+# Periodically purges expired email OTP verification records from the database
 async def purge_expired_otps_worker():
-    """
-    Background worker that runs periodically to purge expired OTP records
-    from the database, preventing orphaned registration/login records.
-    """
     while True:
         try:
             now = datetime.now(timezone.utc)
@@ -140,6 +137,7 @@ async def purge_expired_otps_worker():
             break
 
 
+# Manages application startup initialization and clean background task shutdown
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Auto-initialize database tables if not already existing
@@ -174,6 +172,7 @@ async def lifespan(app: FastAPI):
     await engine.dispose()
 
 
+# Initializes FastAPI application with metadata and lifespan handler
 app = FastAPI(
     title="BLE Attendance Verification API",
     version="1.0.0",
@@ -182,6 +181,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+
+# Catches unhandled server exceptions and returns structured JSON responses
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error("Unhandled server exception: %s", exc, exc_info=True)
@@ -198,6 +199,8 @@ async def global_exception_handler(request: Request, exc: Exception):
         }
     return JSONResponse(status_code=500, content=content)
 
+
+# Enables Cross-Origin Resource Sharing for mobile and web clients
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -206,23 +209,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# Logs non-health HTTP requests and response status codes
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    method = request.method
     path = request.url.path
-    if path not in ("/health", "/"):
-        logger.info(f"==> Incoming {method} {path}")
+    if path in ("/health", "/"):
+        return await call_next(request)
+    method = request.method
+    logger.info(f"==> Incoming {method} {path}")
     response = await call_next(request)
-    if path not in ("/health", "/"):
-        logger.info(f"<== Finished {method} {path} - Status {response.status_code}")
+    logger.info(f"<== Finished {method} {path} - Status {response.status_code}")
     return response
 
-# ── Routers ───────────────────────────────────────────────────────────────────
+
+# Registers attendance, authentication, and library API routers
 app.include_router(attendance.router, prefix=settings.API_V1_STR)
 app.include_router(auth.router, prefix=settings.API_V1_STR)
 app.include_router(library.router, prefix=settings.API_V1_STR)
 
 
+# Returns basic service discovery information
 @app.get("/", tags=["System"])
 async def root():
     return {
@@ -233,11 +240,13 @@ async def root():
     }
 
 
+# Health check probe for container platforms and load balancers
 @app.get("/health", tags=["System"])
 async def health_check():
     return {"status": "ok", "env": settings.APP_ENV}
 
 
+# Diagnostic endpoint returning recent sessions and records
 @app.get("/debug-db", tags=["System"])
 async def debug_db():
     try:
@@ -255,4 +264,3 @@ async def debug_db():
         }
     except Exception as e:
         return {"status": "connection_error", "error": str(e), "type": type(e).__name__}
-

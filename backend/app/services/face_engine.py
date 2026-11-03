@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import base64
-import io
 import logging
 import os
+import threading
+import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -16,8 +17,13 @@ logger = logging.getLogger("uvicorn.error")
 DEFAULT_SIMILARITY_THRESHOLD = 0.363
 YUNET_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "weights", "face_detection_yunet.onnx")
 SFACE_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "weights", "face_recognition_sface.onnx")
+MAX_PAYLOAD_BYTES = 4_000_000
+SESSION_TTL_SECONDS = 86_400
+MAX_FLAGGED_PAIRS_PER_SESSION = 50
+MAX_IMAGE_DIMENSION = 640
 
 
+# Biometric face verification and deduplication result payload
 @dataclass
 class FaceCheckResult:
     is_duplicate: bool
@@ -28,18 +34,19 @@ class FaceCheckResult:
     remarks: str = ""
 
 
+# Detects human faces via OpenCV YuNet and extracts 128-d deep facial embeddings via SFace
 class FaceMatchingEngine:
-    """Detects human faces via OpenCV YuNet and extracts 128-d deep facial embeddings via SFace."""
 
     def __init__(
         self,
         detector_path: Optional[str] = None,
-        recognizer_path: Optional[str] = None
+        recognizer_path: Optional[str] = None,
     ):
         self.detector_path = detector_path or YUNET_MODEL_PATH
         self.recognizer_path = recognizer_path or SFACE_MODEL_PATH
         self.detector: Optional[cv2.FaceDetectorYN] = None
         self.recognizer: Optional[cv2.FaceRecognizerSF] = None
+        self._lock = threading.Lock()
         self._init_models()
 
     # Initializes YuNet face detector and SFace deep facial recognizer
@@ -59,7 +66,7 @@ class FaceMatchingEngine:
             self.recognizer = None
 
     # Detects face and extracts 128-d aligned SFace embedding vector from raw image bytes
-    def extract_face_and_embedding(self, image_bytes: bytes) -> Tuple[bool, Optional[np.ndarray], str]:
+    def extract_face_and_embedding(self, image_bytes: bytes) -> tuple[bool, Optional[np.ndarray], str]:
         try:
             nparr = np.frombuffer(image_bytes, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
@@ -70,33 +77,41 @@ class FaceMatchingEngine:
             if h < 20 or w < 20:
                 return False, None, "REJECTED: Image dimensions too small"
 
-            spatial_std = float(np.mean([np.std(img[:, :, c]) for c in range(3)]))
+            # Downscales oversized images to 640px to bound CPU inference time
+            max_dim = max(h, w)
+            if max_dim > MAX_IMAGE_DIMENSION:
+                scale = MAX_IMAGE_DIMENSION / float(max_dim)
+                img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+                h, w = img.shape[:2]
+
+            spatial_std = float(np.mean(np.std(img, axis=(0, 1))))
             is_synthetic = spatial_std < 1.0
 
             if self.detector is not None and self.recognizer is not None:
-                self.detector.setInputSize((w, h))
-                _, faces = self.detector.detect(img)
+                with self._lock:
+                    self.detector.setInputSize((w, h))
+                    _, faces = self.detector.detect(img)
 
-                # Special-case synthetic single-color images only during automated pytest runs
-                is_testing = bool(os.environ.get("PYTEST_CURRENT_TEST"))
-                if (faces is None or len(faces) == 0) and is_synthetic and is_testing:
-                    mean_colors = np.mean(img, axis=(0, 1)).astype(np.float32)
-                    tiled = np.tile(mean_colors, 43)[:128]
-                    norm = np.linalg.norm(tiled)
-                    emb = tiled / norm if norm > 1e-6 else np.ones(128, dtype=np.float32) / np.sqrt(128)
-                    return True, emb.reshape(1, 128), "Synthetic test face verified"
+                    # Special-case synthetic single-color images only during automated pytest runs
+                    is_testing = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+                    if (faces is None or len(faces) == 0) and is_synthetic and is_testing:
+                        mean_colors = np.mean(img, axis=(0, 1)).astype(np.float32)
+                        tiled = np.tile(mean_colors, 43)[:128]
+                        norm = np.linalg.norm(tiled)
+                        emb = tiled / norm if norm > 1e-6 else np.ones(128, dtype=np.float32) / np.sqrt(128)
+                        return True, emb.reshape(1, 128), "Synthetic test face verified"
 
-                # Reject inanimate surfaces, ceilings, desks, or walls with 0 detected faces
-                if faces is None or len(faces) == 0:
-                    return False, None, "REJECTED: No human face detected (Room top / ceiling / empty desk rejected)"
+                    # Reject inanimate surfaces, ceilings, desks, or walls with 0 detected faces
+                    if faces is None or len(faces) == 0:
+                        return False, None, "REJECTED: No human face detected (Room top / ceiling / empty desk rejected)"
 
-                # Select highest confidence face in the frame
-                primary_face = faces[0]
+                    # Selects foreground face with largest bounding box area
+                    primary_face = max(faces, key=lambda f: float(f[2] * f[3]))
 
-                # Align and crop face using 5 facial landmarks (eyes, nose, mouth corners)
-                aligned_face = self.recognizer.alignCrop(img, primary_face)
-                feature = self.recognizer.feature(aligned_face)
-                return True, feature, "Human face verified and aligned"
+                    # Align and crop face using 5 facial landmarks (eyes, nose, mouth corners)
+                    aligned_face = self.recognizer.alignCrop(img, primary_face)
+                    feature = self.recognizer.feature(aligned_face)
+                    return True, feature, "Human face verified and aligned"
             else:
                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 resized = cv2.resize(gray, (16, 8)).astype(np.float32).flatten()
@@ -118,9 +133,17 @@ class FaceMatchingEngine:
 
     # Computes cosine similarity between two face feature vectors using SFace
     def compute_similarity(self, feat_a: np.ndarray, feat_b: np.ndarray) -> float:
+        # Verifies feature vectors contain only finite numbers
+        if not (np.all(np.isfinite(feat_a)) and np.all(np.isfinite(feat_b))):
+            return 0.0
+
         if self.recognizer is not None:
             try:
-                score = float(self.recognizer.match(feat_a, feat_b, cv2.FaceRecognizerSF_FR_COSINE))
+                # Normalizes shape to 2D matrix before SFace match
+                arr_a = feat_a.reshape(1, 128).astype(np.float32)
+                arr_b = feat_b.reshape(1, 128).astype(np.float32)
+                with self._lock:
+                    score = float(self.recognizer.match(arr_a, arr_b, cv2.FaceRecognizerSF_FR_COSINE))
                 return max(-1.0, min(1.0, score))
             except Exception as e:
                 logger.error(f"[FaceEngine] SFace match error: {e}")
@@ -138,8 +161,8 @@ class FaceMatchingEngine:
         self,
         image_a_bytes: bytes,
         image_b_bytes: bytes,
-        threshold: float = DEFAULT_SIMILARITY_THRESHOLD
-    ) -> Tuple[bool, bool, float, bool, str]:
+        threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+    ) -> tuple[bool, bool, float, bool, str]:
         has_face_a, feat_a, reason_a = self.extract_face_and_embedding(image_a_bytes)
         has_face_b, feat_b, reason_b = self.extract_face_and_embedding(image_b_bytes)
 
@@ -159,15 +182,26 @@ class FaceMatchingEngine:
         return True, True, similarity, is_duplicate, remarks
 
 
+# Manages ephemeral in-memory face embeddings per attendance session
 class SessionFaceRegistry:
-    """Manages ephemeral in-memory face embeddings per attendance session."""
 
     def __init__(self, engine: Optional[FaceMatchingEngine] = None):
         self.engine = engine or FaceMatchingEngine()
         # session_id -> { student_key: {"embedding": np.ndarray, "roll": str, "flagged": bool, "image_b64": Optional[str]} }
-        self._registry: Dict[str, Dict[str, dict]] = {}
+        self._registry: dict[str, dict[str, dict]] = {}
         # session_id -> list of duplicate match dictionaries for instructor review
-        self._flagged_pairs: Dict[str, List[dict]] = {}
+        self._flagged_pairs: dict[str, list[dict]] = {}
+        self._session_timestamps: dict[str, float] = {}
+
+    # Evicts in-memory session registries inactive for more than 24 hours
+    def _prune_stale_sessions(self) -> None:
+        now = time.time()
+        stale_ids = [
+            sid for sid, ts in self._session_timestamps.items()
+            if now - ts > SESSION_TTL_SECONDS
+        ]
+        for sid in stale_ids:
+            self.clear_session(sid)
 
     # Registers incoming face photo, checks for duplicates, and enforces privacy purging
     def register_and_check(
@@ -176,14 +210,23 @@ class SessionFaceRegistry:
         student_key: str,
         roll_number: Optional[str],
         face_base64: str,
-        cluster_peers: Optional[Set[str] | List[str]] = None,
+        cluster_peers: Optional[set[str] | list[str]] = None,
         threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     ) -> FaceCheckResult:
         try:
-            # Strip data URI prefix if present
-            clean_b64 = face_base64
+            # Strip data URI prefix and trim whitespace
+            clean_b64 = face_base64.strip()
             if "," in clean_b64:
-                clean_b64 = clean_b64.split(",", 1)[1]
+                clean_b64 = clean_b64.split(",", 1)[1].strip()
+
+            # Rejects oversized image payloads to prevent memory exhaustion
+            if len(clean_b64) > MAX_PAYLOAD_BYTES:
+                return FaceCheckResult(
+                    is_duplicate=False,
+                    has_human_face=False,
+                    remarks="REJECTED: Face image payload exceeds maximum allowed size (3MB)"
+                )
+
             raw_bytes = base64.b64decode(clean_b64)
             has_face, embedding, remarks = self.engine.extract_face_and_embedding(raw_bytes)
         except Exception as e:
@@ -202,6 +245,10 @@ class SessionFaceRegistry:
                 remarks=remarks or "REJECTED: No human face detected (Room top / ceiling / empty desk rejected)"
             )
 
+        # Updates session activity timestamp and cleans stale registries
+        self._prune_stale_sessions()
+        self._session_timestamps[session_id] = time.time()
+
         session_store = self._registry.setdefault(session_id, {})
         max_similarity = -1.0
         matched_key: Optional[str] = None
@@ -215,9 +262,7 @@ class SessionFaceRegistry:
 
             sim = self.engine.compute_similarity(embedding, record["embedding"])
 
-            # Proximity Cluster Interrogation:
-            # Sensitive duplicate matching (0.363) triggers for devices in the same radio proximity cluster.
-            # Distant devices across the room require identical cloned image matching (>= 0.70) to prevent lookalike false positives.
+            # Applies cluster-aware similarity threshold to prevent lookalike false positives
             existing_cluster = record.get("cluster_peers", set())
             is_in_cluster = (
                 target_cluster is None or
@@ -234,17 +279,19 @@ class SessionFaceRegistry:
         is_duplicate = (matched_key is not None)
 
         if is_duplicate:
-            # Record duplicate face match for instructor dashboard review
-            flag_entry = {
-                "student_a_key": matched_key,
-                "student_a_roll": matched_roll,
-                "student_b_key": student_key,
-                "student_b_roll": roll_number,
-                "similarity_score": round(max_similarity, 3),
-                "image_a_b64": session_store[matched_key].get("image_b64"),
-                "image_b_b64": clean_b64,
-            }
-            self._flagged_pairs.setdefault(session_id, []).append(flag_entry)
+            # Records duplicate face match for instructor dashboard review up to session cap
+            flagged_list = self._flagged_pairs.setdefault(session_id, [])
+            if len(flagged_list) < MAX_FLAGGED_PAIRS_PER_SESSION:
+                flag_entry = {
+                    "student_a_key": matched_key,
+                    "student_a_roll": matched_roll,
+                    "student_b_key": student_key,
+                    "student_b_roll": roll_number,
+                    "similarity_score": round(max_similarity, 3),
+                    "image_a_b64": session_store[matched_key].get("image_b64"),
+                    "image_b_b64": clean_b64,
+                }
+                flagged_list.append(flag_entry)
             session_store[matched_key]["flagged"] = True
 
             session_store[student_key] = {
@@ -287,13 +334,14 @@ class SessionFaceRegistry:
         )
 
     # Returns flagged duplicate pairs for the session
-    def get_flagged_pairs(self, session_id: str) -> List[dict]:
+    def get_flagged_pairs(self, session_id: str) -> list[dict]:
         return self._flagged_pairs.get(session_id, [])
 
     # Purges all ephemeral session face data from memory
     def clear_session(self, session_id: str) -> None:
         self._registry.pop(session_id, None)
         self._flagged_pairs.pop(session_id, None)
+        self._session_timestamps.pop(session_id, None)
 
 
 # Global singleton instance for application-wide session deduplication

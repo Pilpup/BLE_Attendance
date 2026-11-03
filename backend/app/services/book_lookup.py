@@ -219,11 +219,6 @@ async def query_isbndb(isbn: str, client: httpx.AsyncClient) -> Optional[dict]:
 
 
 async def lookup_book_by_isbn(isbn: str) -> Optional[BookLookupResponse]:
-    """
-    Cascading book metadata lookup across Google Books API, OpenLibrary API,
-    and ISBNdb API. Merges metadata if one provider has description/overview
-    and another has classification/edition.
-    """
     clean_isbn = _normalize_isbn(isbn)
     if not clean_isbn:
         return None

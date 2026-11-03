@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# Application environment settings and secret configurations
 class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/ble_attendance"
     APP_ENV: str = "development"
@@ -10,7 +11,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 365
     FACULTY_SIGNUP_SECRET: str = "fff791e68ec68434901e256c293f0724"
 
-    # Email configuration for OTP Verification & 2FA
+    # Email configuration for OTP verification and two-factor authentication
     BREVO_API_KEY: str = ""
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587
@@ -19,14 +20,14 @@ class Settings(BaseSettings):
     SMTP_FROM_EMAIL: str = "noreply@college.edu"
     SMTP_FROM_NAME: str = "College Hub"
     OTP_EXPIRE_MINUTES: int = 5
-    OTP_CLEANUP_INTERVAL_SECONDS: int = 300  # 5 minutes
+    OTP_CLEANUP_INTERVAL_SECONDS: int = 300
 
-    # Book metadata lookup keys (optional; Google Books & OpenLibrary work without keys)
+    # Book metadata lookup keys
     GOOGLE_BOOKS_API_KEY: str = ""
     ISBNDB_API_KEY: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
+# Global application configuration instance
 settings = Settings()
-

@@ -1,13 +1,3 @@
-"""
-Demo catalogue seed for the Library module (Phase 4).
-
-The eight standard college textbooks mirror the Android in-memory sample
-(LibraryCatalogStore) so the app shows the same catalogue whether it is
-running against the live Neon database or in offline fallback mode.
-
-Called once from the app lifespan after the schema sync — a no-op whenever
-the catalogue already holds rows, so restarts never duplicate stock.
-"""
 import logging
 
 from sqlalchemy import func, select
@@ -17,6 +7,7 @@ from app.models.library import Book
 
 logger = logging.getLogger("uvicorn.error")
 
+# Standard textbook catalog seed data mirroring the mobile offline store
 SAMPLE_LIBRARY_BOOKS = [
     {
         "title": "Computer Networking: A Top-Down Approach",
@@ -93,8 +84,8 @@ SAMPLE_LIBRARY_BOOKS = [
 ]
 
 
+# Seeds the sample library catalogue once if empty
 async def seed_library_demo_books(db: AsyncSession) -> int:
-    """Seeds the sample catalogue once. Returns how many books were inserted."""
     existing = (await db.execute(select(func.count()).select_from(Book))).scalar_one()
     if existing > 0:
         return 0
