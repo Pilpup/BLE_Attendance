@@ -47,6 +47,9 @@ BEGIN
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS total_verified INTEGER DEFAULT 0;
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS total_spoofers INTEGER DEFAULT 0;
     ALTER TABLE attendance_sessions ALTER COLUMN status TYPE VARCHAR(50) USING status::text;
+    CREATE INDEX IF NOT EXISTS ix_attendance_sessions_session_token ON attendance_sessions(session_token);
+    CREATE INDEX IF NOT EXISTS ix_attendance_sessions_teacher_started ON attendance_sessions(teacher_id, started_at);
+    CREATE INDEX IF NOT EXISTS ix_attendance_sessions_course_started ON attendance_sessions(course_id, started_at);
 
     -- attendance_records
     ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS session_id UUID;
@@ -64,6 +67,8 @@ BEGIN
     ALTER TABLE attendance_records ALTER COLUMN verification_method TYPE VARCHAR(50) USING verification_method::text;
     ALTER TABLE attendance_records ALTER COLUMN ble_device_id TYPE VARCHAR(50);
     ALTER TABLE attendance_records ALTER COLUMN bridge_device_id TYPE VARCHAR(50);
+    CREATE INDEX IF NOT EXISTS ix_attendance_records_session_status ON attendance_records(session_id, status);
+    CREATE INDEX IF NOT EXISTS ix_attendance_records_session_student ON attendance_records(session_id, student_id);
 
     -- session_submissions (for multi-worker staging)
     CREATE TABLE IF NOT EXISTS session_submissions (

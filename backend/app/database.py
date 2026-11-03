@@ -48,14 +48,21 @@ connect_args = {
     "prepared_statement_cache_size": 0,
 } if is_postgres else ({"check_same_thread": False} if db_url.startswith("sqlite") else {})
 
-# Creates asynchronous SQLAlchemy database engine
-engine = create_async_engine(
-    db_url,
-    echo=(settings.APP_ENV == "development"),
-    connect_args=connect_args,
-    pool_pre_ping=True,
-    pool_recycle=300 if is_postgres else -1,
-)
+# Creates asynchronous SQLAlchemy database engine with pool tuning for burst loads
+engine_kwargs = {
+    "echo": (settings.APP_ENV == "development"),
+    "connect_args": connect_args,
+    "pool_pre_ping": True,
+}
+if is_postgres:
+    engine_kwargs.update({
+        "pool_size": 20,
+        "max_overflow": 40,
+        "pool_timeout": 15,
+        "pool_recycle": 300,
+    })
+
+engine = create_async_engine(db_url, **engine_kwargs)
 
 # Configures session factory for async database transactions
 AsyncSessionLocal = async_sessionmaker(
