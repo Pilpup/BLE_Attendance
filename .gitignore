@@ -1,19 +1,31 @@
+# Gradle & Android build artifacts
 *.iml
 .gradle
+local.properties
 /local.properties
-/.idea/
 .DS_Store
 build/
 **/build/
 /captures
 .externalNativeBuild
 .cxx
-local.properties
 *.hprof
+*.apk
+*.aab
+
+# IDE & Editor files
+.idea/
+/.idea/
+.vscode/
+
+# Python & testing cache
 *__pycache__/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+**/.pytest_cache/
+*.log
+
+# Secrets & Local Databases
 *.env
 *.db
-

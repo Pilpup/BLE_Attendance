@@ -12,7 +12,7 @@ from app.config import settings
 from app.database import AsyncSessionLocal, engine, is_postgres
 from app.models.attendance import Base, EmailOTP
 from app.routers import attendance, auth, library
-from seed import seed_library_demo_books
+from app.seed import seed_library_demo_books
 
 logger = logging.getLogger("uvicorn.error")
 

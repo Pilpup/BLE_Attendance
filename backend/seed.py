@@ -1,96 +1,19 @@
-import logging
+import asyncio
 
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.seed import (
+    SAMPLE_LIBRARY_BOOKS,
+    seed,
+    seed_attendance_demo_data,
+    seed_library_demo_books,
+)
 
-from app.models.library import Book
-
-logger = logging.getLogger("uvicorn.error")
-
-# Standard textbook catalog seed data mirroring the mobile offline store
-SAMPLE_LIBRARY_BOOKS = [
-    {
-        "title": "Computer Networking: A Top-Down Approach",
-        "author": "James F. Kurose, Keith W. Ross",
-        "isbn": "9780133594140",
-        "category": "CS",
-        "total_copies": 5,
-        "available_copies": 3,
-        "shelf_location": "Shelf 1-A",
-    },
-    {
-        "title": "Introduction to Algorithms",
-        "author": "Thomas H. Cormen et al.",
-        "isbn": "9780262042829",
-        "category": "CS",
-        "total_copies": 3,
-        "available_copies": 2,
-        "shelf_location": "Shelf 1-B",
-    },
-    {
-        "title": "Operating System Concepts",
-        "author": "Abraham Silberschatz",
-        "isbn": "9781118878762",
-        "category": "CS",
-        "total_copies": 4,
-        "available_copies": 0,
-        "shelf_location": "Shelf 1-C",
-    },
-    {
-        "title": "Linear Algebra Done Right",
-        "author": "Sheldon Axler",
-        "isbn": "9781441987153",
-        "category": "MATH",
-        "total_copies": 3,
-        "available_copies": 1,
-        "shelf_location": "Shelf 2-A",
-    },
-    {
-        "title": "Calculus: Early Transcendentals",
-        "author": "James Stewart",
-        "isbn": "9781285741550",
-        "category": "MATH",
-        "total_copies": 6,
-        "available_copies": 4,
-        "shelf_location": "Shelf 2-B",
-    },
-    {
-        "title": "University Physics with Modern Physics",
-        "author": "Hugh D. Young, Roger A. Freedman",
-        "isbn": "9780321973610",
-        "category": "PHYSICS",
-        "total_copies": 4,
-        "available_copies": 2,
-        "shelf_location": "Shelf 3-A",
-    },
-    {
-        "title": "Organic Chemistry",
-        "author": "Jonathan Clayden",
-        "isbn": "9780199642778",
-        "category": "CHEMISTRY",
-        "total_copies": 2,
-        "available_copies": 1,
-        "shelf_location": "Shelf 3-B",
-    },
-    {
-        "title": "Molecular Biology of the Cell",
-        "author": "Bruce Alberts et al.",
-        "isbn": "9780815344322",
-        "category": "BIO",
-        "total_copies": 3,
-        "available_copies": 0,
-        "shelf_location": "Shelf 4-A",
-    },
+# Re-exports seed functionality for root-level script execution and test compatibility
+__all__ = [
+    "SAMPLE_LIBRARY_BOOKS",
+    "seed",
+    "seed_attendance_demo_data",
+    "seed_library_demo_books",
 ]
 
-
-# Seeds the sample library catalogue once if empty
-async def seed_library_demo_books(db: AsyncSession) -> int:
-    existing = (await db.execute(select(func.count()).select_from(Book))).scalar_one()
-    if existing > 0:
-        return 0
-
-    db.add_all([Book(**spec) for spec in SAMPLE_LIBRARY_BOOKS])
-    await db.commit()
-    logger.info(f"Seeded library catalogue with {len(SAMPLE_LIBRARY_BOOKS)} sample books")
-    return len(SAMPLE_LIBRARY_BOOKS)
+if __name__ == "__main__":
+    asyncio.run(seed())
