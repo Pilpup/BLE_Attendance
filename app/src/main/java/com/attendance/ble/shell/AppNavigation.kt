@@ -38,11 +38,11 @@ fun AppNavigation(
         DashboardRegistry.register(LibraryDashboardCard)
     }
 
-    // Direct unauthenticated users to auth screen, authenticated to destination
-    val effectiveDestination = if (user != null) {
-        if (destination == Destination.AUTH) Destination.HOME else destination
-    } else {
-        Destination.AUTH
+    // Route unauthenticated users away from feature screens, allowing home and auth navigation
+    val effectiveDestination = when {
+        user != null -> if (destination == Destination.AUTH) Destination.HOME else destination
+        destination == Destination.ATTENDANCE || destination == Destination.LIBRARY -> Destination.AUTH
+        else -> destination
     }
 
     when (effectiveDestination) {
