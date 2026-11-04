@@ -15,10 +15,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
 import com.attendance.ble.shell.AppNavigation
-import androidx.core.view.WindowInsetsControllerCompat
+import com.college.core.ui.theme.CollegeAppTheme
+import com.college.core.ui.theme.AppTheme
 import com.college.feature.attendance.AttendanceScreenCallbacks
 import com.college.feature.attendance.ble.BleAdvertiser
 import com.college.feature.attendance.ble.BleConstants
@@ -50,15 +50,6 @@ class MainActivity : ComponentActivity() {
         // Initialize persistent session manager and server configuration
         com.college.core.network.SessionManager.default.init(applicationContext)
         com.college.core.network.ServerConfigManager.default.init(applicationContext)
-
-        // Deep Midnight / Obsidian status & navigation bars
-        val obsidianDark = android.graphics.Color.parseColor("#0B0F17")
-        window.statusBarColor = obsidianDark
-        window.navigationBarColor = obsidianDark
-        WindowInsetsControllerCompat(window, window.decorView).apply {
-            isAppearanceLightStatusBars = false
-            isAppearanceLightNavigationBars = false
-        }
 
         // Connect the feature ViewModel's radio callbacks to the hardware bridge
         viewModel.onStartBroadcasting = { token, txPower ->
@@ -153,11 +144,13 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
-            Surface(
-                modifier = Modifier.fillMaxSize(),
-                color = Color(0xFF0B0F17)
-            ) {
-                AppNavigation(viewModel = viewModel, callbacks = shellCallbacks)
+            CollegeAppTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = AppTheme.colors.background
+                ) {
+                    AppNavigation(viewModel = viewModel, callbacks = shellCallbacks)
+                }
             }
         }
     }

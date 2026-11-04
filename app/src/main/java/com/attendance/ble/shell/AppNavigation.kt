@@ -7,6 +7,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import com.college.core.model.SessionState
 import com.college.core.network.SessionManager
@@ -25,7 +26,9 @@ fun AppNavigation(
     viewModel: AttendanceViewModel,
     callbacks: AttendanceScreenCallbacks
 ) {
-    var destination by remember { mutableStateOf(Destination.HOME) }
+    var destination by rememberSaveable {
+        mutableStateOf(if (SessionManager.default.isLoggedIn) Destination.HOME else Destination.AUTH)
+    }
     val sessionState by SessionManager.default.state.collectAsState()
     val user = (sessionState as? SessionState.Authenticated)?.user
 
@@ -35,8 +38,12 @@ fun AppNavigation(
         DashboardRegistry.register(LibraryDashboardCard)
     }
 
-    // Fall back to home screen if user session is absent
-    val effectiveDestination = if (user != null) destination else Destination.HOME
+    // Direct unauthenticated users to auth screen, authenticated to destination
+    val effectiveDestination = if (user != null) {
+        if (destination == Destination.AUTH) Destination.HOME else destination
+    } else {
+        Destination.AUTH
+    }
 
     when (effectiveDestination) {
         Destination.HOME -> {
@@ -44,6 +51,7 @@ fun AppNavigation(
                 user = user,
                 onNavigate = { route ->
                     destination = when {
+                        route == "auth" -> Destination.AUTH
                         route.startsWith(AttendanceDashboardCard.NAV_ROUTE) -> {
                             if (route.contains("older")) {
                                 viewModel.teacherViewMode = TeacherViewMode.OLDER_SESSIONS
@@ -58,6 +66,16 @@ fun AppNavigation(
                         else -> Destination.HOME
                     }
                 },
+            )
+        }
+
+        Destination.AUTH -> {
+            BackHandler(enabled = true) {
+                destination = Destination.HOME
+            }
+            AuthScreen(
+                onBack = { destination = Destination.HOME },
+                onAuthSuccess = { destination = Destination.HOME }
             )
         }
 
@@ -103,4 +121,4 @@ fun AppNavigation(
     }
 }
 
-private enum class Destination { HOME, ATTENDANCE, LIBRARY }
+private enum class Destination { HOME, AUTH, ATTENDANCE, LIBRARY }

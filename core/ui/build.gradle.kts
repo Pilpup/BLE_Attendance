@@ -11,6 +11,7 @@ android {
 }
 dependencies {
     implementation(project(":core:model"))
+    implementation("androidx.core:core-ktx:1.12.0")
 
     // Jetpack Compose UI stack
     implementation("androidx.compose.ui:ui:1.6.0")
