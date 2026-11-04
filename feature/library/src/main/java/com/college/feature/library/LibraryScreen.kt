@@ -759,40 +759,40 @@ private fun BookRow(
     ) {
         Column(
             modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Summary Header Row
+            // Top Row: Avatar on left, Title & Author in middle, Chevron on right
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
+                verticalAlignment = Alignment.Top,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Book Cover Tile / Initial Badge
+                // Book Cover Tile / Initial Badge (Anchored at Top)
                 Box(
                     modifier = Modifier
-                        .size(46.dp)
+                        .size(44.dp)
                         .background(AppTheme.colors.primaryPurpleBg, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         text = book.title.take(1).uppercase(),
-                        fontSize = 19.sp,
+                        fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
                         color = AppTheme.colors.primaryPurple
                     )
                 }
 
-                // Title & Author & Tags
+                // Title & Author (fills all remaining width)
                 Column(
                     modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
                         text = book.title,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = AppTheme.colors.textPrimary,
-                        maxLines = if (expanded) Int.MAX_VALUE else 1,
+                        maxLines = if (expanded) Int.MAX_VALUE else 2,
                         overflow = TextOverflow.Ellipsis
                     )
                     Text(
@@ -802,84 +802,49 @@ private fun BookRow(
                         maxLines = if (expanded) Int.MAX_VALUE else 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(top = 2.dp)
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = AppTheme.colors.primaryPurpleBg
-                        ) {
-                            Text(
-                                text = book.category,
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = AppTheme.colors.primaryPurple,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
-                            )
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = AppTheme.colors.background,
-                            border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
-                        ) {
-                            Text(
-                                text = book.shelfLocation,
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = AppTheme.colors.textSecondary,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
-                            )
-                        }
-                        book.edition?.let { ed ->
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = AppTheme.colors.background,
-                                border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
-                            ) {
-                                Text(
-                                    text = ed,
-                                    fontSize = 10.5.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = AppTheme.colors.textSecondary,
-                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
-                                )
-                            }
-                        }
-                    }
                 }
 
-                // Right Availability & Chevron
-                Column(
-                    horizontalAlignment = Alignment.End,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (book.isAvailable) AppTheme.colors.successGreenBg else AppTheme.colors.warningAmberBg,
-                        border = BorderStroke(
-                            0.5.dp,
-                            if (book.isAvailable) AppTheme.colors.successGreen.copy(alpha = 0.4f) else AppTheme.colors.warningAmber.copy(alpha = 0.4f)
-                        )
-                    ) {
-                        Text(
-                            text = if (book.isAvailable)
-                                "${book.availableCopies} of ${book.totalCopies} Available"
-                            else
-                                "Checked Out",
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (book.isAvailable) AppTheme.colors.successGreen else AppTheme.colors.warningAmber,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
+                // Chevron expand/collapse indicator (Clean, takes minimal width)
+                Icon(
+                    imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                    contentDescription = if (expanded) "Collapse details" else "Expand details",
+                    tint = AppTheme.colors.textSecondary,
+                    modifier = Modifier
+                        .size(22.dp)
+                        .padding(top = 2.dp)
+                )
+            }
 
-                    Icon(
-                        imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
-                        contentDescription = if (expanded) "Collapse details" else "Expand details",
-                        tint = AppTheme.colors.primaryPurple,
-                        modifier = Modifier.size(20.dp)
+            // Sub-row: Availability (clean text, NO BOX) & Category Pill
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 56.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                // Availability text - clean text without red/green/orange box
+                Text(
+                    text = if (book.isAvailable)
+                        "${book.availableCopies} of ${book.totalCopies} Available"
+                    else
+                        "Checked Out",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (book.isAvailable) AppTheme.colors.successGreen else AppTheme.colors.warningAmber
+                )
+
+                // Category tag
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = AppTheme.colors.primaryPurpleBg
+                ) {
+                    Text(
+                        text = book.category,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = AppTheme.colors.primaryPurple,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                     )
                 }
             }
@@ -888,7 +853,7 @@ private fun BookRow(
             if (expanded) {
                 HorizontalDivider(color = AppTheme.colors.divider)
 
-                // Metadata tags row: ISBN, Shelf, Total
+                // Metadata tags: Shelf, Edition, ISBN, Total Copies
                 Column(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -904,12 +869,11 @@ private fun BookRow(
                             border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
                         ) {
                             Text(
-                                text = "ISBN: ${book.isbn}",
+                                text = "Shelf: ${book.shelfLocation}",
                                 fontSize = 11.5.sp,
-                                fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.Medium,
                                 color = AppTheme.colors.textPrimary,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                             )
                         }
 
@@ -919,11 +883,28 @@ private fun BookRow(
                             border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
                         ) {
                             Text(
-                                text = "Shelf: ${book.shelfLocation}",
+                                text = "ISBN: ${book.isbn}",
                                 fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.Medium,
                                 color = AppTheme.colors.textPrimary,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
+
+                    book.edition?.let { ed ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = AppTheme.colors.background,
+                            border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
+                        ) {
+                            Text(
+                                text = "Edition: $ed",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = AppTheme.colors.textSecondary,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                             )
                         }
                     }
