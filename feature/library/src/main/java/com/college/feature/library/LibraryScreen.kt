@@ -73,6 +73,7 @@ import com.college.core.model.User
 import com.college.core.ui.components.AppCardGroup
 import com.college.core.ui.components.AppDivider
 import com.college.core.ui.components.AppHeader
+import com.college.core.ui.components.AppSearchPill
 import com.college.core.ui.components.AppTextField
 import com.college.core.ui.components.appScrollbar
 import com.college.core.ui.components.appTextFieldColors
@@ -92,7 +93,7 @@ import com.college.feature.library.viewmodel.LibraryViewModel
  */
 @Composable
 fun LibraryScreen(
-    user: User,
+    @Suppress("UNUSED_PARAMETER") user: User,
     onBack: () -> Unit
 ) {
     val viewModel: LibraryViewModel = viewModel()
@@ -107,8 +108,17 @@ fun LibraryScreen(
     val activeTab = tabsEnabled.firstOrNull { it == currentTab } ?: LibraryTab.CATALOGUE
 
     var showAddBookDialog by remember { mutableStateOf(false) }
+    var showSearchDialog by remember { mutableStateOf(false) }
     var editingBook by remember { mutableStateOf<Book?>(null) }
     var toolsMenuExpanded by remember { mutableStateOf(false) }
+
+    if (showSearchDialog) {
+        LibrarySearchDialog(
+            searchQuery = viewModel.searchQuery,
+            onSearchQueryChange = { viewModel.searchQuery = it },
+            onDismiss = { showSearchDialog = false }
+        )
+    }
 
     if (showAddBookDialog) {
         AddEditBookDialog(
@@ -195,19 +205,12 @@ fun LibraryScreen(
 
                     // In landscape, combine title directly in top bar to save vertical space
                     if (isLandscape) {
-                        Column {
-                            Text(
-                                text = "Library",
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = AppTheme.colors.textPrimary
-                            )
-                            Text(
-                                text = "${user.name} • ${user.primaryRole?.name ?: "GUEST"}",
-                                fontSize = 11.5.sp,
-                                color = AppTheme.colors.textSecondary
-                            )
-                        }
+                        Text(
+                            text = "Library",
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = AppTheme.colors.textPrimary
+                        )
                     }
                 }
 
@@ -218,14 +221,14 @@ fun LibraryScreen(
                     ) {
                         Surface(
                             shape = RoundedCornerShape(12.dp),
-                            color = AppTheme.colors.primaryPurpleBg,
-                            border = BorderStroke(1.dp, AppTheme.colors.primaryPurple.copy(alpha = 0.5f))
+                            color = AppTheme.colors.surface,
+                            border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
                         ) {
                             Text(
                                 text = "DEV",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = AppTheme.colors.primaryPurple,
+                                color = AppTheme.colors.textSecondary,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                             )
                         }
@@ -267,8 +270,7 @@ fun LibraryScreen(
             if (!isLandscape) {
                 AppHeader(
                     title = "Library",
-                    subtitle = "${user.name} • ${user.primaryRole?.name ?: "GUEST"}",
-                    modifier = Modifier.padding(top = 0.dp, bottom = 2.dp)
+                    modifier = Modifier.padding(top = 0.dp, bottom = 4.dp)
                 )
             }
 
@@ -345,11 +347,11 @@ fun LibraryScreen(
             ) {
                 when (activeTab) {
                     LibraryTab.CATALOGUE -> CatalogueTabContent(
-                        viewModel = viewModel,
-                        canAddBook = viewModel.canUseStaffTools
+                        viewModel = viewModel
                     )
                     LibraryTab.STAFF_INVENTORY -> StaffInventoryTabContent(
                         viewModel = viewModel,
+                        onAddBook = { showAddBookDialog = true },
                         onEdit = { editingBook = it }
                     )
                     LibraryTab.DEV_MAINTENANCE -> DevMaintenanceTabContent(viewModel)
@@ -357,8 +359,19 @@ fun LibraryScreen(
             }
         }
 
-        // Floating "Add Book" Pill pinned at bottom center
-        if (viewModel.canUseStaffTools && activeTab != LibraryTab.DEV_MAINTENANCE) {
+        // Floating search pill pinned at bottom center in Catalogue
+        if (activeTab == LibraryTab.CATALOGUE) {
+            AppSearchPill(
+                placeholder = if (viewModel.searchQuery.isBlank()) "Search" else viewModel.searchQuery,
+                onSearchClick = { showSearchDialog = true },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 16.dp)
+            )
+        }
+
+        // Floating "Add Book" Pill pinned at bottom center in Staff Inventory
+        if (viewModel.canUseStaffTools && activeTab == LibraryTab.STAFF_INVENTORY) {
             Surface(
                 onClick = { showAddBookDialog = true },
                 shape = RoundedCornerShape(22.dp),
@@ -398,62 +411,56 @@ fun LibraryScreen(
 
 @Composable
 private fun CatalogueTabContent(
-    viewModel: LibraryViewModel,
-    canAddBook: Boolean
+    viewModel: LibraryViewModel
 ) {
+    val scrollState = rememberScrollState()
+    val books = viewModel.filteredBooks
+
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .appScrollbar(scrollState)
+            .verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Search bar
-        AppTextField(
-            value = viewModel.searchQuery,
-            onValueChange = { viewModel.searchQuery = it },
-            leadingIcon = {
-                Icon(
-                    imageVector = Icons.Default.Search,
-                    contentDescription = "Search",
-                    tint = AppTheme.colors.textSecondary,
-                    modifier = Modifier.size(20.dp)
-                )
-            },
-            trailingIcon = {
-                if (viewModel.searchQuery.isNotEmpty()) {
-                    IconButton(onClick = { viewModel.searchQuery = "" }) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Clear",
-                            tint = AppTheme.colors.textSecondary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-            },
-            placeholder = {
+        // Active search filter chip if query is present
+        if (viewModel.searchQuery.isNotBlank()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(AppTheme.colors.surface)
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
-                    text = "Search title, author or ISBN…",
-                    fontSize = 14.sp,
-                    color = AppTheme.colors.textSecondary
+                    text = "Filter: \"${viewModel.searchQuery}\"",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = AppTheme.colors.textPrimary
                 )
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(22.dp),
-            colors = appTextFieldColors(),
-            modifier = Modifier.fillMaxWidth()
-        )
+                Text(
+                    text = "Clear",
+                    fontSize = 12.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = AppTheme.colors.primaryPurple,
+                    modifier = Modifier.clickable { viewModel.searchQuery = "" }
+                )
+            }
+        }
 
-        val books = viewModel.filteredBooks
         if (books.isEmpty()) {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f),
+                    .padding(vertical = 24.dp),
                 shape = RoundedCornerShape(22.dp),
                 color = AppTheme.colors.surface,
                 border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
             ) {
                 Box(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.padding(32.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(
@@ -481,16 +488,20 @@ private fun CatalogueTabContent(
                 }
             }
         } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = PaddingValues(bottom = if (canAddBook) 76.dp else 16.dp)
-            ) {
-                items(books, key = { it.id }) { book ->
+            // Single big island for all books separated by background color divider
+            AppCardGroup {
+                books.forEachIndexed { index, book ->
+                    if (index > 0) {
+                        HorizontalDivider(
+                            color = AppTheme.colors.background,
+                            thickness = 1.dp
+                        )
+                    }
+                    val serialNo = LibraryCatalogStore.books.indexOfFirst { it.id == book.id }
+                        .let { if (it >= 0) it + 1 else index + 1 }
                     BookRow(
                         book = book,
+                        serialNo = serialNo,
                         staffControls = false,
                         isReserving = viewModel.isReserving(book.id),
                         onReserve = { viewModel.reserveBook(book.id) }
@@ -498,6 +509,9 @@ private fun CatalogueTabContent(
                 }
             }
         }
+
+        // Space to clear floating search pill
+        Spacer(modifier = Modifier.height(76.dp))
     }
 }
 
@@ -508,10 +522,17 @@ private fun CatalogueTabContent(
 @Composable
 private fun StaffInventoryTabContent(
     viewModel: LibraryViewModel,
+    onAddBook: () -> Unit,
     onEdit: (Book) -> Unit
 ) {
+    val scrollState = rememberScrollState()
+    val books = LibraryCatalogStore.books.toList()
+
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .appScrollbar(scrollState)
+            .verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         // Inventory Overview Card
@@ -520,7 +541,7 @@ private fun StaffInventoryTabContent(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
                     text = "INVENTORY OVERVIEW",
@@ -539,47 +560,65 @@ private fun StaffInventoryTabContent(
                         value = "${viewModel.catalogueSize - viewModel.availableCount}"
                     )
                 }
-                HorizontalDivider(color = AppTheme.colors.divider)
-                Text(
-                    text = "Use ✎ to edit details/copies and 🗑 to remove a holding. New titles come in via 'Add Book'.",
-                    fontSize = 12.sp,
-                    color = AppTheme.colors.textMuted
-                )
+                HorizontalDivider(color = AppTheme.colors.background, thickness = 1.dp)
+
+                Button(
+                    onClick = onAddBook,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.primaryPurple)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Add Book",
+                        tint = Color.White,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Add Book to Inventory",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
             }
         }
 
-        val books = LibraryCatalogStore.books.toList()
         if (books.isEmpty()) {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f),
+                    .padding(vertical = 24.dp),
                 shape = RoundedCornerShape(22.dp),
                 color = AppTheme.colors.surface,
                 border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
             ) {
                 Box(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.padding(32.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "Catalogue is empty. Use the 'Add Book' button to start intake.",
+                        text = "Catalogue is empty. Use 'Add Book to Inventory' above to start intake.",
                         color = AppTheme.colors.textMuted,
                         fontSize = 13.5.sp
                     )
                 }
             }
         } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = PaddingValues(bottom = 76.dp)
-            ) {
-                items(books, key = { it.id }) { book ->
+            // Single big island for all inventory books
+            AppCardGroup {
+                books.forEachIndexed { index, book ->
+                    if (index > 0) {
+                        HorizontalDivider(
+                            color = AppTheme.colors.background,
+                            thickness = 1.dp
+                        )
+                    }
+                    val serialNo = index + 1
                     BookRow(
                         book = book,
+                        serialNo = serialNo,
                         staffControls = true,
                         isReserving = viewModel.isReserving(book.id),
                         onReserve = { viewModel.reserveBook(book.id) },
@@ -589,6 +628,9 @@ private fun StaffInventoryTabContent(
                 }
             }
         }
+
+        // Space to clear floating Add Book button
+        Spacer(modifier = Modifier.height(76.dp))
     }
 }
 
@@ -634,14 +676,14 @@ private fun DevMaintenanceTabContent(viewModel: LibraryViewModel) {
             ) {
                 Surface(
                     shape = RoundedCornerShape(10.dp),
-                    color = AppTheme.colors.primaryPurpleBg,
-                    border = BorderStroke(1.dp, AppTheme.colors.primaryPurple.copy(alpha = 0.5f))
+                    color = AppTheme.colors.surface,
+                    border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
                 ) {
                     Text(
                         text = "DEV · CATALOGUE MAINTENANCE",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
-                        color = AppTheme.colors.primaryPurple,
+                        color = AppTheme.colors.textSecondary,
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                     )
                 }
@@ -769,6 +811,7 @@ private fun DiagnosticItem(
 @Composable
 private fun BookRow(
     book: Book,
+    serialNo: Int,
     staffControls: Boolean = false,
     isReserving: Boolean = false,
     onReserve: () -> Unit,
@@ -777,338 +820,325 @@ private fun BookRow(
 ) {
     var expanded by remember { mutableStateOf(false) }
 
-    Surface(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(22.dp))
             .clickable { expanded = !expanded }
-            .animateContentSize(),
-        shape = RoundedCornerShape(22.dp),
-        color = AppTheme.colors.surface,
-        border = BorderStroke(
-            1.dp,
-            if (expanded) AppTheme.colors.primaryPurple.copy(alpha = 0.6f) else AppTheme.colors.surfaceBorder
-        ),
-        shadowElevation = if (AppTheme.colors.isDark || !expanded) 0.dp else 2.dp
+            .animateContentSize()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+        // Top Row: Avatar on left, Title & Author in middle, Availability & Chevron on right
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Top Row: Avatar on left, Title & Author in middle, Chevron on right
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.Top,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            // Book Serial Badge: purple if available, orange if checked out
+            Box(
+                modifier = Modifier
+                    .size(42.dp)
+                    .background(
+                        color = if (book.isAvailable) AppTheme.colors.primaryPurple else AppTheme.colors.accentOrange,
+                        shape = CircleShape
+                    ),
+                contentAlignment = Alignment.Center
             ) {
-                // Book Cover Tile / Initial Badge (Anchored at Top)
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .background(AppTheme.colors.primaryPurpleBg, CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = book.title.take(1).uppercase(),
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = AppTheme.colors.primaryPurple
-                    )
-                }
+                Text(
+                    text = String.format("%02d", serialNo),
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            }
 
-                // Title & Author (fills all remaining width)
+            // Title & Author (fills remaining space)
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = book.title,
+                    fontSize = 15.5.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = AppTheme.colors.textPrimary,
+                    maxLines = if (expanded) Int.MAX_VALUE else 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = book.author,
+                    fontSize = 12.5.sp,
+                    color = AppTheme.colors.textSecondary,
+                    maxLines = if (expanded) Int.MAX_VALUE else 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            // Right Column: Availability & Chevron indicator
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = if (book.isAvailable)
+                        "${book.availableCopies} of ${book.totalCopies} Available"
+                    else
+                        "Checked Out",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (book.isAvailable) AppTheme.colors.primaryPurple else AppTheme.colors.accentOrange,
+                    textAlign = TextAlign.End
+                )
+
+                Icon(
+                    imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                    contentDescription = if (expanded) "Collapse details" else "Expand details",
+                    tint = AppTheme.colors.textSecondary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+
+        // Expanded Details Section ("collapse box")
+        if (expanded) {
+            HorizontalDivider(color = AppTheme.colors.background, thickness = 1.dp)
+
+            // Metadata Section: Category, Shelf, ISBN, Edition (responsive FlowRow)
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Category Pill (subtle neutral surface style)
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = AppTheme.colors.background,
+                        border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
+                    ) {
+                        Text(
+                            text = book.category,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = AppTheme.colors.textPrimary,
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                        )
+                    }
+
+                    // Shelf Location Pill
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = AppTheme.colors.background,
+                        border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
+                    ) {
+                        Text(
+                            text = "Shelf: ${book.shelfLocation}",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = AppTheme.colors.textPrimary,
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                        )
+                    }
+
+                    // ISBN Pill
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = AppTheme.colors.background,
+                        border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
+                    ) {
+                        Text(
+                            text = "ISBN: ${book.isbn}",
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Medium,
+                            color = AppTheme.colors.textPrimary,
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                        )
+                    }
+
+                    // Edition Pill (if present)
+                    book.edition?.let { ed ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = AppTheme.colors.background,
+                            border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
+                        ) {
+                            Text(
+                                text = "Edition: $ed",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = AppTheme.colors.textSecondary,
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Overview section
+            if (!book.overview.isNullOrBlank()) {
                 Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Text(
-                        text = book.title,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = AppTheme.colors.textPrimary,
-                        maxLines = if (expanded) Int.MAX_VALUE else 2,
-                        overflow = TextOverflow.Ellipsis
+                        text = "Overview",
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = AppTheme.colors.textPrimary
                     )
                     Text(
-                        text = book.author,
+                        text = book.overview,
                         fontSize = 12.5.sp,
                         color = AppTheme.colors.textSecondary,
-                        maxLines = if (expanded) Int.MAX_VALUE else 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                // Right Column: Availability (right side) & Chevron indicator
-                Column(
-                    horizontalAlignment = Alignment.End,
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text(
-                        text = if (book.isAvailable)
-                            "${book.availableCopies} of ${book.totalCopies} Available"
-                        else
-                            "Checked Out",
-                        fontSize = 11.5.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (book.isAvailable) AppTheme.colors.successGreen else AppTheme.colors.warningAmber,
-                        textAlign = TextAlign.End
-                    )
-
-                    Icon(
-                        imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
-                        contentDescription = if (expanded) "Collapse details" else "Expand details",
-                        tint = AppTheme.colors.textSecondary,
-                        modifier = Modifier.size(20.dp)
+                        lineHeight = 17.sp
                     )
                 }
             }
 
-            // Expanded Details Section ("collapse box")
-            if (expanded) {
-                HorizontalDivider(color = AppTheme.colors.divider)
-
-                // Metadata Section: Category, Shelf, ISBN, Edition (responsive FlowRow)
+            // Table of Contents section
+            if (!book.tableOfContents.isNullOrBlank()) {
                 Column(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        // Category Pill (moved into the collapse box)
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = AppTheme.colors.primaryPurpleBg
-                        ) {
-                            Text(
-                                text = book.category,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = AppTheme.colors.primaryPurple,
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
-                            )
-                        }
-
-                        // Shelf Location Pill
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = AppTheme.colors.background,
-                            border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
-                        ) {
-                            Text(
-                                text = "Shelf: ${book.shelfLocation}",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = AppTheme.colors.textPrimary,
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
-                            )
-                        }
-
-                        // ISBN Pill
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = AppTheme.colors.background,
-                            border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
-                        ) {
-                            Text(
-                                text = "ISBN: ${book.isbn}",
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Medium,
-                                color = AppTheme.colors.textPrimary,
-                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
-                            )
-                        }
-
-                        // Edition Pill (if present)
-                        book.edition?.let { ed ->
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = AppTheme.colors.background,
-                                border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
-                            ) {
-                                Text(
-                                    text = "Edition: $ed",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = AppTheme.colors.textSecondary,
-                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    Text(
-                        text = "Inventory: ${book.availableCopies} available on shelf · ${book.totalCopies} total copies in collection",
-                        fontSize = 12.sp,
-                        color = AppTheme.colors.textSecondary
-                    )
-                }
-
-                // Overview section
-                if (!book.overview.isNullOrBlank()) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.MenuBook,
+                            contentDescription = null,
+                            tint = AppTheme.colors.textSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
                         Text(
-                            text = "Overview",
+                            text = "Table of Contents",
                             fontSize = 12.5.sp,
                             fontWeight = FontWeight.Bold,
-                            color = AppTheme.colors.primaryPurple
-                        )
-                        Text(
-                            text = book.overview,
-                            fontSize = 12.5.sp,
-                            color = AppTheme.colors.textSecondary,
-                            lineHeight = 17.sp
+                            color = AppTheme.colors.textPrimary
                         )
                     }
-                }
 
-                // Table of Contents section
-                if (!book.tableOfContents.isNullOrBlank()) {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = AppTheme.colors.background,
+                        border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.MenuBook,
-                                contentDescription = null,
-                                tint = AppTheme.colors.primaryPurple,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Text(
-                                text = "Table of Contents",
-                                fontSize = 12.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = AppTheme.colors.primaryPurple
-                            )
-                        }
-
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = AppTheme.colors.background,
-                            border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(5.dp)
-                            ) {
-                                book.tableOfContents.lines().filter { it.isNotBlank() }.forEach { line ->
-                                    Row(
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        verticalAlignment = Alignment.Top
-                                    ) {
-                                        Text(
-                                            text = "•",
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = AppTheme.colors.primaryPurple
-                                        )
-                                        Text(
-                                            text = line.trim(),
-                                            fontSize = 12.sp,
-                                            color = AppTheme.colors.textPrimary,
-                                            lineHeight = 16.sp
-                                        )
-                                    }
+                            book.tableOfContents.lines().filter { it.isNotBlank() }.forEach { line ->
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.Top
+                                ) {
+                                    Text(
+                                        text = "•",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = AppTheme.colors.textSecondary
+                                    )
+                                    Text(
+                                        text = line.trim(),
+                                        fontSize = 12.sp,
+                                        color = AppTheme.colors.textPrimary,
+                                        lineHeight = 16.sp
+                                    )
                                 }
                             }
                         }
                     }
                 }
+            }
 
-                // Actions Footer
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (staffControls) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                onClick = { onEdit(book) },
-                                shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(1.dp, AppTheme.colors.primaryPurple.copy(alpha = 0.6f)),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Edit,
-                                    contentDescription = null,
-                                    tint = AppTheme.colors.primaryPurple,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "Edit",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = AppTheme.colors.primaryPurple
-                                )
-                            }
-                            OutlinedButton(
-                                onClick = { onDelete(book) },
-                                shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(1.dp, AppTheme.colors.dangerRed.copy(alpha = 0.6f)),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.Delete,
-                                    contentDescription = null,
-                                    tint = AppTheme.colors.dangerRed,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "Delete",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = AppTheme.colors.dangerRed
-                                )
-                            }
-                        }
-                    } else {
-                        Spacer(modifier = Modifier.width(1.dp))
-                    }
-
-                    if (book.isAvailable) {
-                        Button(
-                            onClick = onReserve,
-                            enabled = !isReserving,
+            // Actions Footer
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (staffControls) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { onEdit(book) },
                             shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = AppTheme.colors.primaryPurple,
-                                contentColor = Color.White
-                            ),
-                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                            border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                         ) {
-                            if (isReserving) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(14.dp),
-                                    strokeWidth = 2.dp,
-                                    color = Color.White
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Reserving…", fontSize = 12.sp, color = Color.White)
-                            } else {
-                                Text("Reserve Copy", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                            }
+                            Icon(
+                                imageVector = Icons.Filled.Edit,
+                                contentDescription = null,
+                                tint = AppTheme.colors.textPrimary,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Edit",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = AppTheme.colors.textPrimary
+                            )
                         }
-                    } else {
-                        Text(
-                            text = "All Copies Checked Out",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = AppTheme.colors.warningAmber
-                        )
+                        OutlinedButton(
+                            onClick = { onDelete(book) },
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, AppTheme.colors.dangerRed.copy(alpha = 0.6f)),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Delete,
+                                contentDescription = null,
+                                tint = AppTheme.colors.dangerRed,
+                                modifier = Modifier.size(15.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "Delete",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = AppTheme.colors.dangerRed
+                            )
+                        }
                     }
+                } else {
+                    Spacer(modifier = Modifier.width(1.dp))
+                }
+
+                if (book.isAvailable) {
+                    Button(
+                        onClick = onReserve,
+                        enabled = !isReserving,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = AppTheme.colors.primaryPurple,
+                            contentColor = Color.White
+                        ),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
+                        if (isReserving) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 2.dp,
+                                color = Color.White
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Reserving…", fontSize = 12.sp, color = Color.White)
+                        } else {
+                            Text("Reserve Copy", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                    }
+                } else {
+                    Text(
+                        text = "All Copies Checked Out",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = AppTheme.colors.accentOrange
+                    )
                 }
             }
         }
@@ -1444,6 +1474,85 @@ private fun AddEditBookDialog(
         dismissButton = {
             TextButton(onClick = onDismiss) {
                 Text("Cancel", color = AppTheme.colors.textSecondary)
+            }
+        }
+    )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Catalogue Search Dialog
+// ─────────────────────────────────────────────────────────────────────────────
+
+@Composable
+private fun LibrarySearchDialog(
+    searchQuery: String,
+    onSearchQueryChange: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = AppTheme.colors.surface,
+        titleContentColor = AppTheme.colors.textPrimary,
+        textContentColor = AppTheme.colors.textPrimary,
+        shape = RoundedCornerShape(24.dp),
+        title = {
+            AppTextField(
+                value = searchQuery,
+                onValueChange = onSearchQueryChange,
+                placeholder = { Text("Search title, author or ISBN…") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "Search",
+                        tint = AppTheme.colors.textSecondary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                },
+                trailingIcon = {
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { onSearchQueryChange("") }) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Clear",
+                                tint = AppTheme.colors.textSecondary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                },
+                singleLine = true,
+                colors = appTextFieldColors(),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        text = {
+            Text(
+                text = if (searchQuery.isBlank())
+                    "Type title, author, or ISBN to filter the catalogue."
+                else
+                    "Filtering books matching \"$searchQuery\"",
+                fontSize = 13.sp,
+                color = AppTheme.colors.textSecondary
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onDismiss,
+                colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.primaryPurple),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text("Done", color = Color.White, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            if (searchQuery.isNotEmpty()) {
+                TextButton(onClick = {
+                    onSearchQueryChange("")
+                    onDismiss()
+                }) {
+                    Text("Clear Filter", color = AppTheme.colors.textSecondary)
+                }
             }
         }
     )
