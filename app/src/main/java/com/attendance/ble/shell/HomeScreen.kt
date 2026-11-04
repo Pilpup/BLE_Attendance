@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -54,11 +55,9 @@ import com.college.core.network.SessionManager
 import com.college.core.ui.components.AppCardGroup
 import com.college.core.ui.components.AppCardItem
 import com.college.core.ui.components.AppDivider
-import com.college.core.ui.components.AppHeader
 import com.college.core.ui.components.AppProfileCard
 import com.college.core.ui.components.AppSearchPill
 import com.college.core.ui.components.AppTextField
-import com.college.core.ui.components.appScrollbar
 import com.college.core.ui.components.appTextFieldColors
 import com.college.core.ui.theme.AppTheme
 import com.college.feature.attendance.AttendanceDashboardCard
@@ -82,27 +81,37 @@ fun HomeScreen(
         Role.DEVELOPER -> "Developer"
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(AppTheme.colors.background)
             .systemBarsPadding()
     ) {
-        val homeScrollState = rememberScrollState()
+        val screenHeight = maxHeight
+        val viewingAreaHeight = (screenHeight * 0.28f).coerceIn(180.dp, 250.dp)
 
-        // Scrollable content stack
+        // Main content column shifted down for one-handed reach without scrolling
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .appScrollbar(homeScrollState)
-                .verticalScroll(homeScrollState)
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // Header title
-            AppHeader(
-                title = "College Hub"
-            )
+            // Viewing area displaying College Hub title
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(viewingAreaHeight),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "College Hub",
+                    fontSize = 30.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = AppTheme.colors.textPrimary,
+                    letterSpacing = (-0.6).sp
+                )
+            }
 
             // User account profile card opening auth screen or details modal
             AppProfileCard(
@@ -128,7 +137,7 @@ fun HomeScreen(
                 AppCardItem(
                     icon = Icons.AutoMirrored.Filled.FactCheck,
                     iconTint = Color.White,
-                    iconBg = AppTheme.colors.infoBlue,
+                    iconBg = AppTheme.colors.accentOrange,
                     title = "Attendance",
                     onClick = {
                         if (user != null) {
@@ -144,7 +153,7 @@ fun HomeScreen(
                 AppCardItem(
                     icon = Icons.AutoMirrored.Filled.MenuBook,
                     iconTint = Color.White,
-                    iconBg = AppTheme.colors.successGreen,
+                    iconBg = AppTheme.colors.primaryPurple,
                     title = "Library",
                     onClick = {
                         if (user != null) {
@@ -535,18 +544,18 @@ private data class SearchAction(
 @Composable
 @ReadOnlyComposable
 private fun roleBadgeColor(role: Role): Color = when (role) {
-    Role.TEACHER -> AppTheme.colors.infoBlue
-    Role.STUDENT -> AppTheme.colors.successGreen
-    Role.STAFF -> AppTheme.colors.warningAmber
-    Role.DEVELOPER -> AppTheme.colors.primaryPurple
+    Role.TEACHER -> AppTheme.colors.primaryPurple
+    Role.STUDENT -> AppTheme.colors.accentOrange
+    Role.STAFF -> AppTheme.colors.infoBlue
+    Role.DEVELOPER -> AppTheme.colors.warningAmber
 }
 
 // Active role badge background container color
 @Composable
 @ReadOnlyComposable
 private fun roleBadgeBg(role: Role): Color = when (role) {
-    Role.TEACHER -> AppTheme.colors.infoBlueBg
-    Role.STUDENT -> AppTheme.colors.successGreenBg
-    Role.STAFF -> AppTheme.colors.warningAmberBg
-    Role.DEVELOPER -> AppTheme.colors.primaryPurpleBg
+    Role.TEACHER -> AppTheme.colors.primaryPurpleBg
+    Role.STUDENT -> AppTheme.colors.accentOrangeBg
+    Role.STAFF -> AppTheme.colors.infoBlueBg
+    Role.DEVELOPER -> AppTheme.colors.warningAmberBg
 }

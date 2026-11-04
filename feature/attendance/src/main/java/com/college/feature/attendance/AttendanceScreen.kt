@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.college.core.model.Role
 import com.college.core.model.User
+import com.college.core.ui.theme.AppTheme
 import com.college.feature.attendance.network.AttendanceApiClient
 import com.college.feature.attendance.network.RegisterRequest
 import com.college.feature.attendance.ui.theme.*
@@ -53,6 +54,38 @@ fun AttendanceScreen(
     onBack: () -> Unit
 ) {
     val isTeacherPrivileged = user.canTakeAttendance()
+
+    // Student attendance portal
+    if (user.hasRole(Role.STUDENT)) {
+        BackHandler {
+            callbacks.onStopStudentScanning()
+            onBack()
+        }
+        StudentSection(
+            user = user,
+            studentPhase = viewModel.studentPhase,
+            detectedSessionId = viewModel.detectedSessionId,
+            sessionSalt = viewModel.detectedSessionSalt,
+            studentId = viewModel.studentShortId,
+            studentStatusMessage = viewModel.studentStatusMessage,
+            lastFocusReport = viewModel.lastFocusReport,
+            capturedFacePayload = viewModel.capturedFaceBase64,
+            auditedRecord = viewModel.auditedRecord,
+            onRefreshAudit = { viewModel.refreshAuditStatus() },
+            isRefreshingAudit = viewModel.isRefreshingAudit,
+            onChallengeResult = { hit, total -> viewModel.recordChallengeResult(hit, total) },
+            onBehavioralReport = { report -> viewModel.recordBehavioralReport(report) },
+            onFaceCaptured = { b64, bytes -> viewModel.recordFaceCapture(b64, bytes) },
+            onStartScanning = callbacks.onStartStudentScanning,
+            onStopScanning = callbacks.onStopStudentScanning,
+            onNext = { viewModel.proceedStudentToNext() },
+            onDone = {
+                callbacks.onStopStudentScanning()
+                onBack()
+            }
+        )
+        return
+    }
 
     if (viewModel.showAuthDialog) {
         AuthServerDialog(
@@ -95,7 +128,7 @@ fun AttendanceScreen(
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Back",
-                            tint = textPrimary
+                            tint = AppTheme.colors.textPrimary
                         )
                     }
                 },
@@ -116,7 +149,7 @@ fun AttendanceScreen(
                         text = screenTitle,
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp,
-                        color = textPrimary
+                        color = AppTheme.colors.textPrimary
                     )
                 },
                 actions = {
@@ -124,26 +157,26 @@ fun AttendanceScreen(
                     Surface(
                         onClick = { viewModel.showAuthDialog = true },
                         shape = RoundedCornerShape(10.dp),
-                        color = cardBg,
-                        border = BorderStroke(1.dp, cardBorder)
+                        color = AppTheme.colors.surface,
+                        border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
                     ) {
                         Text(
                             text = "ID: $displayDeviceId",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace,
-                            color = textSecondary,
+                            color = AppTheme.colors.textSecondary,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
                         )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = appBg,
-                    titleContentColor = textPrimary
+                    containerColor = AppTheme.colors.background,
+                    titleContentColor = AppTheme.colors.textPrimary
                 )
             )
         },
-        containerColor = appBg
+        containerColor = AppTheme.colors.background
     ) { paddingValues ->
         Box(
             modifier = Modifier
@@ -173,6 +206,7 @@ fun AttendanceScreen(
                 )
 
                 user.hasRole(Role.STUDENT) -> StudentSection(
+                    user = user,
                     studentPhase = viewModel.studentPhase,
                     detectedSessionId = viewModel.detectedSessionId,
                     sessionSalt = viewModel.detectedSessionSalt,
@@ -188,19 +222,20 @@ fun AttendanceScreen(
                     onFaceCaptured = { b64, bytes -> viewModel.recordFaceCapture(b64, bytes) },
                     onStartScanning = callbacks.onStartStudentScanning,
                     onStopScanning = callbacks.onStopStudentScanning,
-                    onNext = { viewModel.proceedStudentToNext() }
+                    onNext = { viewModel.proceedStudentToNext() },
+                    onDone = onBack
                 )
 
                 else -> Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(cardBg, RoundedCornerShape(16.dp))
-                        .border(1.dp, cardBorder, RoundedCornerShape(16.dp)),
+                        .background(AppTheme.colors.surface, RoundedCornerShape(16.dp))
+                        .border(1.dp, AppTheme.colors.surfaceBorder, RoundedCornerShape(16.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
                         "Attendance is available for students and teachers.",
-                        color = textMuted,
+                        color = AppTheme.colors.textMuted,
                         fontSize = 14.sp
                     )
                 }

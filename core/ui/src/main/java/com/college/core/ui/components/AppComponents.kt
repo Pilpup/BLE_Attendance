@@ -62,6 +62,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
@@ -97,10 +98,10 @@ fun AppHeader(
     ) {
         Text(
             text = title,
-            fontSize = 26.sp,
+            fontSize = 30.sp,
             fontWeight = FontWeight.Bold,
             color = AppTheme.colors.textPrimary,
-            letterSpacing = (-0.5).sp
+            letterSpacing = (-0.6).sp
         )
         if (subtitle != null) {
             Spacer(modifier = Modifier.height(3.dp))
@@ -518,10 +519,26 @@ fun AppTextField(
         val layout = textLayoutResult ?: return@LaunchedEffect
         if (viewportWidthPx <= 0) return@LaunchedEffect
 
-        val cursorIndex = textFieldValue.selection.start.coerceIn(0, textFieldValue.text.length)
+        // Guard against stale text layout result when typing fast
+        val transformed = visualTransformation.filter(AnnotatedString(textFieldValue.text))
+        val layoutLength = layout.layoutInput.text.length
+        if (layoutLength != transformed.text.length) {
+            return@LaunchedEffect
+        }
+
+        val rawCursor = textFieldValue.selection.start.coerceIn(0, textFieldValue.text.length)
+        val transformedCursor = try {
+            transformed.offsetMapping.originalToTransformed(rawCursor).coerceIn(0, layoutLength)
+        } catch (_: Throwable) {
+            rawCursor.coerceIn(0, layoutLength)
+        }
 
         while (isActive) {
-            val cursorRect = layout.getCursorRect(cursorIndex)
+            val cursorRect = try {
+                layout.getCursorRect(transformedCursor)
+            } catch (_: Throwable) {
+                break
+            }
             val cursorX = cursorRect.left
             val viewStart = scrollState.value.toFloat()
             val viewEnd = viewStart + viewportWidthPx

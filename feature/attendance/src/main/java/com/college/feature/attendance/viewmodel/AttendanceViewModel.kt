@@ -945,10 +945,32 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         detectedSessionSalt = "------"
         studentPhase = StudentPhase.LISTENING_FOR_TEACHER
         onStartScanning?.invoke()
+
+        // Auto-simulate teacher beacon in debug mode after 2.5s if no physical beacon detected
+        debugSimulationJob?.cancel()
+        debugSimulationJob = viewModelScope.launch {
+            delay(2500L)
+            if (studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
+                simulateTeacherBeacon()
+            }
+        }
+    }
+
+    // Debug simulation job for testing student check-in without physical beacon
+    private var debugSimulationJob: Job? = null
+
+    // Simulates teacher beacon reception for local UI debugging without physical teacher beacon
+    fun simulateTeacherBeacon(sessionId: String = "DEMO-88", salt: String = "SALT99") {
+        detectedSessionId = sessionId
+        detectedSessionSalt = salt
+        studentPhase = StudentPhase.PROBING_NEIGHBORS
+        startStudentDiscoveryWindow()
     }
 
     // Student scanning stop
     fun stopStudentScanning() {
+        debugSimulationJob?.cancel()
+        debugSimulationJob = null
         stopPeerBatchUpdates()
         studentTimer?.cancel()
         studentTimer = null
@@ -962,6 +984,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Reset student attendance session back to standby
     fun resetStudentSession() {
+        debugSimulationJob?.cancel()
+        debugSimulationJob = null
         stopPeerBatchUpdates()
         studentTimer?.cancel()
         studentTimer = null

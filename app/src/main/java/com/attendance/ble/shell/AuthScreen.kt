@@ -213,7 +213,7 @@ fun AuthScreen(
                                 authErrorText = null
                             },
                             shape = RoundedCornerShape(12.dp),
-                            color = if (isRegisterMode) AppTheme.colors.primaryPurple else Color.Transparent,
+                            color = if (isRegisterMode) AppTheme.colors.accentOrange else Color.Transparent,
                             modifier = Modifier.weight(1f)
                         ) {
                             Box(
@@ -474,8 +474,8 @@ fun AuthScreen(
                         enabled = canSubmit,
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = AppTheme.colors.primaryPurple,
-                            disabledContainerColor = AppTheme.colors.primaryPurple.copy(alpha = 0.35f)
+                            containerColor = AppTheme.colors.accentOrange,
+                            disabledContainerColor = AppTheme.colors.accentOrange.copy(alpha = 0.35f)
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -556,8 +556,8 @@ fun AuthScreen(
                         enabled = !isAuthLoading && canRegister,
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = AppTheme.colors.primaryPurple,
-                            disabledContainerColor = AppTheme.colors.primaryPurple.copy(alpha = 0.35f)
+                            containerColor = AppTheme.colors.accentOrange,
+                            disabledContainerColor = AppTheme.colors.accentOrange.copy(alpha = 0.35f)
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
@@ -590,7 +590,7 @@ fun AuthScreen(
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Continue as Guest (Student)", color = AppTheme.colors.primaryPurple, fontSize = 14.sp)
+                    Text("Continue as Guest (Student)", color = AppTheme.colors.accentOrange, fontSize = 14.sp)
                 }
             } else {
                 // OTP Step Header

@@ -41,6 +41,7 @@ import com.college.feature.attendance.telemetry.TapEvent
 import kotlinx.coroutines.delay
 import java.util.Random
 import kotlin.math.absoluteValue
+import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
 
@@ -52,33 +53,33 @@ data class ReflexTarget(
     val isGolden: Boolean = false,
     val isTapped: Boolean = false,
     val spawnTimeMillis: Long = 0L,
-    val lifetimeMillis: Long = 1200L
+    val lifetimeMillis: Long = 900L
 )
 
 // Pre-computed radial gradient color stops for orb glow rendering
-private val EmeraldStops = arrayOf(
-    0.00f to Color(0xFF6BFFD0),
-    0.14f to Color(0xFF00F5A0),
-    0.28f to Color(0x8000F5A0),
-    0.44f to Color(0x2E00F5A0),
-    0.62f to Color(0x0A00F5A0),
+private val PurpleStops = arrayOf(
+    0.00f to Color(0xFFC4B5FD),
+    0.14f to Color(0xFF8B5CF6),
+    0.28f to Color(0x808B5CF6),
+    0.44f to Color(0x2E8B5CF6),
+    0.62f to Color(0x0A8B5CF6),
     0.80f to Color.Transparent,
     1.00f to Color.Transparent
 )
 
 private val SolarStops = arrayOf(
-    0.00f to Color(0xFFFFB74D),
-    0.14f to Color(0xFFFF9100),
-    0.28f to Color(0x80FF9100),
-    0.44f to Color(0x2EFF9100),
-    0.62f to Color(0x0AFF9100),
+    0.00f to Color(0xFFFFD180),
+    0.14f to Color(0xFFFF7A00),
+    0.28f to Color(0x80FF7A00),
+    0.44f to Color(0x2EFF7A00),
+    0.62f to Color(0x0AFF7A00),
     0.80f to Color.Transparent,
     1.00f to Color.Transparent
 )
 
 private val AmbientGlowColors = listOf(
-    Color(0x1400F5A0),
-    Color(0x0600F5A0),
+    Color(0x187033FF),
+    Color(0x067033FF),
     Color.Transparent
 )
 
@@ -128,7 +129,7 @@ private fun generateNewTarget(
         }
     }
 
-    val isGolden = (rng.nextFloat() < 0.12f)
+    val isGolden = (rng.nextFloat() < 0.55f)
     return ReflexTarget(
         id = id,
         relX = bestX,
@@ -136,7 +137,7 @@ private fun generateNewTarget(
         isGolden = isGolden,
         isTapped = false,
         spawnTimeMillis = System.currentTimeMillis(),
-        lifetimeMillis = 1200L
+        lifetimeMillis = 900L
     )
 }
 
@@ -166,8 +167,8 @@ private fun replenishTargets(
             existingTargets = living + newOrbs,
             rng = rng
         ).copy(
-            spawnTimeMillis = nowTime + (k * 80L),
-            lifetimeMillis = 1200L
+            spawnTimeMillis = nowTime + (k * 70L),
+            lifetimeMillis = 900L
         )
         newOrbs.add(newOrb)
     }
@@ -222,7 +223,7 @@ fun OrbPoppingGame(
         val now = System.currentTimeMillis()
         for (i in 0 until 6) {
             val t = generateNewTarget(id = i, existingTargets = initial, rng = rng)
-            initial.add(t.copy(spawnTimeMillis = now + (i * 80L), lifetimeMillis = 1200L))
+            initial.add(t.copy(spawnTimeMillis = now + (i * 70L), lifetimeMillis = 900L))
         }
         activeTargets = initial
         totalTargetsSpawned = initial.size
@@ -275,7 +276,7 @@ fun OrbPoppingGame(
     }
 
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
-        val targetSize = 120.dp
+        val targetSize = 150.dp
         val availW = (maxWidth - targetSize - 16.dp).coerceAtLeast(0.dp)
         val availH = (maxHeight - targetSize - 16.dp).coerceAtLeast(0.dp)
 
@@ -302,8 +303,10 @@ fun OrbPoppingGame(
         ) {
             activeTargets.forEach { target ->
                 key(target.id) {
-                    val xDp = availW * target.relX
-                    val yDp = availH * target.relY
+                    val driftX = (sin((spiritPhase * 2f + target.id * 1.4f).toDouble()).toFloat() * 12f).dp
+                    val driftY = (cos((spiritPhase * 2f + target.id * 1.9f).toDouble()).toFloat() * 12f).dp
+                    val xDp = (availW * target.relX + driftX).coerceIn(0.dp, availW)
+                    val yDp = (availH * target.relY + driftY).coerceIn(0.dp, availH)
 
                     Box(
                         modifier = Modifier
@@ -369,7 +372,7 @@ fun OrbPoppingGame(
                                     if (target.isTapped || targetAge < 0L || targetAge >= target.lifetimeMillis) {
                                         alpha = 0f
                                     } else {
-                                        val fadeDuration = 220f
+                                        val fadeDuration = 160f
                                         val spawnProgress = (targetAge.toFloat() / fadeDuration).coerceIn(0f, 1f)
                                         val despawnProgress = ((target.lifetimeMillis - targetAge).toFloat() / fadeDuration).coerceIn(0f, 1f)
                                         val rawFade = spawnProgress * despawnProgress
@@ -387,7 +390,7 @@ fun OrbPoppingGame(
                         ) {
                             val center = Offset(size.width / 2f, size.height / 2f)
                             val maxRadius = size.width / 2f
-                            val stops = if (target.isGolden) SolarStops else EmeraldStops
+                            val stops = if (target.isGolden) SolarStops else PurpleStops
 
                             drawCircle(
                                 brush = Brush.radialGradient(
