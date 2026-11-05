@@ -5,6 +5,7 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -62,6 +64,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalConfiguration
@@ -358,23 +362,36 @@ fun LibraryScreen(
         // Floating search bar pinned at bottom center in Catalogue (types directly, aligns with keyboard)
         if (activeTab == LibraryTab.CATALOGUE) {
             val keyboardController = LocalSoftwareKeyboardController.current
+            val focusRequester = remember { FocusRequester() }
+            val screenWidth = LocalConfiguration.current.screenWidthDp.dp
+            val minPillWidth = (screenWidth / 3f).coerceIn(125.dp, 200.dp)
+            val maxPillWidth = (screenWidth - 32.dp).coerceAtLeast(minPillWidth)
+
             Surface(
-                shape = RoundedCornerShape(22.dp),
+                shape = RoundedCornerShape(26.dp),
                 color = AppTheme.colors.surface,
                 border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
                 shadowElevation = if (AppTheme.colors.isDark) 0.dp else 4.dp,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
                     .padding(horizontal = 16.dp)
                     .imePadding()
                     .padding(bottom = 16.dp)
+                    .animateContentSize()
+                    .widthIn(min = minPillWidth, max = maxPillWidth)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {
+                        focusRequester.requestFocus()
+                    }
             ) {
                 Row(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .height(52.dp)
+                        .padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.Search,
@@ -382,11 +399,13 @@ fun LibraryScreen(
                         tint = AppTheme.colors.textSecondary,
                         modifier = Modifier.size(20.dp)
                     )
-                    Spacer(modifier = Modifier.width(10.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
                     BasicTextField(
                         value = viewModel.searchQuery,
                         onValueChange = { viewModel.searchQuery = it },
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .focusRequester(focusRequester),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                         keyboardActions = KeyboardActions(onSearch = { keyboardController?.hide() }),
@@ -397,27 +416,30 @@ fun LibraryScreen(
                         ),
                         cursorBrush = SolidColor(AppTheme.colors.primaryPurple),
                         decorationBox = { innerTextField ->
-                            if (viewModel.searchQuery.isEmpty()) {
-                                Text(
-                                    text = "Search title, author or ISBN…",
-                                    color = AppTheme.colors.textSecondary,
-                                    fontSize = 14.5.sp,
-                                    fontWeight = FontWeight.Normal
-                                )
+                            Box(contentAlignment = Alignment.CenterStart) {
+                                if (viewModel.searchQuery.isEmpty()) {
+                                    Text(
+                                        text = "Search",
+                                        color = AppTheme.colors.textSecondary,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Normal
+                                    )
+                                }
+                                innerTextField()
                             }
-                            innerTextField()
                         }
                     )
                     if (viewModel.searchQuery.isNotEmpty()) {
+                        Spacer(modifier = Modifier.width(6.dp))
                         IconButton(
                             onClick = { viewModel.searchQuery = "" },
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(22.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Close,
                                 contentDescription = "Clear",
                                 tint = AppTheme.colors.textSecondary,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(16.dp)
                             )
                         }
                     }
