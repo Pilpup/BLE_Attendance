@@ -9,6 +9,10 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -42,8 +46,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,15 +66,19 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.college.core.model.User
 import com.college.core.ui.theme.AppTheme
+import com.college.feature.attendance.camera.PassiveFaceCaptureManager
 import com.college.feature.attendance.game.GameTelemetryEngine
 import com.college.feature.attendance.game.OrbPoppingGame
 import com.college.feature.attendance.network.AttendanceRecordItem
@@ -97,6 +107,52 @@ internal fun StudentSection(
     onNext: () -> Unit = {},
     onDone: () -> Unit = {}
 ) {
+    // Passive face capture — wired like commit ca858fa/6baa2f0 (headless front camera, sharpest frame)
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val faceCaptureManager = remember { PassiveFaceCaptureManager(context, lifecycleOwner) }
+    var liveFaceSharpness by remember { mutableDoubleStateOf(0.0) }
+    var lastCapturedFaceBase64 by remember { mutableStateOf<String?>(null) }
+
+    val permissionsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { perms ->
+        if (perms[Manifest.permission.CAMERA] == true && studentPhase == StudentPhase.PROBING_NEIGHBORS) {
+            faceCaptureManager.startCapture { sharpness ->
+                liveFaceSharpness = sharpness
+            }
+        }
+    }
+
+    DisposableEffect(studentPhase) {
+        if (studentPhase == StudentPhase.PROBING_NEIGHBORS) {
+            val hasCamera = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+            val hasAudio = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+
+            val missing = mutableListOf<String>()
+            if (!hasCamera) missing.add(Manifest.permission.CAMERA)
+            if (!hasAudio) missing.add(Manifest.permission.RECORD_AUDIO)
+
+            if (missing.isNotEmpty()) {
+                permissionsLauncher.launch(missing.toTypedArray())
+            } else {
+                faceCaptureManager.startCapture { sharpness ->
+                    liveFaceSharpness = sharpness
+                }
+            }
+        }
+        onDispose {
+            faceCaptureManager.release()
+            liveFaceSharpness = 0.0
+        }
+    }
+
     val isScanning = studentPhase == StudentPhase.LISTENING_FOR_TEACHER ||
             studentPhase == StudentPhase.PROBING_NEIGHBORS
 
@@ -119,6 +175,7 @@ internal fun StudentSection(
             isGameOver = false
             targetsHit = 0
             totalTargetsSpawned = orbTotalTargets
+            lastCapturedFaceBase64 = null
         }
     }
 
@@ -174,9 +231,26 @@ internal fun StudentSection(
                 letterSpacing = (-0.5).sp
             )
 
-            // Clean minimal hit counter
+            // Clean minimal hit counter + face readiness badge (HUD from the old capture flow)
             if (studentPhase == StudentPhase.PROBING_NEIGHBORS && !isGameOver) {
                 Spacer(modifier = Modifier.weight(1f))
+                Surface(
+                    shape = CircleShape,
+                    color = if (liveFaceSharpness > 40.0) AppTheme.colors.successGreenBg else AppTheme.colors.warningAmberBg,
+                    border = BorderStroke(
+                        1.dp,
+                        if (liveFaceSharpness > 40.0) AppTheme.colors.successGreen else AppTheme.colors.warningAmber
+                    ),
+                    modifier = Modifier.padding(end = 12.dp)
+                ) {
+                    Text(
+                        text = if (liveFaceSharpness > 40.0) "Face: Ready" else "Face: Position",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (liveFaceSharpness > 40.0) AppTheme.colors.successGreen else AppTheme.colors.warningAmber,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
                 Text(
                     text = "$targetsHit / $orbTotalTargets",
                     fontSize = 15.sp,
@@ -205,6 +279,11 @@ internal fun StudentSection(
                         },
                         onComplete = { taps, expired, totalGoal ->
                             isGameOver = true
+                            val faceResult = faceCaptureManager.stopAndExtractResult()
+                            if (faceResult != null) {
+                                lastCapturedFaceBase64 = faceResult.base64
+                                onFaceCaptured(faceResult.base64, faceResult.bytes)
+                            }
                             val report = GameTelemetryEngine.analyze(
                                 taps = taps,
                                 expired = expired,
