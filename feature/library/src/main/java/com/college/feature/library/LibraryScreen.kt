@@ -26,6 +26,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -60,9 +63,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -72,7 +79,6 @@ import com.college.core.model.User
 import com.college.core.ui.components.AppCardGroup
 import com.college.core.ui.components.AppDivider
 import com.college.core.ui.components.AppHeader
-import com.college.core.ui.components.AppSearchPill
 import com.college.core.ui.components.AppTextField
 import com.college.core.ui.components.appScrollbar
 import com.college.core.ui.components.appTextFieldColors
@@ -107,17 +113,8 @@ fun LibraryScreen(
     val activeTab = tabsEnabled.firstOrNull { it == currentTab } ?: LibraryTab.CATALOGUE
 
     var showAddBookDialog by remember { mutableStateOf(false) }
-    var showSearchDialog by remember { mutableStateOf(false) }
     var editingBook by remember { mutableStateOf<Book?>(null) }
     var toolsMenuExpanded by remember { mutableStateOf(false) }
-
-    if (showSearchDialog) {
-        LibrarySearchDialog(
-            searchQuery = viewModel.searchQuery,
-            onSearchQueryChange = { viewModel.searchQuery = it },
-            onDismiss = { showSearchDialog = false }
-        )
-    }
 
     if (showAddBookDialog) {
         AddEditBookDialog(
@@ -174,6 +171,7 @@ fun LibraryScreen(
             .fillMaxSize()
             .background(AppTheme.colors.background)
             .systemBarsPadding()
+            .imePadding()
     ) {
         Column(
             modifier = Modifier
@@ -358,15 +356,72 @@ fun LibraryScreen(
             }
         }
 
-        // Floating search pill pinned at bottom center in Catalogue
+        // Floating search bar pinned at bottom center in Catalogue (types directly, aligns with keyboard)
         if (activeTab == LibraryTab.CATALOGUE) {
-            AppSearchPill(
-                placeholder = if (viewModel.searchQuery.isBlank()) "Search" else viewModel.searchQuery,
-                onSearchClick = { showSearchDialog = true },
+            val keyboardController = LocalSoftwareKeyboardController.current
+            Surface(
+                shape = RoundedCornerShape(22.dp),
+                color = AppTheme.colors.surface,
+                border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+                shadowElevation = if (AppTheme.colors.isDark) 0.dp else 4.dp,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 16.dp)
-            )
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = "Search",
+                        tint = AppTheme.colors.textSecondary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    BasicTextField(
+                        value = viewModel.searchQuery,
+                        onValueChange = { viewModel.searchQuery = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { keyboardController?.hide() }),
+                        textStyle = TextStyle(
+                            color = AppTheme.colors.textPrimary,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Normal
+                        ),
+                        cursorBrush = SolidColor(AppTheme.colors.primaryPurple),
+                        decorationBox = { innerTextField ->
+                            if (viewModel.searchQuery.isEmpty()) {
+                                Text(
+                                    text = "Search title, author or ISBN…",
+                                    color = AppTheme.colors.textSecondary,
+                                    fontSize = 14.5.sp,
+                                    fontWeight = FontWeight.Normal
+                                )
+                            }
+                            innerTextField()
+                        }
+                    )
+                    if (viewModel.searchQuery.isNotEmpty()) {
+                        IconButton(
+                            onClick = { viewModel.searchQuery = "" },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Clear",
+                                tint = AppTheme.colors.textSecondary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+            }
         }
 
         // Floating "Add Book" Pill pinned at bottom center in Staff Inventory
@@ -422,33 +477,6 @@ private fun CatalogueTabContent(
             .verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Active search filter chip if query is present
-        if (viewModel.searchQuery.isNotBlank()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(AppTheme.colors.surface)
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "Filter: \"${viewModel.searchQuery}\"",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = AppTheme.colors.textPrimary
-                )
-                Text(
-                    text = "Clear",
-                    fontSize = 12.5.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = AppTheme.colors.primaryPurple,
-                    modifier = Modifier.clickable { viewModel.searchQuery = "" }
-                )
-            }
-        }
-
         if (books.isEmpty()) {
             Surface(
                 modifier = Modifier
@@ -1162,7 +1190,7 @@ private fun AddEditBookDialog(
     var category by remember { mutableStateOf(initial?.category ?: "") }
     var copiesText by remember { mutableStateOf(initial?.totalCopies?.toString() ?: "1") }
     var availableText by remember { mutableStateOf(initial?.availableCopies?.toString() ?: "1") }
-    var shelfText by remember { mutableStateOf(initial?.shelfLocation ?: "Main Hall") }
+    var shelfText by remember { mutableStateOf(initial?.shelfLocation ?: "") }
     var edition by remember { mutableStateOf(initial?.edition ?: "") }
     var overview by remember { mutableStateOf(initial?.overview ?: "") }
     var tableOfContents by remember { mutableStateOf(initial?.tableOfContents ?: "") }
@@ -1226,7 +1254,7 @@ private fun AddEditBookDialog(
                     .fillMaxWidth()
                     .imePadding()
                     .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 // Barcode scanner trigger at top of intake dialog
                 if (!isEdit) {
@@ -1278,7 +1306,7 @@ private fun AddEditBookDialog(
                 AppTextField(
                     value = title,
                     onValueChange = { title = it },
-                    label = { Text("Book Name / Title *") },
+                    placeholder = { Text("Book Title *") },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
                     colors = appTextFieldColors(),
@@ -1289,7 +1317,7 @@ private fun AddEditBookDialog(
                 AppTextField(
                     value = author,
                     onValueChange = { author = it },
-                    label = { Text("Author(s) *") },
+                    placeholder = { Text("Author *") },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
                     colors = appTextFieldColors(),
@@ -1300,7 +1328,7 @@ private fun AddEditBookDialog(
                 AppTextField(
                     value = isbn,
                     onValueChange = { isbn = it },
-                    label = { Text("ISBN * (10 or 13 digits)") },
+                    placeholder = { Text("ISBN *") },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
                     trailingIcon = {
@@ -1353,7 +1381,7 @@ private fun AddEditBookDialog(
                 AppTextField(
                     value = edition,
                     onValueChange = { edition = it },
-                    label = { Text("Edition (e.g. 3rd Edition, 2022)") },
+                    placeholder = { Text("Edition") },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
                     colors = appTextFieldColors(),
@@ -1364,7 +1392,7 @@ private fun AddEditBookDialog(
                 AppTextField(
                     value = shelfText,
                     onValueChange = { shelfText = it },
-                    label = { Text("Index / Shelf Location (e.g. Shelf 2-A, TK5105)") },
+                    placeholder = { Text("Shelf Location") },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
                     colors = appTextFieldColors(),
@@ -1375,7 +1403,7 @@ private fun AddEditBookDialog(
                 AppTextField(
                     value = category,
                     onValueChange = { category = it },
-                    label = { Text("Category * (e.g. CS, MATH, PHYSICS, BIO)") },
+                    placeholder = { Text("Category *") },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
                     colors = appTextFieldColors(),
@@ -1386,7 +1414,7 @@ private fun AddEditBookDialog(
                 AppTextField(
                     value = overview,
                     onValueChange = { overview = it },
-                    label = { Text("Overview / Description") },
+                    placeholder = { Text("Overview") },
                     singleLine = false,
                     shape = RoundedCornerShape(12.dp),
                     colors = appTextFieldColors(),
@@ -1397,7 +1425,7 @@ private fun AddEditBookDialog(
                 AppTextField(
                     value = tableOfContents,
                     onValueChange = { tableOfContents = it },
-                    label = { Text("Table of Contents (Chapters / Sections)") },
+                    placeholder = { Text("Table of Contents") },
                     singleLine = false,
                     shape = RoundedCornerShape(12.dp),
                     colors = appTextFieldColors(),
@@ -1409,7 +1437,7 @@ private fun AddEditBookDialog(
                     AppTextField(
                         value = copiesText,
                         onValueChange = { copiesText = it.filter { c -> c.isDigit() } },
-                        label = { Text(if (isEdit) "Total Copies *" else "Copies *") },
+                        placeholder = { Text(if (isEdit) "Total Copies *" else "Copies *") },
                         singleLine = true,
                         shape = RoundedCornerShape(12.dp),
                         colors = appTextFieldColors(),
@@ -1419,7 +1447,7 @@ private fun AddEditBookDialog(
                         AppTextField(
                             value = availableText,
                             onValueChange = { availableText = it.filter { c -> c.isDigit() } },
-                            label = { Text("Available *") },
+                            placeholder = { Text("Available *") },
                             singleLine = true,
                             shape = RoundedCornerShape(12.dp),
                             colors = appTextFieldColors(),
@@ -1467,81 +1495,3 @@ private fun AddEditBookDialog(
     )
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Catalogue Search Dialog
-// ─────────────────────────────────────────────────────────────────────────────
-
-@Composable
-private fun LibrarySearchDialog(
-    searchQuery: String,
-    onSearchQueryChange: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = AppTheme.colors.surface,
-        titleContentColor = AppTheme.colors.textPrimary,
-        textContentColor = AppTheme.colors.textPrimary,
-        shape = RoundedCornerShape(24.dp),
-        title = {
-            AppTextField(
-                value = searchQuery,
-                onValueChange = onSearchQueryChange,
-                placeholder = { Text("Search title, author or ISBN…") },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = "Search",
-                        tint = AppTheme.colors.textSecondary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { onSearchQueryChange("") }) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Clear",
-                                tint = AppTheme.colors.textSecondary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                },
-                singleLine = true,
-                colors = appTextFieldColors(),
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier.fillMaxWidth()
-            )
-        },
-        text = {
-            Text(
-                text = if (searchQuery.isBlank())
-                    "Type title, author, or ISBN to filter the catalogue."
-                else
-                    "Filtering books matching \"$searchQuery\"",
-                fontSize = 13.sp,
-                color = AppTheme.colors.textSecondary
-            )
-        },
-        confirmButton = {
-            Button(
-                onClick = onDismiss,
-                colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.primaryPurple),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text("Done", color = Color.White, fontWeight = FontWeight.Bold)
-            }
-        },
-        dismissButton = {
-            if (searchQuery.isNotEmpty()) {
-                TextButton(onClick = {
-                    onSearchQueryChange("")
-                    onDismiss()
-                }) {
-                    Text("Clear Filter", color = AppTheme.colors.textSecondary)
-                }
-            }
-        }
-    )
-}
