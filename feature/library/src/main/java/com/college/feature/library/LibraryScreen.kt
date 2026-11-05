@@ -80,7 +80,6 @@ import com.college.core.ui.components.AppCardGroup
 import com.college.core.ui.components.AppDivider
 import com.college.core.ui.components.AppHeader
 import com.college.core.ui.components.AppTextField
-import com.college.core.ui.components.appScrollbar
 import com.college.core.ui.components.appTextFieldColors
 import com.college.core.ui.theme.AppTheme
 import com.college.feature.library.model.Book
@@ -477,7 +476,6 @@ private fun CatalogueTabContent(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .appScrollbar(scrollState)
             .verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -569,7 +567,6 @@ private fun StaffInventoryTabContent(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .appScrollbar(scrollState)
             .verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -700,7 +697,6 @@ private fun DevMaintenanceTabContent(viewModel: LibraryViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .appScrollbar(scrollState)
             .verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
