@@ -706,7 +706,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             startPollingForAudit(sessId)
                         }
                         if (!keepRadioActive) {
-                            onStopScanning?.invoke()
                             onStopBroadcasting?.invoke()
                         }
                     }
@@ -723,7 +722,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             if (!keepRadioActive || studentDiscoverySecondsRemaining == 0) {
                                 studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                                 startPollingForAudit(sessId)
-                                onStopScanning?.invoke()
+                                onStartScanning?.invoke()
                                 onStopBroadcasting?.invoke()
                             }
                         } else {
@@ -731,7 +730,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                 studentStatusMessage = detail
                                 studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                                 startPollingForAudit(sessId)
-                                onStopScanning?.invoke()
+                                onStartScanning?.invoke()
                                 onStopBroadcasting?.invoke()
                             } else {
                                 android.util.Log.w("AttendanceViewModel", "Intermediate peer sync pending: ${result.code} - $detail")
@@ -742,7 +741,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         if (!keepRadioActive || studentDiscoverySecondsRemaining == 0) {
                             studentStatusMessage = "Connection failed: Please verify classroom Wi-Fi connection"
                             studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-                            onStopScanning?.invoke()
+                            onStartScanning?.invoke()
                             onStopBroadcasting?.invoke()
                         } else {
                             android.util.Log.w("AttendanceViewModel", "Intermediate peer sync network error: ${result.throwable.message}")
@@ -1356,7 +1355,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         studentTimer?.cancel()
         studentTimer = null
         studentDiscoverySecondsRemaining = 0
-        val sessId = detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: ""
+        val sessId = detectedSessionId.takeIf { it.isNotBlank() && it != "----" } ?: backendSessionId ?: ""
         if (hasLocalDefenseFailed) {
             if (studentStatusMessage == null) {
                 studentStatusMessage = "Attendance not confirmed. Please see instructor."
@@ -1420,7 +1419,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             if (parts.size >= 3 && parts[2] == "OK") {
                 val targetId = parts[1].trim()
                 val isMatch = targetId.equals(studentShortId, ignoreCase = true) ||
-                        targetId.equals(currentRollNumber, ignoreCase = true)
+                        targetId.equals(currentRollNumber, ignoreCase = true) ||
+                        (targetId.isNotEmpty() && currentRollNumber.endsWith(targetId, ignoreCase = true))
                 if (isMatch) {
                     stopPeerBatchUpdates()
                     studentPhase = StudentPhase.VERIFIED_PRESENT
@@ -1550,7 +1550,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             val currentUserId = SessionManager.default.currentUser?.id
                             val myRecord = session.records?.firstOrNull { rec ->
                                 rec.bleDeviceId.equals(studentShortId, ignoreCase = true) ||
+                                rec.bleDeviceId.endsWith(studentShortId, ignoreCase = true) ||
                                 (rec.rollNumber != null && rec.rollNumber.equals(currentRollNumber, ignoreCase = true)) ||
+                                (rec.rollNumber != null && rec.rollNumber.endsWith(studentShortId, ignoreCase = true)) ||
                                 (currentUserId != null && rec.studentId == currentUserId)
                             }
                             withContext(Dispatchers.Main) {
@@ -1581,7 +1583,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                     onStartScanning?.invoke()
                                 }
                             }
-                            break
+                            if (myRecord?.status == "VERIFIED_PRESENT") {
+                                break
+                            }
                         } else if (session?.status == "CANCELLED") {
                             withContext(Dispatchers.Main) {
                                 studentPhase = StudentPhase.UNVERIFIED_FLAGGED
