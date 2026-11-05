@@ -18,27 +18,16 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.college.core.model.User
 import com.college.core.ui.DashboardCard
-import com.college.feature.library.ui.theme.cardBg
-import com.college.feature.library.ui.theme.cardBorder
-import com.college.feature.library.ui.theme.childPurple
-import com.college.feature.library.ui.theme.childPurpleBg
-import com.college.feature.library.ui.theme.libraryMint
-import com.college.feature.library.ui.theme.libraryMintBg
-import com.college.feature.library.ui.theme.textPrimary
-import com.college.feature.library.ui.theme.textSecondary
+import com.college.core.ui.theme.AppTheme
 import com.college.feature.library.viewmodel.LibraryCatalogStore
 
-/**
- * Library feature's contribution to the Home Dashboard.
- * Visible to every user; carries a staff badge for STAFF/DEVELOPER and a
- * LIVE count read straight from the shared in-memory catalogue, so seeds,
- * staff intakes and removals are reflected without ever opening the screen.
- */
+// Displays library catalogue card on home dashboard with live book count
 object LibraryDashboardCard : DashboardCard {
 
     override val id: String = "library_card"
@@ -59,9 +48,9 @@ object LibraryDashboardCard : DashboardCard {
 
         Surface(
             onClick = { onNavigate(NAV_ROUTE) },
-            shape = RoundedCornerShape(16.dp),
-            color = cardBg,
-            border = BorderStroke(1.dp, cardBorder),
+            shape = RoundedCornerShape(22.dp),
+            color = AppTheme.colors.surface,
+            border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(
@@ -70,40 +59,41 @@ object LibraryDashboardCard : DashboardCard {
             ) {
                 Box(
                     modifier = Modifier
-                        .size(48.dp)
-                        .background(libraryMintBg, CircleShape),
+                        .size(46.dp)
+                        .background(AppTheme.colors.successGreen, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         Icons.Filled.LocalLibrary,
                         contentDescription = null,
-                        tint = libraryMint
+                        tint = Color.White,
+                        modifier = Modifier.size(24.dp)
                     )
                 }
                 Column(modifier = Modifier.padding(start = 14.dp).weight(1f)) {
                     Text(
                         text = "Library Catalogue",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = textPrimary
+                        fontSize = 17.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = AppTheme.colors.textPrimary
                     )
                     Text(
                         text = subtitle,
                         fontSize = 13.sp,
-                        color = textSecondary
+                        color = AppTheme.colors.textSecondary
                     )
                     if (user.canAccessStaffTools()) {
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = childPurpleBg,
-                            border = BorderStroke(0.5.dp, childPurple.copy(alpha = 0.5f)),
+                            color = AppTheme.colors.primaryPurpleBg,
+                            border = BorderStroke(0.5.dp, AppTheme.colors.primaryPurple.copy(alpha = 0.5f)),
                             modifier = Modifier.padding(top = 6.dp)
                         ) {
                             Text(
                                 text = "Staff Inventory Access",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                color = childPurple,
+                                color = AppTheme.colors.primaryPurple,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                             )
                         }

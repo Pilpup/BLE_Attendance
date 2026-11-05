@@ -2,6 +2,7 @@ package com.college.feature.library.scanner
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.OptIn
@@ -19,12 +20,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -33,8 +35,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -48,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
@@ -57,23 +58,16 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
-import com.college.feature.library.ui.theme.appBg
-import com.college.feature.library.ui.theme.cardBg
-import com.college.feature.library.ui.theme.cardBorder
-import com.college.feature.library.ui.theme.primaryBlue
-import com.college.feature.library.ui.theme.textPrimary
-import com.college.feature.library.ui.theme.textSecondary
+import com.college.core.ui.components.AppTextField
+import com.college.core.ui.components.appTextFieldColors
+import com.college.core.ui.theme.AppTheme
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.Executors
 
-/**
- * CameraX + Google ML Kit Barcode Scanner dialog.
- * Scans EAN-13, EAN-8, UPC, Code 128, and QR book barcodes.
- * Also provides a direct manual entry fallback for testing on emulators.
- */
+// Camera and barcode scanner modal supporting ISBN detection and manual entry
 @OptIn(ExperimentalGetImage::class)
 @Composable
 fun BarcodeScannerModal(
@@ -114,15 +108,16 @@ fun BarcodeScannerModal(
         Surface(
             modifier = Modifier
                 .fillMaxSize()
+                .imePadding()
                 .padding(16.dp),
-            shape = RoundedCornerShape(20.dp),
-            color = appBg,
-            border = BorderStroke(1.dp, cardBorder)
+            shape = RoundedCornerShape(26.dp),
+            color = AppTheme.colors.surface,
+            border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(16.dp),
+                    .padding(20.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 // Header
@@ -133,40 +128,40 @@ fun BarcodeScannerModal(
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Filled.QrCodeScanner,
                             contentDescription = null,
-                            tint = primaryBlue,
+                            tint = AppTheme.colors.primaryPurple,
                             modifier = Modifier.size(24.dp)
                         )
                         Text(
                             text = "Scan Book Barcode",
                             fontSize = 18.sp,
                             fontWeight = FontWeight.Bold,
-                            color = textPrimary
+                            color = AppTheme.colors.textPrimary
                         )
                     }
                     IconButton(onClick = onDismiss) {
                         Icon(
                             imageVector = Icons.Filled.Close,
                             contentDescription = "Close",
-                            tint = textSecondary
+                            tint = AppTheme.colors.textSecondary
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 // Camera Viewport or Permission Notice
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(cardBg)
-                        .border(1.dp, cardBorder, RoundedCornerShape(16.dp)),
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(AppTheme.colors.background)
+                        .border(1.dp, AppTheme.colors.surfaceBorder, RoundedCornerShape(18.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     if (hasCameraPermission) {
@@ -258,7 +253,7 @@ fun BarcodeScannerModal(
                         Box(
                             modifier = Modifier
                                 .size(240.dp, 140.dp)
-                                .border(2.dp, primaryBlue, RoundedCornerShape(12.dp))
+                                .border(2.dp, AppTheme.colors.primaryPurple, RoundedCornerShape(14.dp))
                         )
                     } else {
                         Column(
@@ -268,14 +263,15 @@ fun BarcodeScannerModal(
                         ) {
                             Text(
                                 text = "Camera permission is required to scan barcodes.",
-                                color = textSecondary,
+                                color = AppTheme.colors.textSecondary,
                                 fontSize = 13.sp
                             )
                             Button(
                                 onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) },
-                                colors = ButtonDefaults.buttonColors(containerColor = primaryBlue)
+                                shape = RoundedCornerShape(14.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.primaryPurple)
                             ) {
-                                Text("Grant Camera Permission", color = Color.White)
+                                Text("Grant Camera Permission", color = Color.White, fontWeight = FontWeight.SemiBold)
                             }
                         }
                     }
@@ -286,7 +282,7 @@ fun BarcodeScannerModal(
                 Text(
                     text = "Align the ISBN barcode on the back of the book inside the frame",
                     fontSize = 12.sp,
-                    color = textSecondary
+                    color = AppTheme.colors.textSecondary
                 )
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -297,21 +293,14 @@ fun BarcodeScannerModal(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    OutlinedTextField(
+                    AppTextField(
                         value = manualIsbnInput,
                         onValueChange = { manualIsbnInput = it },
-                        placeholder = { Text("Or enter ISBN (e.g. 9780133594140)", fontSize = 12.sp) },
+                        placeholder = { Text("Or enter ISBN (e.g. 9780133594140)", fontSize = 12.5.sp) },
                         singleLine = true,
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.weight(1f),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = textPrimary,
-                            unfocusedTextColor = textPrimary,
-                            focusedBorderColor = primaryBlue,
-                            unfocusedBorderColor = cardBorder,
-                            focusedContainerColor = cardBg,
-                            unfocusedContainerColor = cardBg
-                        )
+                        shape = RoundedCornerShape(14.dp),
+                        colors = appTextFieldColors(),
+                        modifier = Modifier.weight(1f)
                     )
                     Button(
                         onClick = {
@@ -321,10 +310,10 @@ fun BarcodeScannerModal(
                             }
                         },
                         enabled = manualIsbnInput.trim().length >= 8,
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = primaryBlue)
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.primaryPurple)
                     ) {
-                        Text("Search", fontWeight = FontWeight.Bold)
+                        Text("Search", fontWeight = FontWeight.Bold, color = Color.White)
                     }
                 }
             }
