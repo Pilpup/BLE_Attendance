@@ -348,7 +348,6 @@ fun LibraryScreen(
                     )
                     LibraryTab.STAFF_INVENTORY -> StaffInventoryTabContent(
                         viewModel = viewModel,
-                        onAddBook = { showAddBookDialog = true },
                         onEdit = { editingBook = it }
                     )
                     LibraryTab.DEV_MAINTENANCE -> DevMaintenanceTabContent(viewModel)
@@ -558,7 +557,6 @@ private fun CatalogueTabContent(
 @Composable
 private fun StaffInventoryTabContent(
     viewModel: LibraryViewModel,
-    onAddBook: () -> Unit,
     onEdit: (Book) -> Unit
 ) {
     val scrollState = rememberScrollState()
@@ -572,51 +570,19 @@ private fun StaffInventoryTabContent(
     ) {
         // Inventory Overview Card
         AppCardGroup {
-            Column(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(horizontal = 20.dp, vertical = 18.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "INVENTORY OVERVIEW",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = AppTheme.colors.textSecondary
+                InventoryStatItem(label = "Titles", value = "${viewModel.catalogueSize}")
+                InventoryStatItem(label = "On Shelf", value = "${viewModel.availableCount}")
+                InventoryStatItem(
+                    label = "Borrowed",
+                    value = "${viewModel.catalogueSize - viewModel.availableCount}"
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    InventoryStatItem(label = "Titles", value = "${viewModel.catalogueSize}")
-                    InventoryStatItem(label = "On Shelf", value = "${viewModel.availableCount}")
-                    InventoryStatItem(
-                        label = "Borrowed",
-                        value = "${viewModel.catalogueSize - viewModel.availableCount}"
-                    )
-                }
-                HorizontalDivider(color = AppTheme.colors.background, thickness = 1.dp)
-
-                Button(
-                    onClick = onAddBook,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.primaryPurple)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "Add Book",
-                        tint = Color.White,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Add Book to Inventory",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
-                    )
-                }
             }
         }
 
@@ -634,7 +600,7 @@ private fun StaffInventoryTabContent(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "Catalogue is empty. Use 'Add Book to Inventory' above to start intake.",
+                        text = "Catalogue is empty. Use '+ Add Book' below to start intake.",
                         color = AppTheme.colors.textMuted,
                         fontSize = 13.5.sp
                     )
@@ -674,10 +640,11 @@ private fun InventoryStatItem(label: String, value: String) {
     Column {
         Text(
             text = value,
-            fontSize = 18.sp,
+            fontSize = 26.sp,
             fontWeight = FontWeight.Bold,
             color = AppTheme.colors.textPrimary
         )
+        Spacer(modifier = Modifier.height(2.dp))
         Text(
             text = label,
             fontSize = 12.sp,
@@ -1249,7 +1216,7 @@ private fun AddEditBookDialog(
         shape = RoundedCornerShape(24.dp),
         title = {
             Text(
-                text = if (isEdit) "Edit Book Details" else "Add Book to Catalogue",
+                text = if (isEdit) "Edit Book Details" else "Add Book",
                 fontWeight = FontWeight.Bold,
                 fontSize = 18.sp,
                 color = AppTheme.colors.textPrimary
@@ -1397,6 +1364,30 @@ private fun AddEditBookDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
 
+                // Copies (placed above edition)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AppTextField(
+                        value = copiesText,
+                        onValueChange = { copiesText = it.filter { c -> c.isDigit() } },
+                        placeholder = { Text(if (isEdit) "Total Copies *" else "Copies *") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = appTextFieldColors(unfocusedBorderColor = requiredBorderColor),
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (isEdit) {
+                        AppTextField(
+                            value = availableText,
+                            onValueChange = { availableText = it.filter { c -> c.isDigit() } },
+                            placeholder = { Text("Available *") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = appTextFieldColors(unfocusedBorderColor = requiredBorderColor),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
                 // Edition
                 AppTextField(
                     value = edition,
@@ -1440,30 +1431,6 @@ private fun AddEditBookDialog(
                     colors = appTextFieldColors(unfocusedBorderColor = AppTheme.colors.surfaceBorder),
                     modifier = Modifier.fillMaxWidth()
                 )
-
-                // Copies
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AppTextField(
-                        value = copiesText,
-                        onValueChange = { copiesText = it.filter { c -> c.isDigit() } },
-                        placeholder = { Text(if (isEdit) "Total Copies *" else "Copies *") },
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = appTextFieldColors(unfocusedBorderColor = requiredBorderColor),
-                        modifier = Modifier.weight(1f)
-                    )
-                    if (isEdit) {
-                        AppTextField(
-                            value = availableText,
-                            onValueChange = { availableText = it.filter { c -> c.isDigit() } },
-                            placeholder = { Text("Available *") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(12.dp),
-                            colors = appTextFieldColors(unfocusedBorderColor = requiredBorderColor),
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
             }
         },
         confirmButton = {
@@ -1490,7 +1457,7 @@ private fun AddEditBookDialog(
                 )
             ) {
                 Text(
-                    text = if (isEdit) "Save" else "Add to Catalogue",
+                    text = if (isEdit) "Save" else "Add Book",
                     fontWeight = FontWeight.Bold,
                     color = Color.White
                 )
