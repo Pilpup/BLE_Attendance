@@ -105,12 +105,8 @@ internal fun StudentSection(
     var totalTargetsSpawned by remember { mutableIntStateOf(orbTotalTargets) }
     var isGameOver by remember { mutableStateOf(false) }
 
-    // Debug verdict state allowing testing of both verified and unverified animations
-    var debugVerdict by remember { mutableStateOf<Boolean?>(null) }
-    var replayTrigger by remember { mutableIntStateOf(0) }
-
-    val isVerified = studentPhase == StudentPhase.VERIFIED_PRESENT || (BuildConfig.DEBUG && debugVerdict == true)
-    val isUnverified = studentPhase == StudentPhase.UNVERIFIED_FLAGGED || (BuildConfig.DEBUG && debugVerdict == false)
+    val isVerified = studentPhase == StudentPhase.VERIFIED_PRESENT
+    val isUnverified = studentPhase == StudentPhase.UNVERIFIED_FLAGGED
 
     // Synchronize challenge state on student phase change
     LaunchedEffect(studentPhase) {
@@ -118,22 +114,11 @@ internal fun StudentSection(
             targetsHit = 0
             totalTargetsSpawned = orbTotalTargets
             isGameOver = false
-            debugVerdict = null
             onChallengeResult(0, orbTotalTargets)
         } else if (studentPhase == StudentPhase.STANDBY || studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
             isGameOver = false
             targetsHit = 0
             totalTargetsSpawned = orbTotalTargets
-            debugVerdict = null
-        }
-    }
-
-    // Auto-trigger verification in debug mode after 3 seconds on waiting screen
-    val isWaitingScreen = isGameOver || studentPhase == StudentPhase.DISCOVERY_COMPLETE || studentPhase == StudentPhase.WAITING_FOR_AUDIT
-    LaunchedEffect(isWaitingScreen, replayTrigger) {
-        if (isWaitingScreen && BuildConfig.DEBUG && debugVerdict == null) {
-            delay(3000L)
-            debugVerdict = (targetsHit >= 6)
         }
     }
 
@@ -258,9 +243,9 @@ internal fun StudentSection(
                                 .defaultMinSize(minHeight = scoreCardHeightDp)
                         ) {
                             if (isVerified) {
-                                VerifiedStatusAnimation(key = replayTrigger)
+                                VerifiedStatusAnimation()
                             } else if (isUnverified) {
-                                UnverifiedStatusAnimation(key = replayTrigger)
+                                UnverifiedStatusAnimation()
                             } else {
                                 // Score card island containing score metrics
                                 Surface(
@@ -325,70 +310,7 @@ internal fun StudentSection(
                         Spacer(modifier = Modifier.height(scoreCardHeightDp + 24.dp))
                     }
 
-                    // Debug toolbar allowing immediate verification animation testing
-                    if (BuildConfig.DEBUG) {
-                        Row(
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(bottom = 20.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = if (isVerified) AppTheme.colors.primaryPurple.copy(alpha = 0.2f) else AppTheme.colors.surface,
-                                border = BorderStroke(1.dp, if (isVerified) AppTheme.colors.primaryPurple else AppTheme.colors.surfaceBorder),
-                                modifier = Modifier.clickable {
-                                    debugVerdict = true
-                                    replayTrigger++
-                                }
-                            ) {
-                                Text(
-                                    text = "✓ Verified",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (isVerified) AppTheme.colors.primaryPurple else AppTheme.colors.textSecondary,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                                )
-                            }
 
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = if (isUnverified) AppTheme.colors.accentOrange.copy(alpha = 0.2f) else AppTheme.colors.surface,
-                                border = BorderStroke(1.dp, if (isUnverified) AppTheme.colors.accentOrange else AppTheme.colors.surfaceBorder),
-                                modifier = Modifier.clickable {
-                                    debugVerdict = false
-                                    replayTrigger++
-                                }
-                            ) {
-                                Text(
-                                    text = "✕ Unverified",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (isUnverified) AppTheme.colors.accentOrange else AppTheme.colors.textSecondary,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                                )
-                            }
-
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = AppTheme.colors.surface,
-                                border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
-                                modifier = Modifier.clickable {
-                                    debugVerdict = null
-                                    replayTrigger++
-                                }
-                            ) {
-                                Text(
-                                    text = "↺ Wait 3s",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = AppTheme.colors.textSecondary,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                                )
-                            }
-                        }
-                    }
                 }
             }
 

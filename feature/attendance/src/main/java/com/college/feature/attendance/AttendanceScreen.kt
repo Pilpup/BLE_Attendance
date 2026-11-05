@@ -56,7 +56,7 @@ fun AttendanceScreen(
     val isTeacherPrivileged = user.canTakeAttendance()
 
     // Student attendance portal
-    if (user.hasRole(Role.STUDENT)) {
+    if (user.hasRole(Role.STUDENT) && !user.canTakeAttendance()) {
         BackHandler {
             callbacks.onStopStudentScanning()
             onBack()
@@ -105,9 +105,13 @@ fun AttendanceScreen(
         )
     }
 
-    // Hardware/gesture back press resets student session to homepage standby if in progress
-    BackHandler(enabled = user.hasRole(Role.STUDENT) && viewModel.studentPhase != StudentPhase.STANDBY) {
-        viewModel.resetStudentSession()
+    // Hardware/gesture back press resets student or teacher active session
+    BackHandler(enabled = (user.hasRole(Role.STUDENT) && viewModel.studentPhase != StudentPhase.STANDBY) || viewModel.isSessionActive) {
+        if (viewModel.isSessionActive) {
+            viewModel.resetSession()
+        } else {
+            viewModel.resetStudentSession()
+        }
     }
 
     Scaffold(
@@ -117,8 +121,12 @@ fun AttendanceScreen(
                     IconButton(onClick = {
                         if (viewModel.selectedSessionForDetails != null) {
                             viewModel.selectedSessionForDetails = null
-                        } else if (user.canTakeAttendance() && viewModel.teacherViewMode != TeacherViewMode.MENU && !viewModel.isSessionActive && viewModel.finalizedRecords.isEmpty()) {
-                            viewModel.teacherViewMode = TeacherViewMode.MENU
+                        } else if (viewModel.isSessionActive) {
+                            viewModel.resetSession()
+                        } else if (user.canTakeAttendance() && viewModel.teacherViewMode == TeacherViewMode.OLDER_SESSIONS && viewModel.finalizedRecords.isEmpty()) {
+                            viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
+                        } else if (viewModel.finalizedRecords.isNotEmpty()) {
+                            viewModel.resetSession()
                         } else if (user.hasRole(Role.STUDENT) && viewModel.studentPhase != StudentPhase.STANDBY) {
                             viewModel.resetStudentSession()
                         } else {
@@ -138,9 +146,8 @@ fun AttendanceScreen(
                         viewModel.finalizedRecords.isNotEmpty() -> "Audit Results"
                         user.canTakeAttendance() -> {
                             when (viewModel.teacherViewMode) {
-                                TeacherViewMode.TAKE_ATTENDANCE -> "Take Attendance"
                                 TeacherViewMode.OLDER_SESSIONS -> "Older Sessions"
-                                TeacherViewMode.MENU -> "Attendance"
+                                else -> "Attendance"
                             }
                         }
                         else -> "Attendance"
@@ -148,27 +155,9 @@ fun AttendanceScreen(
                     Text(
                         text = screenTitle,
                         fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp,
+                        fontSize = 20.sp,
                         color = AppTheme.colors.textPrimary
                     )
-                },
-                actions = {
-                    val displayDeviceId = viewModel.studentId.ifEmpty { user.rollNumber ?: user.id }
-                    Surface(
-                        onClick = { viewModel.showAuthDialog = true },
-                        shape = RoundedCornerShape(10.dp),
-                        color = AppTheme.colors.surface,
-                        border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
-                    ) {
-                        Text(
-                            text = "ID: $displayDeviceId",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace,
-                            color = AppTheme.colors.textSecondary,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                        )
-                    }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = AppTheme.colors.background,
@@ -181,6 +170,7 @@ fun AttendanceScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .background(AppTheme.colors.background)
                 .padding(paddingValues)
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
@@ -202,7 +192,9 @@ fun AttendanceScreen(
                     isLoadingHistory = viewModel.isLoadingHistory,
                     onLoadHistory = { viewModel.loadSessionHistory() },
                     selectedSessionForDetails = viewModel.selectedSessionForDetails,
-                    onSelectSessionForDetails = { viewModel.selectedSessionForDetails = it }
+                    onSelectSessionForDetails = { viewModel.selectedSessionForDetails = it },
+                    selectedCourse = viewModel.selectedCourse,
+                    onExportAttendance = callbacks.onShareAttendance
                 )
 
                 user.hasRole(Role.STUDENT) -> StudentSection(

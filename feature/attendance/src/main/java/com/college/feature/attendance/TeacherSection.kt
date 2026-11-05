@@ -1,6 +1,8 @@
 package com.college.feature.attendance
 
+import com.college.core.ui.theme.AppTheme
 import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -12,9 +14,11 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -26,11 +30,14 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.TouchApp
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -65,17 +72,20 @@ import com.college.feature.attendance.network.CourseResponse
 import com.college.feature.attendance.ui.theme.*
 import com.college.feature.attendance.viewmodel.TeacherViewMode
 
-// Maps attendance audit records to display status categories
+// Maps attendance audit records to display status categories (Verified or Unverified)
 private fun getRecordAuditStatus(rec: AttendanceRecordItem): String {
+    return if (rec.status == "VERIFIED_PRESENT") "Verified" else "Unverified"
+}
+
+// Extracts the last two digits of the student's roll number for avatar badge icon
+private fun getRollNumberTwoDigits(roll: String): String {
+    val digits = roll.filter { it.isDigit() }
     return when {
-        rec.status == "VERIFIED_PRESENT" -> "Verified"
-        rec.status == "FLAGGED_SPOOFER" || rec.status == "SPOOFER_REJECTED" ||
-                rec.status.contains("SPOOF") || rec.status.contains("REJECT") ||
-                rec.status.contains("PROXY") || rec.status.contains("FAILED") ||
-                rec.status == "NO_FACE_DETECTED" -> "Flagged"
-        rec.status.contains("ISOLAT") || rec.status == "UNVERIFIED" ||
-                rec.verificationMethod == "NONE" || rec.affinityScore < 0.5 -> "Unverified"
-        else -> "Unverified"
+        digits.length >= 2 -> digits.takeLast(2)
+        digits.length == 1 -> "0$digits"
+        roll.length >= 2 -> roll.takeLast(2).uppercase()
+        roll.isNotEmpty() -> roll.uppercase()
+        else -> "--"
     }
 }
 
@@ -112,21 +122,24 @@ private fun compareRollNumbers(a: String, b: String): Int {
     }
 }
 
-private fun getDisplayStudentName(rec: AttendanceRecordItem): String {
+internal fun getDisplayStudentName(rec: AttendanceRecordItem): String {
     if (!rec.studentName.isNullOrBlank()) return rec.studentName
     val roll = getDisplayRollNo(rec)
     return when (roll.takeLast(2)) {
         "01" -> "Aarav Sharma"
-        "04" -> "Priya Patel"
-        "12" -> "Sneha Gupta"
-        "19" -> "Rohan Verma"
-        "25" -> "Vikram Malhotra"
+        "04" -> "Ananya Verma"
+        "07" -> "Dev Patel"
+        "11" -> "Isha Gupta"
+        "15" -> "Rohan Mehta"
+        "19" -> "Kabir Singh"
+        "23" -> "Pooja Nair"
+        "31" -> "Vikram Malhotra"
         else -> "Student ${roll.takeLast(2)}"
     }
 }
 
 // Teacher dashboard management view supporting session launch and history
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 internal fun TeacherSection(
     isSessionActive: Boolean,
@@ -145,420 +158,243 @@ internal fun TeacherSection(
     isLoadingHistory: Boolean,
     onLoadHistory: () -> Unit,
     selectedSessionForDetails: AttendanceSessionResponse? = null,
-    onSelectSessionForDetails: (AttendanceSessionResponse) -> Unit = {}
+    onSelectSessionForDetails: (AttendanceSessionResponse) -> Unit = {},
+    selectedCourse: CourseResponse? = null,
+    onExportAttendance: () -> Unit = {}
 ) {
     if (finalizedRecords.isNotEmpty()) {
-        // Audit results overview displayed after session completion (memoized single-pass count)
-        val (verifiedCount, unverifiedCount, flaggedCount) = remember(finalizedRecords) {
-            var v = 0
-            var u = 0
-            var f = 0
-            for (i in finalizedRecords.indices) {
-                when (getRecordAuditStatus(finalizedRecords[i])) {
-                    "Verified" -> v++
-                    "Unverified" -> u++
-                    "Flagged" -> f++
-                }
-            }
-            Triple(v, u, f)
+        val (verifiedCount, unverifiedCount) = remember(finalizedRecords) {
+            val v = finalizedRecords.count { getRecordAuditStatus(it) == "Verified" }
+            val u = finalizedRecords.size - v
+            Pair(v, u)
+        }
+
+        // Unverified students pinned at the top sorted ascending; verified students follow sorted ascending
+        val sortedDisplayList = remember(finalizedRecords) {
+            val unverified = finalizedRecords
+                .filter { getRecordAuditStatus(it) == "Unverified" }
+                .sortedWith { r1, r2 -> compareRollNumbers(getDisplayRollNo(r1), getDisplayRollNo(r2)) }
+            val verified = finalizedRecords
+                .filter { getRecordAuditStatus(it) == "Verified" }
+                .sortedWith { r1, r2 -> compareRollNumbers(getDisplayRollNo(r1), getDisplayRollNo(r2)) }
+            unverified + verified
         }
 
         Column(
             modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Dashboard Summary Card
-            Card(
+
+            // Metric statistics for verified and unverified attendees
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = cardBg),
-                border = BorderStroke(1.dp, cardBorder)
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                // Verified attendee counter card
+                Surface(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp),
+                    color = AppTheme.colors.surface,
+                    border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
                 ) {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
                     ) {
                         Text(
-                            text = "AUDIT RESULTS",
+                            text = "$verifiedCount",
+                            fontSize = 26.sp,
+                            fontWeight = FontWeight.Black,
+                            color = AppTheme.colors.primaryPurple
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Verified",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = AppTheme.colors.textSecondary
+                        )
+                    }
+                }
+
+                // Unverified attendee counter card
+                Surface(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp),
+                    color = AppTheme.colors.surface,
+                    border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = "$unverifiedCount",
+                            fontSize = 26.sp,
+                            fontWeight = FontWeight.Black,
+                            color = AppTheme.colors.accentOrange
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Unverified",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = AppTheme.colors.textSecondary
+                        )
+                    }
+                }
+            }
+
+            // Unified attendee roster container
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = AppTheme.colors.surface,
+                border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    // Header row with "Attendance list" title and "Export" action
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Attendance list",
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.8.sp,
-                            color = textPrimary
+                            color = AppTheme.colors.textPrimary
                         )
-                        IconButton(
-                            onClick = onResetSession,
-                            modifier = Modifier.size(32.dp)
+
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onExportAttendance() }
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Close",
-                                tint = textSecondary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-
-                    // 3 Metric Stat Cards in one row (Centered texts)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Card(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = CardDefaults.cardColors(containerColor = successGreenBg),
-                            border = BorderStroke(1.dp, successGreen.copy(alpha = 0.4f))
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 12.dp, horizontal = 4.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Text(
-                                    text = "$verifiedCount",
-                                    fontSize = 22.sp,
-                                    fontWeight = FontWeight.Black,
-                                    textAlign = TextAlign.Center,
-                                    color = successGreen
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = "Verified",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    textAlign = TextAlign.Center,
-                                    color = successGreen
-                                )
-                            }
-                        }
-
-                        Card(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = CardDefaults.cardColors(containerColor = warningOrangeBg),
-                            border = BorderStroke(1.dp, warningOrange.copy(alpha = 0.4f))
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 12.dp, horizontal = 4.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Text(
-                                    text = "$unverifiedCount",
-                                    fontSize = 22.sp,
-                                    fontWeight = FontWeight.Black,
-                                    textAlign = TextAlign.Center,
-                                    color = warningOrange
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = "Needs Review",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    textAlign = TextAlign.Center,
-                                    color = warningOrange
-                                )
-                            }
-                        }
-
-                        Card(
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            colors = CardDefaults.cardColors(containerColor = if (flaggedCount > 0) alertRedBg else logBg),
-                            border = BorderStroke(1.dp, if (flaggedCount > 0) alertRed.copy(alpha = 0.4f) else cardBorder)
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 12.dp, horizontal = 4.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Text(
-                                    text = "$flaggedCount",
-                                    fontSize = 22.sp,
-                                    fontWeight = FontWeight.Black,
-                                    textAlign = TextAlign.Center,
-                                    color = if (flaggedCount > 0) alertRed else textMuted
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = "Flagged",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    textAlign = TextAlign.Center,
-                                    color = if (flaggedCount > 0) alertRed else textMuted
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Quarantined / unverified records needing instructor confirmation (Option 1)
-            val needsReviewRecords = remember(finalizedRecords) {
-                finalizedRecords.filter { getRecordAuditStatus(it) == "Unverified" }
-            }
-
-            // Attendance list strictly sorted in ascending order by student roll number (memoized)
-            val sortedList = remember(finalizedRecords) {
-                finalizedRecords.sortedWith { r1, r2 ->
-                    compareRollNumbers(getDisplayRollNo(r1), getDisplayRollNo(r2))
-                }
-            }
-
-            if (sortedList.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .background(cardBg, RoundedCornerShape(14.dp))
-                        .border(1.dp, cardBorder, RoundedCornerShape(14.dp)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("No attendance records found.", color = textMuted, fontSize = 13.sp)
-                }
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // Option 1: Minimal Teacher Quarantine Review Section
-                    if (needsReviewRecords.isNotEmpty()) {
-                        item(key = "needs_review_banner") {
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(14.dp),
-                                colors = CardDefaults.cardColors(containerColor = warningOrangeBg.copy(alpha = 0.35f)),
-                                border = BorderStroke(1.dp, warningOrange.copy(alpha = 0.5f))
-                            ) {
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(14.dp),
-                                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Warning,
-                                                contentDescription = null,
-                                                tint = warningOrange,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                            Text(
-                                                text = "Needs Review (${needsReviewRecords.size})",
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 14.sp,
-                                                color = warningOrange
-                                            )
-                                        }
-                                        Text(
-                                            text = "Tap Confirm to mark present",
-                                            fontSize = 11.sp,
-                                            color = textMuted
-                                        )
-                                    }
-
-                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        needsReviewRecords.forEach { rec ->
-                                            Surface(
-                                                shape = RoundedCornerShape(10.dp),
-                                                color = cardBg,
-                                                border = BorderStroke(1.dp, cardBorder),
-                                                modifier = Modifier.fillMaxWidth()
-                                            ) {
-                                                Row(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Column(modifier = Modifier.weight(1f)) {
-                                                        Text(
-                                                            text = getDisplayStudentName(rec),
-                                                            fontWeight = FontWeight.Bold,
-                                                            fontSize = 14.sp,
-                                                            color = textPrimary
-                                                        )
-                                                        Spacer(modifier = Modifier.height(2.dp))
-                                                        Row(
-                                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                            verticalAlignment = Alignment.CenterVertically
-                                                        ) {
-                                                            Text(
-                                                                text = getDisplayRollNo(rec),
-                                                                fontSize = 12.sp,
-                                                                fontWeight = FontWeight.Medium,
-                                                                fontFamily = FontFamily.Monospace,
-                                                                color = textSecondary
-                                                            )
-                                                            Text(
-                                                                text = "• Weak signal / corner seat",
-                                                                fontSize = 11.sp,
-                                                                color = textMuted
-                                                            )
-                                                        }
-                                                    }
-
-                                                    Button(
-                                                        onClick = { onVerifyStudent(rec) },
-                                                        shape = RoundedCornerShape(8.dp),
-                                                        colors = ButtonDefaults.buttonColors(
-                                                            containerColor = successGreen,
-                                                            contentColor = Color.Black
-                                                        ),
-                                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
-                                                        modifier = Modifier.height(32.dp)
-                                                    ) {
-                                                        Text(
-                                                            text = "Confirm",
-                                                            fontSize = 12.sp,
-                                                            fontWeight = FontWeight.Bold
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        item(key = "all_students_header") {
                             Text(
-                                text = "All Students (${sortedList.size})",
-                                fontSize = 13.sp,
+                                text = "Export",
+                                fontSize = 13.5.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                color = textSecondary,
-                                modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                                color = AppTheme.colors.textSecondary
                             )
                         }
                     }
 
-                    items(sortedList, key = { it.bleDeviceId }) { rec ->
-                        val status = getRecordAuditStatus(rec)
-                        val statusColor = when (status) {
-                            "Verified" -> successGreen
-                            "Unverified" -> warningOrange
-                            else -> alertRed
-                        }
-                        val statusBg = when (status) {
-                            "Verified" -> successGreenBg
-                            "Unverified" -> warningOrangeBg
-                            else -> alertRedBg
-                        }
-                        val rollNo = getDisplayRollNo(rec)
-                        val studentName = getDisplayStudentName(rec)
-                        val isUnverified = status == "Unverified"
-                        val isFlagged = status == "Flagged"
+                    HorizontalDivider(
+                        color = AppTheme.colors.background,
+                        thickness = 1.dp
+                    )
 
-                        Card(
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                    ) {
+                        itemsIndexed(
+                            items = sortedDisplayList,
+                            key = { _, rec -> rec.bleDeviceId }
+                        ) { index, rec ->
+                            if (index > 0) {
+                                HorizontalDivider(
+                                    color = AppTheme.colors.background,
+                                    thickness = 1.dp
+                                )
+                            }
+
+                        val isVerified = getRecordAuditStatus(rec) == "Verified"
+                        val rollNo = getDisplayRollNo(rec)
+                        val twoDigitRoll = getRollNumberTwoDigits(rollNo)
+                        val studentName = getDisplayStudentName(rec)
+                        val badgeBg = if (isVerified) AppTheme.colors.primaryPurple else AppTheme.colors.accentOrange
+
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .then(
-                                    if (isUnverified) {
-                                        Modifier.clickable { onVerifyStudent(rec) }
-                                    } else {
-                                        Modifier
-                                    }
-                                ),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = cardBg),
-                            border = BorderStroke(
-                                1.dp,
-                                when {
-                                    isFlagged -> alertRed.copy(alpha = 0.5f)
-                                    isUnverified -> warningOrange.copy(alpha = 0.5f)
-                                    else -> cardBorder
-                                }
-                            )
+                                .animateItemPlacement()
+                                .clickable(enabled = !isVerified) { onVerifyStudent(rec) }
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
+                                // 2-digit roll number badge icon container
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(CircleShape)
+                                        .background(badgeBg),
+                                    contentAlignment = Alignment.Center
+                                ) {
                                     Text(
-                                        text = studentName,
+                                        text = twoDigitRoll,
+                                        fontSize = 14.sp,
                                         fontWeight = FontWeight.Bold,
-                                        fontSize = 15.sp,
-                                        color = textPrimary
-                                    )
-                                    Spacer(modifier = Modifier.height(3.dp))
-                                    Text(
-                                        text = rollNo,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium,
                                         fontFamily = FontFamily.Monospace,
-                                        color = textSecondary
+                                        color = Color.White
                                     )
                                 }
 
-                                if (isUnverified) {
-                                    Surface(
-                                        onClick = { onVerifyStudent(rec) },
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = warningOrangeBg,
-                                        border = BorderStroke(1.dp, warningOrange.copy(alpha = 0.7f))
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
-                                            Text(
-                                                text = "Needs Review",
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 11.sp,
-                                                color = warningOrange
-                                            )
-                                            Icon(
-                                                imageVector = Icons.Default.CheckCircle,
-                                                contentDescription = "Tap to Verify",
-                                                tint = warningOrange,
-                                                modifier = Modifier.size(13.dp)
-                                            )
-                                        }
-                                    }
-                                } else {
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = statusBg,
-                                        border = BorderStroke(1.dp, statusColor.copy(alpha = 0.4f))
-                                    ) {
-                                        Text(
-                                            text = if (status == "Verified") "Present" else status,
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 11.sp,
-                                            color = statusColor
-                                        )
-                                    }
+                                Text(
+                                    text = studentName,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 17.sp,
+                                    color = AppTheme.colors.textPrimary
+                                )
+                            }
+
+                            if (isVerified) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = AppTheme.colors.primaryPurple,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Text(
+                                        text = "Verified",
+                                        fontSize = 12.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = AppTheme.colors.primaryPurple
+                                    )
+                                }
+                            } else {
+                                Button(
+                                    onClick = { onVerifyStudent(rec) },
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = AppTheme.colors.accentOrange,
+                                        contentColor = Color.White
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 5.dp),
+                                    modifier = Modifier.height(32.dp)
+                                ) {
+                                    Text(
+                                        text = "Verify",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
                                 }
                             }
                         }
@@ -566,7 +402,8 @@ internal fun TeacherSection(
                 }
             }
         }
-    } else if (isSessionActive) {
+    }
+} else if (isSessionActive) {
         // Active session broadcasting view and progress countdown
         Column(
             modifier = Modifier
@@ -574,45 +411,7 @@ internal fun TeacherSection(
                 .padding(vertical = 12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Live Status Pill
-            Surface(
-                shape = RoundedCornerShape(20.dp),
-                color = successGreenBg,
-                border = BorderStroke(1.dp, successGreen.copy(alpha = 0.5f))
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    val infinitePulse = rememberInfiniteTransition(label = "Pulse")
-                    val pulseAlpha by infinitePulse.animateFloat(
-                        initialValue = 0.35f,
-                        targetValue = 1f,
-                        animationSpec = infiniteRepeatable(
-                            animation = tween(800, easing = FastOutSlowInEasing),
-                            repeatMode = RepeatMode.Reverse
-                        ),
-                        label = "PulseAlpha"
-                    )
-                    Box(
-                        modifier = Modifier
-                            .size(8.dp)
-                            .graphicsLayer { alpha = pulseAlpha }
-                            .clip(CircleShape)
-                            .background(successGreen)
-                    )
-                    Text(
-                        text = "TAKING ATTENDANCE",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.8.sp,
-                        color = successGreen
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(28.dp))
+            Spacer(modifier = Modifier.weight(0.4f))
 
             // Pulsing Beacon Aura & Circular Progress Countdown
             Box(
@@ -659,7 +458,13 @@ internal fun TeacherSection(
                     label = "Wave2Alpha"
                 )
 
-                val progress = (remainingSeconds.coerceIn(0, 60) / 60f)
+                val progress = (remainingSeconds.coerceIn(0, 30) / 30f)
+                val pulseColor = AppTheme.colors.primaryPurple
+                val arcAccentColor = AppTheme.colors.accentOrange
+                val trackRingColor = AppTheme.colors.surface
+                val trackBorderColor = AppTheme.colors.surfaceBorder
+                val radialBgStart = AppTheme.colors.surface
+                val radialBgEnd = AppTheme.colors.background
 
                 Canvas(modifier = Modifier.size(240.dp)) {
                     val centerOffset = Offset(size.width / 2f, size.height / 2f)
@@ -667,13 +472,13 @@ internal fun TeacherSection(
 
                     // Outer pulsing wave rings
                     drawCircle(
-                        color = neonMint.copy(alpha = wave1Alpha),
+                        color = pulseColor.copy(alpha = wave1Alpha),
                         radius = baseRadius * wave1Scale,
                         center = centerOffset,
                         style = Stroke(width = 2.dp.toPx())
                     )
                     drawCircle(
-                        color = neonMint.copy(alpha = wave2Alpha),
+                        color = arcAccentColor.copy(alpha = wave2Alpha),
                         radius = baseRadius * wave2Scale,
                         center = centerOffset,
                         style = Stroke(width = 1.5.dp.toPx())
@@ -681,13 +486,13 @@ internal fun TeacherSection(
 
                     // Track rings
                     drawCircle(
-                        color = Color(0xFF131B2A),
+                        color = trackRingColor,
                         radius = baseRadius,
                         center = centerOffset,
                         style = Stroke(width = 10.dp.toPx())
                     )
                     drawCircle(
-                        color = Color(0xFF1E293B),
+                        color = trackBorderColor,
                         radius = baseRadius,
                         center = centerOffset,
                         style = Stroke(width = 1.5.dp.toPx())
@@ -697,9 +502,9 @@ internal fun TeacherSection(
                     drawArc(
                         brush = Brush.sweepGradient(
                             listOf(
-                                neonMint,
-                                Color(0xFF3B82F6),
-                                neonMint
+                                pulseColor,
+                                arcAccentColor,
+                                pulseColor
                             )
                         ),
                         startAngle = -90f,
@@ -710,13 +515,12 @@ internal fun TeacherSection(
                         style = Stroke(width = 8.dp.toPx(), cap = StrokeCap.Round)
                     )
 
-                    // Dark core radial background
+                    // Theme-aware core radial background
                     drawCircle(
                         brush = Brush.radialGradient(
                             colors = listOf(
-                                Color(0xFF091712),
-                                Color(0xFF040A07),
-                                Color(0xFF0B0F17)
+                                radialBgStart,
+                                radialBgEnd
                             ),
                             center = centerOffset,
                             radius = baseRadius * 0.9f
@@ -736,38 +540,37 @@ internal fun TeacherSection(
                         fontSize = 58.sp,
                         fontWeight = FontWeight.Black,
                         fontFamily = FontFamily.Monospace,
-                        color = Color(0xFFF8FAFC)
+                        color = Color.White
                     )
                     Text(
                         text = "SECONDS REMAINING",
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp,
-                        color = textSecondary
+                        color = AppTheme.colors.textSecondary
                     )
                 }
             }
 
             Spacer(modifier = Modifier.weight(1f))
 
+            // Stop session button in solar orange with white text
             Button(
                 onClick = onStopSession,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),
                 shape = RoundedCornerShape(14.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = alertRed)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Close,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = AppTheme.colors.accentOrange,
+                    contentColor = Color.White
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+            ) {
                 Text(
                     text = "Stop",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
                 )
             }
         }
@@ -777,106 +580,7 @@ internal fun TeacherSection(
         )
     } else {
         when (teacherViewMode) {
-            TeacherViewMode.MENU -> {
-                // Teacher main options menu
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Text(
-                        text = "SELECT AN OPTION",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.8.sp,
-                        color = textSecondary
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        // Take attendance option card
-                        Surface(
-                            onClick = { onSetTeacherViewMode(TeacherViewMode.TAKE_ATTENDANCE) },
-                            shape = RoundedCornerShape(16.dp),
-                            color = cardBg,
-                            border = BorderStroke(1.dp, cardBorder),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(vertical = 24.dp, horizontal = 14.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(54.dp)
-                                        .background(primaryBlueBg, CircleShape),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.AutoMirrored.Filled.FactCheck,
-                                        contentDescription = "Take Attendance",
-                                        tint = primaryBlue,
-                                        modifier = Modifier.size(28.dp)
-                                    )
-                                }
-                                Spacer(modifier = Modifier.height(14.dp))
-                                Text(
-                                    text = "Take Attendance",
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = textPrimary,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        }
-
-                        // View past sessions option card
-                        Surface(
-                            onClick = {
-                                onLoadHistory()
-                                onSetTeacherViewMode(TeacherViewMode.OLDER_SESSIONS)
-                            },
-                            shape = RoundedCornerShape(16.dp),
-                            color = cardBg,
-                            border = BorderStroke(1.dp, cardBorder),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(vertical = 24.dp, horizontal = 14.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(54.dp)
-                                        .background(successGreenBg, CircleShape),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.History,
-                                        contentDescription = "Older Sessions",
-                                        tint = successGreen,
-                                        modifier = Modifier.size(28.dp)
-                                    )
-                                }
-                                Spacer(modifier = Modifier.height(14.dp))
-                                Text(
-                                    text = "Older Sessions",
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = textPrimary,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
+            TeacherViewMode.MENU,
             TeacherViewMode.TAKE_ATTENDANCE -> {
                 // Course selection and session configuration view
                 TakeAttendanceSelectionView(
@@ -927,6 +631,91 @@ private val syllabusTopics = mapOf(
     )
 )
 
+private val engineeringBranches = listOf(
+    "CSE",
+    "IT",
+    "ECE",
+    "ME",
+    "CE",
+    "EE"
+)
+
+// Academic subjects mapped by engineering branch and degree program
+private val branchSubjects = mapOf(
+    "CSE" to listOf(
+        "Computer Networks",
+        "Operating Systems",
+        "Data Structures & Algorithms",
+        "Database Management Systems",
+        "Software Engineering",
+        "Theory of Computation",
+        "Compiler Design",
+        "Machine Learning",
+        "Computer Architecture",
+        "Cyber Security"
+    ),
+    "IT" to listOf(
+        "Web Technologies",
+        "Information Security",
+        "Cloud Computing",
+        "Data Mining & Warehousing",
+        "Software Project Management",
+        "Computer Networks",
+        "Mobile App Development",
+        "Database Systems"
+    ),
+    "ECE" to listOf(
+        "Digital Signal Processing",
+        "Signals & Systems",
+        "Analog Circuits",
+        "Digital Electronics",
+        "Microprocessors & Microcontrollers",
+        "VLSI Design",
+        "Communication Systems",
+        "Electromagnetic Theory"
+    ),
+    "ME" to listOf(
+        "Thermodynamics",
+        "Fluid Mechanics",
+        "Mechanics of Materials",
+        "Manufacturing Processes",
+        "Theory of Machines",
+        "Heat & Mass Transfer",
+        "Machine Design",
+        "CAD/CAM"
+    ),
+    "CE" to listOf(
+        "Structural Analysis",
+        "Geotechnical Engineering",
+        "Fluid Mechanics",
+        "Surveying",
+        "Concrete Technology",
+        "Transportation Engineering",
+        "Environmental Engineering"
+    ),
+    "EE" to listOf(
+        "Power Systems",
+        "Electrical Machines",
+        "Control Systems",
+        "Power Electronics",
+        "Circuit Theory",
+        "Electromagnetic Fields",
+        "Renewable Energy Systems"
+    ),
+    "BCA" to listOf(
+        "Programming in C/C++",
+        "Data Structures",
+        "Database Management (SQL)",
+        "Web Development",
+        "Java Programming",
+        "Python Programming",
+        "Computer Networks",
+        "Operating Systems",
+        "Software Engineering"
+    )
+)
+
+// Reusable dropdown selector supporting scrollable and non-scrollable modes
 @Composable
 private fun AppDropdownField(
     label: String,
@@ -934,49 +723,77 @@ private fun AppDropdownField(
     options: List<String>,
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
-    placeholder: String = "Select $label"
+    placeholder: String = "Select $label",
+    scrollable: Boolean = true
 ) {
     var expanded by remember { mutableStateOf(false) }
     var anchorWidthPx by remember { mutableIntStateOf(0) }
+
+    val accent = AppTheme.colors.accentOrange
+    val shape = RoundedCornerShape(10.dp)
 
     Box(
         modifier = modifier.onGloballyPositioned { coordinates ->
             anchorWidthPx = coordinates.size.width
         }
     ) {
-        OutlinedTextField(
-            value = selectedValue,
-            onValueChange = {},
-            readOnly = true,
-            label = { Text(label) },
-            placeholder = { Text(placeholder, color = textMuted) },
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = primaryBlue,
-                unfocusedBorderColor = cardBorder,
-                focusedTextColor = textPrimary,
-                unfocusedTextColor = textPrimary,
-                focusedContainerColor = cardBg,
-                unfocusedContainerColor = cardBg
-            ),
-            trailingIcon = {
-                IconButton(onClick = { expanded = !expanded }) {
-                    Icon(
-                        imageVector = Icons.Filled.ArrowDropDown,
-                        contentDescription = "Select $label",
-                        tint = textSecondary,
-                        modifier = Modifier.rotate(if (expanded) 180f else 0f)
+        // Compact rounded island container with strictly clipped interaction ripple
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(shape)
+                .background(AppTheme.colors.surface)
+                .border(
+                    width = if (expanded) 1.5.dp else 1.dp,
+                    color = if (expanded) accent else AppTheme.colors.surfaceBorder,
+                    shape = shape
+                )
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = rememberRipple(color = accent)
+                ) { expanded = !expanded }
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 30.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Text(
+                        text = label,
+                        fontSize = 10.5.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = if (expanded) accent else AppTheme.colors.textSecondary
+                    )
+                    Spacer(modifier = Modifier.height(1.dp))
+                    Text(
+                        text = selectedValue.ifEmpty { placeholder },
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (selectedValue.isNotEmpty()) AppTheme.colors.textPrimary else AppTheme.colors.textMuted,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
-            },
-            modifier = Modifier.fillMaxWidth()
-        )
 
-        // Clickable transparent overlay over the field
-        Surface(
-            onClick = { expanded = !expanded },
-            color = Color.Transparent,
-            modifier = Modifier.matchParentSize()
-        ) {}
+                Spacer(modifier = Modifier.width(6.dp))
+
+                Icon(
+                    imageVector = Icons.Filled.ArrowDropDown,
+                    contentDescription = "Select $label",
+                    tint = if (expanded) accent else AppTheme.colors.textSecondary,
+                    modifier = Modifier
+                        .size(20.dp)
+                        .rotate(if (expanded) 180f else 0f)
+                )
+            }
+        }
 
         if (expanded) {
             val density = LocalDensity.current
@@ -1008,42 +825,45 @@ private fun AppDropdownField(
             ) {
                 val anchorWidthDp = with(density) { anchorWidthPx.toDp() }
                 Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = cardBg,
+                    shape = RoundedCornerShape(12.dp),
+                    color = AppTheme.colors.surface,
                     shadowElevation = 8.dp,
-                    border = BorderStroke(1.dp, primaryBlue.copy(alpha = 0.5f)),
+                    border = BorderStroke(1.dp, accent.copy(alpha = 0.5f)),
                     modifier = Modifier.width(if (anchorWidthDp > 0.dp) anchorWidthDp else 280.dp)
                 ) {
-                    Column(
-                        modifier = Modifier
+                    val columnModifier = if (scrollable) {
+                        Modifier
                             .fillMaxWidth()
                             .heightIn(max = 240.dp)
                             .verticalScroll(rememberScrollState())
                             .padding(vertical = 4.dp)
+                    } else {
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                    }
+
+                    Column(
+                        modifier = columnModifier
                     ) {
                         options.forEach { option ->
                             val isSelected = option == selectedValue
-                            Surface(
-                                onClick = {
-                                    onSelect(option)
-                                    expanded = false
-                                },
-                                color = if (isSelected) primaryBlueBg else cardBg,
-                                modifier = Modifier.fillMaxWidth()
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(if (isSelected) accent.copy(alpha = 0.14f) else AppTheme.colors.surface)
+                                    .clickable {
+                                        onSelect(option)
+                                        expanded = false
+                                    }
+                                    .padding(horizontal = 16.dp, vertical = 12.dp)
                             ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = option,
-                                        fontSize = 14.sp,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                        color = if (isSelected) primaryBlue else textPrimary
-                                    )
-                                }
+                                Text(
+                                    text = option,
+                                    fontSize = 14.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isSelected) accent else AppTheme.colors.textPrimary
+                                )
                             }
                         }
                     }
@@ -1053,6 +873,7 @@ private fun AppDropdownField(
     }
 }
 
+// Course selection and session configuration form
 @Composable
 private fun TakeAttendanceSelectionView(
     onStartSession: () -> Unit,
@@ -1062,16 +883,52 @@ private fun TakeAttendanceSelectionView(
 ) {
     var classType by remember { mutableStateOf("Regular") }
     var courseProgram by remember { mutableStateOf("B-Tech") }
+    var branch by remember { mutableStateOf("CSE") }
     var semester by remember { mutableStateOf("Semester 1") }
     var batchType by remember { mutableStateOf("Lecture") }
+    var subjectName by remember { mutableStateOf("Computer Networks") }
     var selectedUnit by remember { mutableStateOf("Unit 1") }
     var topicCovered by remember { mutableStateOf("Foundations & System Architecture") }
 
-    LaunchedEffect(classType, courseProgram, semester, batchType, selectedUnit, topicCovered) {
+    var showCustomSubjectDialog by remember { mutableStateOf(false) }
+    var customSubjectInput by remember { mutableStateOf("") }
+    var showCustomTopicDialog by remember { mutableStateOf(false) }
+    var customTopicInput by remember { mutableStateOf("") }
+
+    val currentSubjects = remember(courseProgram, branch) {
+        if (courseProgram == "BCA") {
+            branchSubjects["BCA"] ?: listOf("Computer Networks")
+        } else {
+            branchSubjects[branch] ?: branchSubjects["CSE"] ?: listOf("Computer Networks")
+        }
+    }
+    val subjectOptions = remember(currentSubjects) {
+        currentSubjects + listOf("+ Enter Custom Subject...")
+    }
+
+    // Keep subject aligned with branch when switching courses or branches
+    LaunchedEffect(currentSubjects) {
+        if (subjectName !in currentSubjects && customSubjectInput.isBlank()) {
+            subjectName = currentSubjects.firstOrNull() ?: "Computer Networks"
+        }
+    }
+
+    // Clamp semester if switching between BCA and B-Tech
+    LaunchedEffect(courseProgram) {
+        val maxSem = if (courseProgram == "BCA") 6 else 8
+        val currentSemNum = semester.removePrefix("Semester ").toIntOrNull() ?: 1
+        if (currentSemNum > maxSem) {
+            semester = "Semester $maxSem"
+        }
+    }
+
+    // Synchronize course response metadata with selected academic fields
+    LaunchedEffect(classType, courseProgram, branch, semester, batchType, subjectName, selectedUnit, topicCovered) {
+        val branchSuffix = if (courseProgram != "BCA" && branch.isNotBlank()) " • $branch" else ""
         val topicSuffix = if (topicCovered.isNotBlank()) " • $topicCovered" else ""
-        val code = "$courseProgram $semester"
-        val name = "$classType $batchType ($selectedUnit$topicSuffix)"
-        val stableCourseId = java.util.UUID.nameUUIDFromBytes("academic-${courseProgram.lowercase()}-${semester.replace(" ", "").lowercase()}".toByteArray()).toString()
+        val code = "$courseProgram$branchSuffix $semester"
+        val name = "$subjectName • $classType $batchType ($selectedUnit$topicSuffix)"
+        val stableCourseId = java.util.UUID.nameUUIDFromBytes("academic-${courseProgram.lowercase()}-${branch.lowercase()}-${semester.replace(" ", "").lowercase()}".toByteArray()).toString()
         onSelectCourse(
             CourseResponse(
                 id = stableCourseId,
@@ -1085,43 +942,62 @@ private fun TakeAttendanceSelectionView(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // 1. Class Type Dropdown
+        // 1. Class Type
         AppDropdownField(
             label = "Class Type",
             selectedValue = classType,
             options = listOf("Regular", "Extra", "Adjustment"),
             onSelect = { classType = it },
             placeholder = "Select Class Type",
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            scrollable = false
         )
 
-        // 2. Course & Batch Dropdowns (Side-by-side)
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
+        // 2. Course & (if BCA no branch) Branch
+        if (courseProgram == "BCA") {
             AppDropdownField(
                 label = "Course",
                 selectedValue = courseProgram,
                 options = listOf("B-Tech", "BCA"),
                 onSelect = { courseProgram = it },
                 placeholder = "Select Course",
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.fillMaxWidth(),
+                scrollable = false
             )
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                AppDropdownField(
+                    label = "Course",
+                    selectedValue = courseProgram,
+                    options = listOf("B-Tech", "BCA"),
+                    onSelect = { courseProgram = it },
+                    placeholder = "Select Course",
+                    modifier = Modifier.weight(1f),
+                    scrollable = false
+                )
 
-            AppDropdownField(
-                label = "Batch",
-                selectedValue = batchType,
-                options = listOf("Lecture", "Lab"),
-                onSelect = { batchType = it },
-                placeholder = "Select Batch",
-                modifier = Modifier.weight(1f)
-            )
+                AppDropdownField(
+                    label = "Branch",
+                    selectedValue = branch,
+                    options = engineeringBranches,
+                    onSelect = { branch = it },
+                    placeholder = "Select Branch",
+                    modifier = Modifier.weight(1f),
+                    scrollable = false
+                )
+            }
         }
 
-        // 3. Semester & Unit Dropdowns (Side-by-side)
+        // 3. Semester & Batch
+        val maxSemesters = if (courseProgram == "BCA") 6 else 8
+        val semesterOptions = (1..maxSemesters).map { "Semester $it" }
+        val batchOptions = listOf("Lecture", "Lab", "Tutorial")
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -1129,10 +1005,44 @@ private fun TakeAttendanceSelectionView(
             AppDropdownField(
                 label = "Semester",
                 selectedValue = semester,
-                options = (1..8).map { "Semester $it" },
+                options = semesterOptions,
                 onSelect = { semester = it },
                 placeholder = "Select Semester",
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                scrollable = false
+            )
+
+            AppDropdownField(
+                label = "Batch",
+                selectedValue = batchType,
+                options = batchOptions,
+                onSelect = { batchType = it },
+                placeholder = "Select Batch",
+                modifier = Modifier.weight(1f),
+                scrollable = false
+            )
+        }
+
+        // 4. Subject Name & Unit in requested order (subject name -> unit, unit size smaller than subject name)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            AppDropdownField(
+                label = "Subject Name",
+                selectedValue = subjectName,
+                options = subjectOptions,
+                onSelect = { selected ->
+                    if (selected == "+ Enter Custom Subject...") {
+                        customSubjectInput = ""
+                        showCustomSubjectDialog = true
+                    } else {
+                        subjectName = selected
+                    }
+                },
+                placeholder = "Select Subject",
+                modifier = Modifier.weight(1.8f),
+                scrollable = true
             )
 
             AppDropdownField(
@@ -1144,28 +1054,40 @@ private fun TakeAttendanceSelectionView(
                     topicCovered = syllabusTopics[u]?.firstOrNull() ?: topicCovered
                 },
                 placeholder = "Select Unit",
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1.0f),
+                scrollable = false
             )
         }
 
-        // 4. Topic Covered Dropdown (from syllabus)
+        // 5. Full horizontal length topic name
         val availableTopics = syllabusTopics[selectedUnit] ?: listOf("General Syllabus Topic")
+        val topicOptions = remember(availableTopics) {
+            availableTopics + listOf("+ Enter Custom Topic...")
+        }
         AppDropdownField(
             label = "Topic Covered",
             selectedValue = topicCovered,
-            options = availableTopics,
-            onSelect = { topicCovered = it },
+            options = topicOptions,
+            onSelect = { selected ->
+                if (selected == "+ Enter Custom Topic...") {
+                    customTopicInput = ""
+                    showCustomTopicDialog = true
+                } else {
+                    topicCovered = selected
+                }
+            },
             placeholder = "Select Topic Covered",
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            scrollable = false
         )
 
-        // Cloud sync banner if active
+        // Cloud sync and audit status banner
         if (cloudStatusMessage != null || isCloudSyncing) {
-            Card(
+            Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = primaryBlueBg),
-                border = BorderStroke(1.dp, primaryBlue)
+                color = AppTheme.colors.surface,
+                border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
             ) {
                 Row(
                     modifier = Modifier.padding(12.dp),
@@ -1173,43 +1095,139 @@ private fun TakeAttendanceSelectionView(
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     if (isCloudSyncing) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = primaryBlue)
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = AppTheme.colors.accentOrange)
                     }
                     Text(
                         text = cloudStatusMessage ?: "Auditing attendance...",
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Medium,
-                        color = primaryBlue
+                        color = AppTheme.colors.accentOrange
                     )
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
-        // Start Button
+        // Start Attendance Button in Electric Purple
         Button(
             onClick = onStartSession,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(52.dp),
             shape = RoundedCornerShape(14.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = primaryBlue)
-        ) {
-            Icon(
-                imageVector = Icons.Default.PlayArrow,
-                contentDescription = null,
-                modifier = Modifier.size(20.dp)
+            colors = ButtonDefaults.buttonColors(
+                containerColor = AppTheme.colors.primaryPurple,
+                contentColor = Color.White
             )
-            Spacer(modifier = Modifier.width(8.dp))
+        ) {
             Text(
                 text = "Start Attendance",
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Bold
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
             )
         }
 
         Spacer(modifier = Modifier.height(16.dp))
+    }
+
+    if (showCustomSubjectDialog) {
+        AlertDialog(
+            onDismissRequest = { showCustomSubjectDialog = false },
+            title = {
+                Text(
+                    text = "Custom Subject Name",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp,
+                    color = AppTheme.colors.textPrimary
+                )
+            },
+            text = {
+                OutlinedTextField(
+                    value = customSubjectInput,
+                    onValueChange = { customSubjectInput = it },
+                    placeholder = { Text("e.g. Distributed Systems", color = AppTheme.colors.textMuted, fontSize = 14.sp) },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = AppTheme.colors.primaryPurple,
+                        unfocusedBorderColor = AppTheme.colors.surfaceBorder,
+                        focusedTextColor = AppTheme.colors.textPrimary,
+                        unfocusedTextColor = AppTheme.colors.textPrimary
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (customSubjectInput.isNotBlank()) {
+                            subjectName = customSubjectInput.trim()
+                        }
+                        showCustomSubjectDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.primaryPurple)
+                ) {
+                    Text("Save", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCustomSubjectDialog = false }) {
+                    Text("Cancel", color = AppTheme.colors.textSecondary)
+                }
+            },
+            containerColor = AppTheme.colors.surface,
+            shape = RoundedCornerShape(16.dp)
+        )
+    }
+
+    if (showCustomTopicDialog) {
+        AlertDialog(
+            onDismissRequest = { showCustomTopicDialog = false },
+            title = {
+                Text(
+                    text = "Custom Topic Name",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp,
+                    color = AppTheme.colors.textPrimary
+                )
+            },
+            text = {
+                OutlinedTextField(
+                    value = customTopicInput,
+                    onValueChange = { customTopicInput = it },
+                    placeholder = { Text("e.g. Paxos & Raft Consensus", color = AppTheme.colors.textMuted, fontSize = 14.sp) },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = AppTheme.colors.primaryPurple,
+                        unfocusedBorderColor = AppTheme.colors.surfaceBorder,
+                        focusedTextColor = AppTheme.colors.textPrimary,
+                        unfocusedTextColor = AppTheme.colors.textPrimary
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (customTopicInput.isNotBlank()) {
+                            topicCovered = customTopicInput.trim()
+                        }
+                        showCustomTopicDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.primaryPurple)
+                ) {
+                    Text("Save", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCustomTopicDialog = false }) {
+                    Text("Cancel", color = AppTheme.colors.textSecondary)
+                }
+            },
+            containerColor = AppTheme.colors.surface,
+            shape = RoundedCornerShape(16.dp)
+        )
     }
 }
 
@@ -1371,23 +1389,27 @@ private fun SessionDetailScreen(
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Row 1: Course, Semester, Class Type
+                // Row 1: Course, Branch, Semester, Class Type
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     SessionDetailPropertyField(label = "Course", value = details.courseProgram, modifier = Modifier.weight(1f))
+                    if (details.branch.isNotBlank() && details.branch != "--") {
+                        SessionDetailPropertyField(label = "Branch", value = details.branch, modifier = Modifier.weight(1f))
+                    }
                     SessionDetailPropertyField(label = "Semester", value = details.semester, modifier = Modifier.weight(1f))
                     SessionDetailPropertyField(label = "Class Type", value = details.classType, modifier = Modifier.weight(1f))
                 }
 
-                // Row 2: Batch, Unit
+                // Row 2: Subject, Unit, Batch
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    SessionDetailPropertyField(label = "Batch", value = details.batchType, modifier = Modifier.weight(1f))
-                    SessionDetailPropertyField(label = "Unit", value = details.unit, modifier = Modifier.weight(1f))
+                    SessionDetailPropertyField(label = "Subject", value = details.subjectName, modifier = Modifier.weight(1.8f))
+                    SessionDetailPropertyField(label = "Unit", value = details.unit, modifier = Modifier.weight(1.0f))
+                    SessionDetailPropertyField(label = "Batch", value = details.batchType, modifier = Modifier.weight(1.0f))
                 }
 
                 // Row 3: Topic Covered (full-width so long syllabus topics never overflow)
@@ -1469,8 +1491,8 @@ private fun SessionDetailScreen(
                             Box(
                                 modifier = Modifier
                                     .size(32.dp)
-                                    .background(primaryBlueBg, CircleShape)
-                                    .border(1.dp, primaryBlue.copy(alpha = 0.5f), CircleShape),
+                                    .background(AppTheme.colors.background, CircleShape)
+                                    .border(1.dp, AppTheme.colors.surfaceBorder, CircleShape),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
@@ -1478,7 +1500,7 @@ private fun SessionDetailScreen(
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
                                     fontFamily = FontFamily.Monospace,
-                                    color = primaryBlue
+                                    color = AppTheme.colors.textPrimary
                                 )
                             }
 
@@ -1589,8 +1611,10 @@ private fun MetricStatMiniCard(
 private data class SessionAcademicDetails(
     val classType: String,
     val courseProgram: String,
+    val branch: String,
     val semester: String,
     val batchType: String,
+    val subjectName: String,
     val unit: String,
     val topicCovered: String
 )
@@ -1604,29 +1628,46 @@ private fun getSessionAcademicDetails(session: AttendanceSessionResponse): Sessi
         ?: if (session.courseCode?.contains("BCA", ignoreCase = true) == true) "BCA"
         else if (session.courseCode?.contains("B-Tech", ignoreCase = true) == true || session.courseCode?.contains("BTECH", ignoreCase = true) == true) "B-Tech"
         else session.courseCode?.takeIf { it.isNotBlank() } ?: "B-Tech"
+    val branch = when {
+        session.courseCode?.contains("CSE", ignoreCase = true) == true -> "CSE"
+        session.courseCode?.contains("ME", ignoreCase = true) == true -> "ME"
+        session.courseCode?.contains("ECE", ignoreCase = true) == true -> "ECE"
+        session.courseCode?.contains("EE", ignoreCase = true) == true -> "EE"
+        session.courseCode?.contains("CE", ignoreCase = true) == true -> "CE"
+        session.courseCode?.contains("IT", ignoreCase = true) == true -> "IT"
+        else -> if (courseProg == "BCA") "--" else "CSE"
+    }
     val sem = session.semester
         ?: SEMESTER_REGEX_1.find(session.courseCode ?: "")?.value
         ?: SEMESTER_REGEX_2.find(session.courseCode ?: "")?.value
         ?: if (session.courseCode?.isNotBlank() == true) session.courseCode else "Semester 1"
+
+    val rawName = session.courseName ?: ""
+    val subject = if (rawName.contains("•")) {
+        rawName.substringBefore("•").trim()
+    } else {
+        "Computer Networks"
+    }
+    val remainder = if (rawName.contains("•")) rawName.substringAfter("•").trim() else rawName
+
     val clsType = session.classType ?: when {
-        session.courseName?.contains("Extra", ignoreCase = true) == true -> "Extra"
-        session.courseName?.contains("Adjustment", ignoreCase = true) == true -> "Adjustment"
+        remainder.contains("Extra", ignoreCase = true) -> "Extra"
+        remainder.contains("Adjustment", ignoreCase = true) -> "Adjustment"
         else -> "Regular"
     }
-    val batch = session.batchType ?: if (session.courseName?.contains("Lab", ignoreCase = true) == true) "Lab" else "Lecture"
+    val batch = session.batchType ?: if (remainder.contains("Lab", ignoreCase = true) == true) "Lab" else "Lecture"
     val unit = session.unit
-        ?: UNIT_REGEX.find(session.courseName ?: "")?.value
+        ?: UNIT_REGEX.find(remainder)?.value
         ?: "Unit 1"
     val topic = session.topicCovered ?: run {
-        val raw = session.courseName ?: ""
-        if (raw.contains("•")) {
-            raw.substringAfter("•").substringBefore(")").trim()
-        } else if (raw.isNotBlank()) {
-            raw
+        if (remainder.contains("•")) {
+            remainder.substringAfter("•").substringBefore(")").trim()
+        } else if (remainder.isNotBlank()) {
+            remainder
         } else {
             "Foundations & System Architecture"
         }
     }
-    return SessionAcademicDetails(clsType, courseProg, sem, batch, unit, topic)
+    return SessionAcademicDetails(clsType, courseProg, branch, sem, batch, subject, unit, topic)
 }
 

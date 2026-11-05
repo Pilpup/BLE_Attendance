@@ -571,27 +571,7 @@ fun AuthScreen(
                     }
                 }
 
-                // Temporary guest login for UI testing
-                TextButton(
-                    onClick = {
-                        com.college.core.network.SessionManager.default.startSession(
-                            user = com.college.core.model.User(
-                                id = "guest_student_test",
-                                email = "guest.student@college.edu",
-                                name = "Alex Johnson",
-                                roles = setOf(com.college.core.model.Role.STUDENT),
-                                rollNumber = "2024CS0142",
-                                department = "Computer Science",
-                                year = "3rd Year"
-                            ),
-                            token = "temporary_ui_testing_token"
-                        )
-                        onAuthSuccess()
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Continue as Guest (Student)", color = AppTheme.colors.accentOrange, fontSize = 14.sp)
-                }
+
             } else {
                 // OTP Step Header
                 Column(

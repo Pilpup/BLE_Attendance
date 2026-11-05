@@ -174,7 +174,7 @@ fun LibraryScreen(
                             color = textPrimary
                         )
                         Text(
-                            text = "${user.name} · ${user.primaryRole?.name ?: "GUEST"}",
+                            text = "${user.name} · ${user.primaryRole?.name ?: "STUDENT"}",
                             fontSize = 12.sp,
                             color = textSecondary
                         )

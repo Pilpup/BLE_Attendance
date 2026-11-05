@@ -90,7 +90,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     val isLoggedIn: Boolean
         get() = SessionManager.default.isLoggedIn
     val currentUserName: String
-        get() = SessionManager.default.currentUser?.name ?: "Guest"
+        get() = SessionManager.default.currentUser?.name ?: "Student"
     val currentUserRole: String
         get() = SessionManager.default.currentUser?.primaryRole?.name ?: "STUDENT"
 
@@ -564,13 +564,86 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // Format attendance records as CSV for export
+    // Format attendance records and session details as CSV for export
     fun generateCsvReport(): String {
         val sb = StringBuilder()
-        sb.append("Roll Number,Status,Verification Method,Affinity Score,Remarks\n")
-        for (rec in finalizedRecords) {
-            val scorePct = (rec.affinityScore * 100).toInt()
-            sb.append("${rec.bleDeviceId},${rec.status},${rec.verificationMethod},$scorePct%,${rec.remarks ?: ""}\n")
+
+        // Session Details
+        sb.append("Session Details\n")
+        val code = selectedCourse?.courseCode ?: "B-Tech • CSE Semester 1"
+        val name = selectedCourse?.courseName ?: "Regular Lecture (Unit 1 • Foundations & System Architecture)"
+
+        val courseProg = when {
+            code.contains("BCA", ignoreCase = true) -> "BCA"
+            code.contains("B-Tech", ignoreCase = true) || code.contains("BTECH", ignoreCase = true) -> "B-Tech"
+            else -> "B-Tech"
+        }
+        val branch = when {
+            code.contains("CSE", ignoreCase = true) -> "CSE"
+            code.contains("ME", ignoreCase = true) -> "ME"
+            code.contains("ECE", ignoreCase = true) -> "ECE"
+            code.contains("EE", ignoreCase = true) -> "EE"
+            code.contains("CE", ignoreCase = true) -> "CE"
+            code.contains("IT", ignoreCase = true) -> "IT"
+            else -> if (courseProg == "BCA") "N/A" else "CSE"
+        }
+        val sem = Regex("Semester\\s*\\d", RegexOption.IGNORE_CASE).find(code)?.value
+            ?: Regex("Sem\\s*\\d", RegexOption.IGNORE_CASE).find(code)?.value
+            ?: "Semester 1"
+        val subject = if (name.contains("•")) {
+            name.substringBefore("•").trim()
+        } else {
+            "Computer Networks"
+        }
+        val remainder = if (name.contains("•")) name.substringAfter("•").trim() else name
+        val clsType = when {
+            remainder.contains("Extra", ignoreCase = true) -> "Extra"
+            remainder.contains("Adjustment", ignoreCase = true) -> "Adjustment"
+            else -> "Regular"
+        }
+        val batch = when {
+            remainder.contains("Lab", ignoreCase = true) -> "Lab"
+            remainder.contains("Tutorial", ignoreCase = true) -> "Tutorial"
+            else -> "Lecture"
+        }
+        val unit = Regex("Unit\\s*\\d", RegexOption.IGNORE_CASE).find(remainder)?.value ?: "Unit 1"
+        val topic = if (remainder.contains("(") && remainder.contains(")")) {
+            val inside = remainder.substringAfter("(").substringBefore(")")
+            if (inside.contains("•")) inside.substringAfter("•").trim() else inside.trim()
+        } else {
+            "Foundations & System Architecture"
+        }
+
+        sb.append("Course,$courseProg\n")
+        if (courseProg != "BCA") {
+            sb.append("Branch,$branch\n")
+        }
+        sb.append("Semester,$sem\n")
+        sb.append("Subject Name,\"$subject\"\n")
+        sb.append("Class Type,$clsType\n")
+        sb.append("Batch,$batch\n")
+        sb.append("Unit,$unit\n")
+        sb.append("Topic Covered,\"$topic\"\n")
+        val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
+        sb.append("Date,$timestamp\n")
+        sb.append("Session Code,$sessionId\n\n")
+
+        // Attendance Roster
+        sb.append("Roll Number,Student Name,Status\n")
+        val sortedList = finalizedRecords.sortedWith { r1, r2 ->
+            val roll1 = r1.rollNumber?.takeIf { it.isNotBlank() } ?: r1.bleDeviceId.removePrefix("BLE-")
+            val roll2 = r2.rollNumber?.takeIf { it.isNotBlank() } ?: r2.bleDeviceId.removePrefix("BLE-")
+            val d1 = roll1.filter { it.isDigit() }.toIntOrNull() ?: 0
+            val d2 = roll2.filter { it.isDigit() }.toIntOrNull() ?: 0
+            if (d1 != d2) d1.compareTo(d2) else roll1.compareTo(roll2)
+        }
+
+        for (rec in sortedList) {
+            val roll = rec.rollNumber?.takeIf { it.isNotBlank() } ?: rec.bleDeviceId.removePrefix("BLE-")
+            val studentName = com.college.feature.attendance.getDisplayStudentName(rec)
+            val isVerified = rec.status == "VERIFIED_PRESENT"
+            val status = if (isVerified) "Present" else "Absent"
+            sb.append("$roll,\"$studentName\",$status\n")
         }
         return sb.toString()
     }
@@ -682,7 +755,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     // Start teacher session and initialize backend record
-    fun startTeacherSession(durationSeconds: Int = 60, courseId: String? = null) {
+    fun startTeacherSession(durationSeconds: Int = 30, courseId: String? = null) {
         val targetCourseId = courseId ?: selectedCourse?.id
         backendSessionId = null
         sessionId = UUID.randomUUID().toString().replace("-", "").take(4).uppercase()
@@ -751,8 +824,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         stopTeacherSession()
 
         val sessId = backendSessionId ?: sessionId.takeIf { it != "----" }
+        val token = SessionManager.default.activeToken
+        val hasRealCloudJwt = token?.contains(".") == true && !token.contains("mock")
 
-        if (!SessionManager.default.isLoggedIn || sessId == null) {
+        if (!SessionManager.default.isLoggedIn || !hasRealCloudJwt || sessId == null) {
             finalizedRecords = emptyList()
             cloudStatusMessage = "Cannot finalize: No active cloud session or not signed in."
             return
@@ -780,14 +855,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         broadcastAirVerdicts(finalizedRecords)
                     }
                     is NetworkResult.Error -> {
-                        if (result.code == 401) {
-                            handleAuthExpired()
-                        } else {
-                            cloudStatusMessage = "Audit failed: HTTP ${result.code} - ${result.message}"
-                        }
+                        cloudStatusMessage = "Finalization failed: HTTP ${result.code} - ${result.message}"
+                        finalizedRecords = emptyList()
                     }
                     is NetworkResult.Exception -> {
-                        cloudStatusMessage = "Finalize failed: ${result.throwable.localizedMessage}"
+                        cloudStatusMessage = "Finalization error: ${result.throwable.localizedMessage ?: "Offline"}"
+                        finalizedRecords = emptyList()
                     }
                 }
             }
@@ -945,32 +1018,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         detectedSessionSalt = "------"
         studentPhase = StudentPhase.LISTENING_FOR_TEACHER
         onStartScanning?.invoke()
-
-        // Auto-simulate teacher beacon in debug mode after 2.5s if no physical beacon detected
-        debugSimulationJob?.cancel()
-        debugSimulationJob = viewModelScope.launch {
-            delay(2500L)
-            if (studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
-                simulateTeacherBeacon()
-            }
-        }
-    }
-
-    // Debug simulation job for testing student check-in without physical beacon
-    private var debugSimulationJob: Job? = null
-
-    // Simulates teacher beacon reception for local UI debugging without physical teacher beacon
-    fun simulateTeacherBeacon(sessionId: String = "DEMO-88", salt: String = "SALT99") {
-        detectedSessionId = sessionId
-        detectedSessionSalt = salt
-        studentPhase = StudentPhase.PROBING_NEIGHBORS
-        startStudentDiscoveryWindow()
     }
 
     // Student scanning stop
     fun stopStudentScanning() {
-        debugSimulationJob?.cancel()
-        debugSimulationJob = null
         stopPeerBatchUpdates()
         studentTimer?.cancel()
         studentTimer = null
@@ -984,8 +1035,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Reset student attendance session back to standby
     fun resetStudentSession() {
-        debugSimulationJob?.cancel()
-        debugSimulationJob = null
         stopPeerBatchUpdates()
         studentTimer?.cancel()
         studentTimer = null

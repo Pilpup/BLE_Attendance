@@ -51,6 +51,8 @@ class MainActivity : ComponentActivity() {
         com.college.core.network.SessionManager.default.init(applicationContext)
         com.college.core.network.ServerConfigManager.default.init(applicationContext)
 
+
+
         // Connect the feature ViewModel's radio callbacks to the hardware bridge
         viewModel.onStartBroadcasting = { token, txPower ->
             bleAdvertiser.startBroadcasting(
@@ -115,7 +117,7 @@ class MainActivity : ComponentActivity() {
                 AttendanceScreenCallbacks(
                     onStartTeacherSession = {
                         checkAndExecute {
-                            viewModel.startTeacherSession(durationSeconds = 60)
+                            viewModel.startTeacherSession(durationSeconds = 30)
                         }
                     },
                     onStopTeacherSession = {
@@ -155,15 +157,38 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // Exports attendance records and session details as a .csv file
     private fun shareAttendanceCsv(csvContent: String, sessionId: String) {
-        val sendIntent = Intent().apply {
-            action = Intent.ACTION_SEND
-            putExtra(Intent.EXTRA_TEXT, csvContent)
-            putExtra(Intent.EXTRA_SUBJECT, "BLE Attendance - Session $sessionId")
-            type = "text/plain"
+        try {
+            val fileName = "attendance_${sessionId.lowercase().ifBlank { "session" }}.csv"
+            val file = java.io.File(cacheDir, fileName)
+            file.writeText(csvContent)
+
+            val uri = androidx.core.content.FileProvider.getUriForFile(
+                this,
+                "$packageName.fileprovider",
+                file
+            )
+
+            val sendIntent = Intent().apply {
+                action = Intent.ACTION_SEND
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_TEXT, csvContent)
+                putExtra(Intent.EXTRA_SUBJECT, "Attendance - Session $sessionId")
+                type = "text/csv"
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            val shareIntent = Intent.createChooser(sendIntent, "Export Attendance CSV")
+            startActivity(shareIntent)
+        } catch (_: Exception) {
+            val fallbackIntent = Intent().apply {
+                action = Intent.ACTION_SEND
+                putExtra(Intent.EXTRA_TEXT, csvContent)
+                putExtra(Intent.EXTRA_SUBJECT, "Attendance - Session $sessionId")
+                type = "text/plain"
+            }
+            startActivity(Intent.createChooser(fallbackIntent, "Export Attendance"))
         }
-        val shareIntent = Intent.createChooser(sendIntent, "Export Attendance CSV")
-        startActivity(shareIntent)
     }
 
     override fun onDestroy() {

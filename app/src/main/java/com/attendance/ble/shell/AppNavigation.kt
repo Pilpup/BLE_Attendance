@@ -55,10 +55,8 @@ fun AppNavigation(
                         route.startsWith(AttendanceDashboardCard.NAV_ROUTE) -> {
                             if (route.contains("older")) {
                                 viewModel.teacherViewMode = TeacherViewMode.OLDER_SESSIONS
-                            } else if (route.contains("take")) {
-                                viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
                             } else {
-                                viewModel.teacherViewMode = TeacherViewMode.MENU
+                                viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
                             }
                             Destination.ATTENDANCE
                         }
