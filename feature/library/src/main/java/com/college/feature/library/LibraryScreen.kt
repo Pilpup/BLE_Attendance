@@ -263,8 +263,8 @@ fun LibraryScreen(
                 }
             }
 
-            // Header Title (rendered prominent in portrait, compact in landscape)
-            if (!isLandscape) {
+            // Header Title (rendered prominent in portrait for staff/dev with tabs, compact in landscape)
+            if (!isLandscape && viewModel.canUseStaffTools) {
                 AppHeader(
                     title = "Library",
                     modifier = Modifier.padding(top = 0.dp, bottom = 4.dp)
@@ -344,7 +344,8 @@ fun LibraryScreen(
             ) {
                 when (activeTab) {
                     LibraryTab.CATALOGUE -> CatalogueTabContent(
-                        viewModel = viewModel
+                        viewModel = viewModel,
+                        isLandscape = isLandscape
                     )
                     LibraryTab.STAFF_INVENTORY -> StaffInventoryTabContent(
                         viewModel = viewModel,
@@ -467,7 +468,8 @@ fun LibraryScreen(
 
 @Composable
 private fun CatalogueTabContent(
-    viewModel: LibraryViewModel
+    viewModel: LibraryViewModel,
+    isLandscape: Boolean
 ) {
     val scrollState = rememberScrollState()
     val books = viewModel.filteredBooks
@@ -479,6 +481,13 @@ private fun CatalogueTabContent(
             .verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // Prominent title scrolls with the catalogue for student/teacher view
+        if (!viewModel.canUseStaffTools && !isLandscape) {
+            AppHeader(
+                title = "Library",
+                modifier = Modifier.padding(top = 0.dp, bottom = 4.dp)
+            )
+        }
         if (books.isEmpty()) {
             Surface(
                 modifier = Modifier
