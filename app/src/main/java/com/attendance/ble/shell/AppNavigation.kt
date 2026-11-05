@@ -55,8 +55,11 @@ fun AppNavigation(
                         route.startsWith(AttendanceDashboardCard.NAV_ROUTE) -> {
                             if (route.contains("older")) {
                                 viewModel.teacherViewMode = TeacherViewMode.OLDER_SESSIONS
+                                viewModel.selectedSessionForDetails = null
+                                viewModel.loadSessionHistory()
                             } else {
                                 viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
+                                viewModel.selectedSessionForDetails = null
                             }
                             Destination.ATTENDANCE
                         }
@@ -78,16 +81,15 @@ fun AppNavigation(
         }
 
         Destination.ATTENDANCE -> if (user != null) {
+            // Handles back press navigation for attendance sessions and historical records
             val handleBack = remember(user, viewModel) {
                 {
-                    if (user.canTakeAttendance() && !viewModel.isSessionActive && viewModel.finalizedRecords.isEmpty()) {
-                        if (viewModel.selectedSessionForDetails != null) {
-                            viewModel.selectedSessionForDetails = null
-                        } else if (viewModel.teacherViewMode != TeacherViewMode.MENU) {
-                            viewModel.teacherViewMode = TeacherViewMode.MENU
-                        } else {
-                            destination = Destination.HOME
-                        }
+                    if (viewModel.selectedSessionForDetails != null) {
+                        viewModel.selectedSessionForDetails = null
+                    } else if (viewModel.isSessionActive) {
+                        viewModel.resetSession()
+                    } else if (viewModel.finalizedRecords.isNotEmpty()) {
+                        viewModel.resetSession()
                     } else {
                         destination = Destination.HOME
                     }

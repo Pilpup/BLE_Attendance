@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.FactCheck
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
@@ -147,6 +148,20 @@ fun HomeScreen(
                         }
                     }
                 )
+
+                if (user?.canTakeAttendance() == true) {
+                    AppDivider()
+
+                    AppCardItem(
+                        icon = Icons.Default.History,
+                        iconTint = Color.White,
+                        iconBg = AppTheme.colors.primaryPurple,
+                        title = "Older Sessions",
+                        onClick = {
+                            onNavigate("${AttendanceDashboardCard.NAV_ROUTE}/older")
+                        }
+                    )
+                }
 
                 AppDivider()
 
@@ -423,20 +438,35 @@ private fun SearchDialog(
 
     val colors = AppTheme.colors
     val allActions = remember(user, colors) {
-        listOf(
-            SearchAction("Attendance", "Mark attendance and view session records", Icons.AutoMirrored.Filled.FactCheck, colors.primaryPurple) {
-                if (user != null) onNavigate(AttendanceDashboardCard.NAV_ROUTE) else onOpenAccount()
-            },
-            SearchAction("Library", "Book loans and library catalog", Icons.AutoMirrored.Filled.MenuBook, colors.accentOrange) {
-                if (user != null) onNavigate(LibraryDashboardCard.NAV_ROUTE) else onOpenAccount()
-            },
-            SearchAction("Account Profile", if (user != null) "View account details and roles" else "Sign in or create profile", Icons.Default.Person, colors.warningAmber) {
-                onOpenAccount()
-            },
-            SearchAction("About", "Application version and details", Icons.Default.Info, colors.primaryPurple) {
-                onOpenAbout()
+        buildList {
+            add(
+                SearchAction("Attendance", "Mark attendance and view session records", Icons.AutoMirrored.Filled.FactCheck, colors.accentOrange) {
+                    if (user != null) onNavigate(AttendanceDashboardCard.NAV_ROUTE) else onOpenAccount()
+                }
+            )
+            if (user?.canTakeAttendance() == true) {
+                add(
+                    SearchAction("Older Sessions", "View past attendance records", Icons.Default.History, colors.primaryPurple) {
+                        onNavigate("${AttendanceDashboardCard.NAV_ROUTE}/older")
+                    }
+                )
             }
-        )
+            add(
+                SearchAction("Library", "Book loans and library catalog", Icons.AutoMirrored.Filled.MenuBook, colors.primaryPurple) {
+                    if (user != null) onNavigate(LibraryDashboardCard.NAV_ROUTE) else onOpenAccount()
+                }
+            )
+            add(
+                SearchAction("Account Profile", if (user != null) "View account details and roles" else "Sign in or create profile", Icons.Default.Person, colors.warningAmber) {
+                    onOpenAccount()
+                }
+            )
+            add(
+                SearchAction("About", "Application version and details", Icons.Default.Info, colors.primaryPurple) {
+                    onOpenAbout()
+                }
+            )
+        }
     }
 
     val filteredActions = remember(searchQuery, allActions) {

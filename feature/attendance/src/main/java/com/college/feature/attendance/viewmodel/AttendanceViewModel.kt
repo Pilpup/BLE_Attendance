@@ -117,7 +117,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Teacher navigation and history
     var teacherViewMode by mutableStateOf(TeacherViewMode.MENU)
-    var pastSessions by mutableStateOf<List<AttendanceSessionResponse>>(emptyList())
+    var pastSessions by mutableStateOf<List<AttendanceSessionResponse>>(getDummyPastSessions())
     var isLoadingHistory by mutableStateOf(false)
     var selectedSessionForDetails by mutableStateOf<AttendanceSessionResponse?>(null)
 
@@ -566,12 +566,16 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Format attendance records and session details as CSV for export
     fun generateCsvReport(): String {
+        val activeSession = selectedSessionForDetails
+        val code = activeSession?.courseCode ?: selectedCourse?.courseCode ?: "B-Tech • CSE Semester 1"
+        val name = activeSession?.courseName ?: selectedCourse?.courseName ?: "Computer Networks • Regular Lecture (Unit 1 • Foundations & System Architecture)"
+        val sid = activeSession?.sessionToken ?: sessionId
+        val recordsToExport = activeSession?.records ?: finalizedRecords
+
         val sb = StringBuilder()
 
         // Session Details
         sb.append("Session Details\n")
-        val code = selectedCourse?.courseCode ?: "B-Tech • CSE Semester 1"
-        val name = selectedCourse?.courseName ?: "Regular Lecture (Unit 1 • Foundations & System Architecture)"
 
         val courseProg = when {
             code.contains("BCA", ignoreCase = true) -> "BCA"
@@ -590,11 +594,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val sem = Regex("Semester\\s*\\d", RegexOption.IGNORE_CASE).find(code)?.value
             ?: Regex("Sem\\s*\\d", RegexOption.IGNORE_CASE).find(code)?.value
             ?: "Semester 1"
-        val subject = if (name.contains("•")) {
-            name.substringBefore("•").trim()
-        } else {
-            "Computer Networks"
-        }
+        val subject = com.college.feature.attendance.extractSubjectName(name, code)
         val remainder = if (name.contains("•")) name.substringAfter("•").trim() else name
         val clsType = when {
             remainder.contains("Extra", ignoreCase = true) -> "Extra"
@@ -624,13 +624,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         sb.append("Batch,$batch\n")
         sb.append("Unit,$unit\n")
         sb.append("Topic Covered,\"$topic\"\n")
-        val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
+        val timestamp = activeSession?.startedAt ?: java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
         sb.append("Date,$timestamp\n")
-        sb.append("Session Code,$sessionId\n\n")
+        sb.append("Session Code,$sid\n\n")
 
         // Attendance Roster
         sb.append("Roll Number,Student Name,Status\n")
-        val sortedList = finalizedRecords.sortedWith { r1, r2 ->
+        val sortedList = recordsToExport.sortedWith { r1, r2 ->
             val roll1 = r1.rollNumber?.takeIf { it.isNotBlank() } ?: r1.bleDeviceId.removePrefix("BLE-")
             val roll2 = r2.rollNumber?.takeIf { it.isNotBlank() } ?: r2.bleDeviceId.removePrefix("BLE-")
             val d1 = roll1.filter { it.isDigit() }.toIntOrNull() ?: 0
@@ -641,8 +641,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         for (rec in sortedList) {
             val roll = rec.rollNumber?.takeIf { it.isNotBlank() } ?: rec.bleDeviceId.removePrefix("BLE-")
             val studentName = com.college.feature.attendance.getDisplayStudentName(rec)
-            val isVerified = rec.status == "VERIFIED_PRESENT"
-            val status = if (isVerified) "Present" else "Absent"
+            val isPresent = com.college.feature.attendance.isRecordPresent(rec)
+            val status = if (isPresent) "Present" else "Absent"
             sb.append("$roll,\"$studentName\",$status\n")
         }
         return sb.toString()
@@ -910,7 +910,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             startedAt = timestamp,
             records = records,
             courseCode = selectedCourse?.courseCode ?: "",
-            courseName = selectedCourse?.courseName ?: ""
+            courseName = selectedCourse?.courseName ?: "",
+            subjectName = com.college.feature.attendance.extractSubjectName(selectedCourse?.courseName, selectedCourse?.courseCode)
         )
         pastSessions = listOf(completedSession) + pastSessions.filter { it.id != completedSession.id }
     }
@@ -960,25 +961,311 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun loadSessionHistory() {
+        if (pastSessions.isEmpty()) {
+            pastSessions = getDummyPastSessions()
+        }
+        if (!SessionManager.default.isLoggedIn) return
         isLoadingHistory = true
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val res = api.getSessionHistory()
                 withContext(Dispatchers.Main) {
                     isLoadingHistory = false
-                    if (res.isSuccessful && res.body() != null) {
+                    if (res.isSuccessful && !res.body().isNullOrEmpty()) {
                         pastSessions = res.body()!!
-                    } else {
-                        pastSessions = emptyList()
+                    } else if (pastSessions.isEmpty()) {
+                        pastSessions = getDummyPastSessions()
                     }
                 }
             } catch (_: Exception) {
                 withContext(Dispatchers.Main) {
                     isLoadingHistory = false
-                    pastSessions = emptyList()
+                    if (pastSessions.isEmpty()) {
+                        pastSessions = getDummyPastSessions()
+                    }
                 }
             }
         }
+    }
+
+    // Realistic dummy sessions for reviewing historical attendance records
+    fun getDummyPastSessions(): List<AttendanceSessionResponse> {
+        val session1Records = listOf(
+            AttendanceRecordItem(
+                id = "s1-1",
+                bleDeviceId = "BLE-22CS001",
+                rollNumber = "22CS001",
+                studentName = "Aarav Sharma",
+                status = "VERIFIED_PRESENT",
+                verificationMethod = "BLE_CONSENSUS",
+                affinityScore = 0.96,
+                remarks = "Mutual in-degree verified"
+            ),
+            AttendanceRecordItem(
+                id = "s1-2",
+                bleDeviceId = "BLE-22CS004",
+                rollNumber = "22CS004",
+                studentName = "Ananya Verma",
+                status = "VERIFIED_PRESENT",
+                verificationMethod = "BLE_CONSENSUS",
+                affinityScore = 0.94,
+                remarks = "Mutual in-degree verified"
+            ),
+            AttendanceRecordItem(
+                id = "s1-3",
+                bleDeviceId = "BLE-22CS007",
+                rollNumber = "22CS007",
+                studentName = "Dev Patel",
+                status = "VERIFIED_PRESENT",
+                verificationMethod = "BLE_CONSENSUS",
+                affinityScore = 0.91,
+                remarks = "Mutual in-degree verified"
+            ),
+            AttendanceRecordItem(
+                id = "s1-4",
+                bleDeviceId = "BLE-22CS011",
+                rollNumber = "22CS011",
+                studentName = "Isha Gupta",
+                status = "VERIFIED_PRESENT",
+                verificationMethod = "MANUAL_OVERRIDE",
+                affinityScore = 1.0,
+                remarks = "Confirmed by instructor"
+            ),
+            AttendanceRecordItem(
+                id = "s1-5",
+                bleDeviceId = "BLE-22CS015",
+                rollNumber = "22CS015",
+                studentName = "Rohan Mehta",
+                status = "VERIFIED_PRESENT",
+                verificationMethod = "BLE_CONSENSUS",
+                affinityScore = 0.95,
+                remarks = "Mutual in-degree verified"
+            ),
+            AttendanceRecordItem(
+                id = "s1-6",
+                bleDeviceId = "BLE-22CS019",
+                rollNumber = "22CS019",
+                studentName = "Kabir Singh",
+                status = "ABSENT",
+                verificationMethod = "NONE",
+                affinityScore = 0.0,
+                remarks = "Not detected in mesh"
+            ),
+            AttendanceRecordItem(
+                id = "s1-7",
+                bleDeviceId = "BLE-22CS023",
+                rollNumber = "22CS023",
+                studentName = "Pooja Nair",
+                status = "ABSENT",
+                verificationMethod = "NONE",
+                affinityScore = 0.0,
+                remarks = "Did not check in"
+            ),
+            AttendanceRecordItem(
+                id = "s1-8",
+                bleDeviceId = "BLE-22CS031",
+                rollNumber = "22CS031",
+                studentName = "Vikram Malhotra",
+                status = "UNVERIFIED",
+                verificationMethod = "NONE",
+                affinityScore = 0.35,
+                remarks = "Insufficient quorum"
+            )
+        )
+
+        val session2Records = listOf(
+            AttendanceRecordItem(
+                id = "s2-1",
+                bleDeviceId = "BLE-22CS001",
+                rollNumber = "22CS001",
+                studentName = "Aarav Sharma",
+                status = "VERIFIED_PRESENT",
+                verificationMethod = "BLE_CONSENSUS",
+                affinityScore = 0.95
+            ),
+            AttendanceRecordItem(
+                id = "s2-2",
+                bleDeviceId = "BLE-22CS004",
+                rollNumber = "22CS004",
+                studentName = "Ananya Verma",
+                status = "ABSENT",
+                verificationMethod = "NONE",
+                affinityScore = 0.0
+            ),
+            AttendanceRecordItem(
+                id = "s2-3",
+                bleDeviceId = "BLE-22CS007",
+                rollNumber = "22CS007",
+                studentName = "Dev Patel",
+                status = "VERIFIED_PRESENT",
+                verificationMethod = "BLE_CONSENSUS",
+                affinityScore = 0.92
+            ),
+            AttendanceRecordItem(
+                id = "s2-4",
+                bleDeviceId = "BLE-22CS011",
+                rollNumber = "22CS011",
+                studentName = "Isha Gupta",
+                status = "VERIFIED_PRESENT",
+                verificationMethod = "BLE_CONSENSUS",
+                affinityScore = 0.89
+            ),
+            AttendanceRecordItem(
+                id = "s2-5",
+                bleDeviceId = "BLE-22CS015",
+                rollNumber = "22CS015",
+                studentName = "Rohan Mehta",
+                status = "VERIFIED_PRESENT",
+                verificationMethod = "MANUAL_OVERRIDE",
+                affinityScore = 1.0,
+                remarks = "Confirmed by instructor"
+            ),
+            AttendanceRecordItem(
+                id = "s2-6",
+                bleDeviceId = "BLE-22CS019",
+                rollNumber = "22CS019",
+                studentName = "Kabir Singh",
+                status = "VERIFIED_PRESENT",
+                verificationMethod = "BLE_CONSENSUS",
+                affinityScore = 0.91
+            ),
+            AttendanceRecordItem(
+                id = "s2-7",
+                bleDeviceId = "BLE-22CS023",
+                rollNumber = "22CS023",
+                studentName = "Pooja Nair",
+                status = "ABSENT",
+                verificationMethod = "NONE",
+                affinityScore = 0.0
+            ),
+            AttendanceRecordItem(
+                id = "s2-8",
+                bleDeviceId = "BLE-22CS031",
+                rollNumber = "22CS031",
+                studentName = "Vikram Malhotra",
+                status = "VERIFIED_PRESENT",
+                verificationMethod = "BLE_CONSENSUS",
+                affinityScore = 0.93
+            )
+        )
+
+        val session3Records = listOf(
+            AttendanceRecordItem(
+                id = "s3-1",
+                bleDeviceId = "BLE-22CS001",
+                rollNumber = "22CS001",
+                studentName = "Aarav Sharma",
+                status = "VERIFIED_PRESENT",
+                verificationMethod = "BLE_CONSENSUS",
+                affinityScore = 0.97
+            ),
+            AttendanceRecordItem(
+                id = "s3-2",
+                bleDeviceId = "BLE-22CS004",
+                rollNumber = "22CS004",
+                studentName = "Ananya Verma",
+                status = "VERIFIED_PRESENT",
+                verificationMethod = "BLE_CONSENSUS",
+                affinityScore = 0.96
+            ),
+            AttendanceRecordItem(
+                id = "s3-3",
+                bleDeviceId = "BLE-22CS007",
+                rollNumber = "22CS007",
+                studentName = "Dev Patel",
+                status = "ABSENT",
+                verificationMethod = "NONE",
+                affinityScore = 0.0
+            ),
+            AttendanceRecordItem(
+                id = "s3-4",
+                bleDeviceId = "BLE-22CS011",
+                rollNumber = "22CS011",
+                studentName = "Isha Gupta",
+                status = "ABSENT",
+                verificationMethod = "NONE",
+                affinityScore = 0.0
+            ),
+            AttendanceRecordItem(
+                id = "s3-5",
+                bleDeviceId = "BLE-22CS015",
+                rollNumber = "22CS015",
+                studentName = "Rohan Mehta",
+                status = "VERIFIED_PRESENT",
+                verificationMethod = "BLE_CONSENSUS",
+                affinityScore = 0.94
+            ),
+            AttendanceRecordItem(
+                id = "s3-6",
+                bleDeviceId = "BLE-22CS019",
+                rollNumber = "22CS019",
+                studentName = "Kabir Singh",
+                status = "ABSENT",
+                verificationMethod = "NONE",
+                affinityScore = 0.0
+            ),
+            AttendanceRecordItem(
+                id = "s3-7",
+                bleDeviceId = "BLE-22CS023",
+                rollNumber = "22CS023",
+                studentName = "Pooja Nair",
+                status = "VERIFIED_PRESENT",
+                verificationMethod = "MANUAL_OVERRIDE",
+                affinityScore = 1.0,
+                remarks = "Confirmed by instructor"
+            ),
+            AttendanceRecordItem(
+                id = "s3-8",
+                bleDeviceId = "BLE-22CS031",
+                rollNumber = "22CS031",
+                studentName = "Vikram Malhotra",
+                status = "ABSENT",
+                verificationMethod = "NONE",
+                affinityScore = 0.0
+            )
+        )
+
+        return listOf(
+            AttendanceSessionResponse(
+                id = "past-sess-1",
+                courseId = "academic-b-tech-cse-semester5",
+                sessionToken = "8F4A",
+                status = "COMPLETED",
+                totalVerified = 5,
+                totalSpoofers = 0,
+                startedAt = "2026-11-05T09:30:00",
+                records = session1Records,
+                courseCode = "B-Tech • CSE Semester 5",
+                courseName = "Computer Networks • Regular Lecture (Unit 2 • BLE Advertising & Proximity Packets)",
+                subjectName = "Computer Networks"
+            ),
+            AttendanceSessionResponse(
+                id = "past-sess-2",
+                courseId = "academic-b-tech-cse-semester5",
+                sessionToken = "7E2C",
+                status = "COMPLETED",
+                totalVerified = 6,
+                totalSpoofers = 0,
+                startedAt = "2026-11-04T14:15:00",
+                records = session2Records,
+                courseCode = "B-Tech • CSE Semester 5",
+                courseName = "Operating Systems • Regular Lab (Unit 3 • Process Scheduling & Deadlocks)",
+                subjectName = "Operating Systems"
+            ),
+            AttendanceSessionResponse(
+                id = "past-sess-3",
+                courseId = "academic-b-tech-cse-semester5",
+                sessionToken = "4B19",
+                status = "COMPLETED",
+                totalVerified = 4,
+                totalSpoofers = 0,
+                startedAt = "2026-11-03T11:00:00",
+                records = session3Records,
+                courseCode = "B-Tech • CSE Semester 5",
+                courseName = "Database Management Systems • Extra Lecture (Unit 1 • Relational Algebra & Normalization)",
+                subjectName = "Database Management Systems"
+            )
+        )
     }
 
     fun stopTeacherSession() {

@@ -20,19 +20,23 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.FactCheck
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sensors
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.TouchApp
@@ -71,6 +75,25 @@ import com.college.feature.attendance.network.AttendanceSessionResponse
 import com.college.feature.attendance.network.CourseResponse
 import com.college.feature.attendance.ui.theme.*
 import com.college.feature.attendance.viewmodel.TeacherViewMode
+import com.college.core.ui.components.AppSearchPill
+import com.college.core.ui.components.AppTextField
+import com.college.core.ui.components.appTextFieldColors
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+// Determines if a student record is marked Present (via BLE consensus or manual teacher verification)
+internal fun isRecordPresent(rec: AttendanceRecordItem): Boolean {
+    if (rec.status == "VERIFIED_PRESENT" || rec.status.equals("PRESENT", ignoreCase = true)) return true
+    if (rec.verificationMethod == "MANUAL_OVERRIDE" ||
+        rec.verificationMethod == "TEACHER_MANUAL" ||
+        rec.remarks?.contains("instructor", ignoreCase = true) == true ||
+        rec.remarks?.contains("teacher", ignoreCase = true) == true ||
+        rec.remarks?.contains("confirmed", ignoreCase = true) == true) {
+        return true
+    }
+    return false
+}
 
 // Maps attendance audit records to display status categories (Verified or Unverified)
 private fun getRecordAuditStatus(rec: AttendanceRecordItem): String {
@@ -576,7 +599,8 @@ internal fun TeacherSection(
         }
     } else if (selectedSessionForDetails != null) {
         SessionDetailScreen(
-            session = selectedSessionForDetails
+            session = selectedSessionForDetails,
+            onExportAttendance = onExportAttendance
         )
     } else {
         when (teacherViewMode) {
@@ -714,6 +738,33 @@ private val branchSubjects = mapOf(
         "Software Engineering"
     )
 )
+
+// Retrieves recommended subjects based on academic program, branch, and semester
+private fun getSemesterSubjects(program: String, branch: String, semester: String): List<String> {
+    val semNum = semester.filter { it.isDigit() }.toIntOrNull() ?: 1
+    if (program.equals("BCA", ignoreCase = true)) {
+        return when (semNum) {
+            1 -> listOf("Programming in C", "Fundamentals of Computers & IT", "Mathematical Foundation", "Communication Skills")
+            2 -> listOf("Data Structures using C", "Object Oriented Programming in C++", "Digital Electronics", "Database Management Systems")
+            3 -> listOf("Java Programming", "Database Management (SQL)", "Computer Networks", "Operating Systems")
+            4 -> listOf("Python Programming", "Web Development", "Software Engineering", "Computer Architecture")
+            5 -> listOf("Web Technologies", "Mobile App Development", "Cloud Computing", "Information Security")
+            6 -> listOf("Machine Learning", "Artificial Intelligence", "Cyber Security", "Data Mining & Warehousing")
+            else -> branchSubjects["BCA"] ?: listOf("Programming in C")
+        }
+    }
+
+    return when (semNum) {
+        1 -> listOf("Programming in C", "Engineering Mathematics - I", "Engineering Physics", "Basic Electrical Engineering", "Engineering Graphics & Design", "Communication Skills")
+        2 -> listOf("Data Structures", "Engineering Mathematics - II", "Engineering Chemistry", "Basic Electronics", "Object Oriented Programming (C++)")
+        3 -> listOf("Data Structures & Algorithms", "Digital Logic & Computer Design", "Discrete Mathematics", "Computer Organization", "Object Oriented Programming in Java")
+        4 -> listOf("Operating Systems", "Database Management Systems", "Theory of Computation", "Design & Analysis of Algorithms", "Computer Networks")
+        5 -> listOf("Computer Networks", "Operating Systems", "Database Management Systems", "Software Engineering", "Theory of Computation", "Compiler Design")
+        6 -> listOf("Machine Learning", "Compiler Design", "Cloud Computing", "Information & Cyber Security", "Web Technologies")
+        7, 8 -> listOf("Artificial Intelligence", "Internet of Things", "Big Data Analytics", "Distributed Systems", "Cyber Security")
+        else -> branchSubjects[branch] ?: branchSubjects["CSE"] ?: listOf("Programming in C")
+    }
+}
 
 // Reusable dropdown selector supporting scrollable and non-scrollable modes
 @Composable
@@ -886,7 +937,7 @@ private fun TakeAttendanceSelectionView(
     var branch by remember { mutableStateOf("CSE") }
     var semester by remember { mutableStateOf("Semester 1") }
     var batchType by remember { mutableStateOf("Lecture") }
-    var subjectName by remember { mutableStateOf("Computer Networks") }
+    var subjectName by remember { mutableStateOf("Programming in C") }
     var selectedUnit by remember { mutableStateOf("Unit 1") }
     var topicCovered by remember { mutableStateOf("Foundations & System Architecture") }
 
@@ -895,12 +946,14 @@ private fun TakeAttendanceSelectionView(
     var showCustomTopicDialog by remember { mutableStateOf(false) }
     var customTopicInput by remember { mutableStateOf("") }
 
-    val currentSubjects = remember(courseProgram, branch) {
-        if (courseProgram == "BCA") {
-            branchSubjects["BCA"] ?: listOf("Computer Networks")
+    val currentSubjects = remember(courseProgram, branch, semester) {
+        val semSpecific = getSemesterSubjects(courseProgram, branch, semester)
+        val generalBranch = if (courseProgram == "BCA") {
+            branchSubjects["BCA"] ?: emptyList()
         } else {
-            branchSubjects[branch] ?: branchSubjects["CSE"] ?: listOf("Computer Networks")
+            branchSubjects[branch] ?: branchSubjects["CSE"] ?: emptyList()
         }
+        (semSpecific + generalBranch).distinct()
     }
     val subjectOptions = remember(currentSubjects) {
         currentSubjects + listOf("+ Enter Custom Subject...")
@@ -909,7 +962,7 @@ private fun TakeAttendanceSelectionView(
     // Keep subject aligned with branch when switching courses or branches
     LaunchedEffect(currentSubjects) {
         if (subjectName !in currentSubjects && customSubjectInput.isBlank()) {
-            subjectName = currentSubjects.firstOrNull() ?: "Computer Networks"
+            subjectName = currentSubjects.firstOrNull() ?: "Programming in C"
         }
     }
 
@@ -1231,125 +1284,625 @@ private fun TakeAttendanceSelectionView(
     }
 }
 
-private fun formatSessionDate(raw: String?): String {
-    if (raw.isNullOrBlank()) return "Past session"
+// Formats session start timestamp into clean date and time
+private fun formatSessionDateTime(raw: String?): String {
+    if (raw.isNullOrBlank()) return "Past Session"
     val trimmed = raw.trim()
-    if (trimmed.length >= 10 && trimmed[4] == '-' && trimmed[7] == '-') {
-        val datePart = trimmed.substring(0, 10)
-        val timePart = if (trimmed.length >= 16 && trimmed[10] == 'T') {
-            trimmed.substring(11, 16)
-        } else ""
-        return if (timePart.isNotEmpty()) "$datePart $timePart" else datePart
+    val clean = trimmed.replace("Z", "")
+    val patterns = listOf(
+        "yyyy-MM-dd'T'HH:mm:ss",
+        "yyyy-MM-dd'T'HH:mm",
+        "yyyy-MM-dd HH:mm:ss",
+        "yyyy-MM-dd HH:mm",
+        "yyyy-MM-dd"
+    )
+    for (pat in patterns) {
+        try {
+            val sdf = SimpleDateFormat(pat, Locale.getDefault())
+            sdf.isLenient = false
+            val parsed = sdf.parse(clean.take(pat.length))
+            if (parsed != null) {
+                val outFormat = if (clean.length >= 16) {
+                    SimpleDateFormat("dd MMM yyyy • hh:mm a", Locale.getDefault())
+                } else {
+                    SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
+                }
+                return outFormat.format(parsed)
+            }
+        } catch (_: Exception) {
+            // Evaluates subsequent date pattern on mismatch
+        }
     }
     return trimmed
 }
 
+// Read-only metadata island matching the island input styling
+@Composable
+private fun AppDetailIsland(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(10.dp)
+    Box(
+        modifier = modifier
+            .clip(shape)
+            .background(AppTheme.colors.surface)
+            .border(1.dp, AppTheme.colors.surfaceBorder, shape)
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 30.dp),
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = label,
+                fontSize = 10.5.sp,
+                fontWeight = FontWeight.Medium,
+                color = AppTheme.colors.textSecondary
+            )
+            Spacer(modifier = Modifier.height(1.dp))
+            Text(
+                text = value.ifBlank { "—" },
+                fontSize = 14.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = AppTheme.colors.textPrimary,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+// Filter dialog for past attendance sessions
+@Composable
+private fun OlderSessionsFilterDialog(
+    selectedCourse: String?,
+    selectedClassType: String?,
+    selectedSemester: String?,
+    onApply: (course: String?, classType: String?, semester: String?) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var course by remember { mutableStateOf(selectedCourse) }
+    var classType by remember { mutableStateOf(selectedClassType) }
+    var semester by remember { mutableStateOf(selectedSemester) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = AppTheme.colors.surface,
+        titleContentColor = AppTheme.colors.textPrimary,
+        textContentColor = AppTheme.colors.textPrimary,
+        shape = RoundedCornerShape(24.dp),
+        title = {
+            Text(
+                text = "Filter Sessions",
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
+                color = AppTheme.colors.textPrimary
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // Program filter section
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "Course Program",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = AppTheme.colors.textSecondary
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf("B-Tech", "BCA").forEach { prog ->
+                            val isSel = course == prog
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isSel) AppTheme.colors.primaryPurple else AppTheme.colors.surface,
+                                border = BorderStroke(1.dp, if (isSel) AppTheme.colors.primaryPurple else AppTheme.colors.surfaceBorder),
+                                modifier = Modifier.clickable { course = if (isSel) null else prog }
+                            ) {
+                                Text(
+                                    text = prog,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSel) Color.White else AppTheme.colors.textPrimary,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Class type filter section
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "Class Type",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = AppTheme.colors.textSecondary
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf("Regular", "Extra", "Adjustment").forEach { cls ->
+                            val isSel = classType == cls
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isSel) AppTheme.colors.primaryPurple else AppTheme.colors.surface,
+                                border = BorderStroke(1.dp, if (isSel) AppTheme.colors.primaryPurple else AppTheme.colors.surfaceBorder),
+                                modifier = Modifier.clickable { classType = if (isSel) null else cls }
+                            ) {
+                                Text(
+                                    text = cls,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSel) Color.White else AppTheme.colors.textPrimary,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Academic semester filter section
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "Semester",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = AppTheme.colors.textSecondary
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        (1..8).map { "Semester $it" }.forEach { sem ->
+                            val isSel = semester == sem
+                            Surface(
+                                shape = RoundedCornerShape(12.dp),
+                                color = if (isSel) AppTheme.colors.primaryPurple else AppTheme.colors.surface,
+                                border = BorderStroke(1.dp, if (isSel) AppTheme.colors.primaryPurple else AppTheme.colors.surfaceBorder),
+                                modifier = Modifier.clickable { semester = if (isSel) null else sem }
+                            ) {
+                                Text(
+                                    text = sem,
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSel) Color.White else AppTheme.colors.textPrimary,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = {
+                course = null
+                classType = null
+                semester = null
+                onApply(null, null, null)
+                onDismiss()
+            }) {
+                Text("Reset", color = AppTheme.colors.textSecondary)
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onApply(course, classType, semester)
+                    onDismiss()
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.primaryPurple)
+            ) {
+                Text("Apply", color = Color.White, fontWeight = FontWeight.Bold)
+            }
+        }
+    )
+}
+
+// Search dialog for past attendance sessions matching home screen dialog design
+@Composable
+private fun OlderSessionsSearchDialog(
+    pastSessions: List<AttendanceSessionResponse>,
+    initialQuery: String,
+    onSelectSession: (AttendanceSessionResponse) -> Unit,
+    onApplySearch: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var searchQuery by remember { mutableStateOf(initialQuery) }
+
+    val filteredSessions = remember(searchQuery, pastSessions) {
+        if (searchQuery.isBlank()) pastSessions
+        else pastSessions.filter { session ->
+            val formattedDate = formatSessionDateTime(session.startedAt)
+            val details = getSessionAcademicDetails(session)
+            formattedDate.contains(searchQuery, ignoreCase = true) ||
+                (session.startedAt?.contains(searchQuery, ignoreCase = true) == true) ||
+                details.subjectName.contains(searchQuery, ignoreCase = true) ||
+                details.courseProgram.contains(searchQuery, ignoreCase = true) ||
+                details.branch.contains(searchQuery, ignoreCase = true) ||
+                details.topicCovered.contains(searchQuery, ignoreCase = true)
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = AppTheme.colors.surface,
+        titleContentColor = AppTheme.colors.textPrimary,
+        textContentColor = AppTheme.colors.textPrimary,
+        shape = RoundedCornerShape(24.dp),
+        title = {
+            AppTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = { Text("Search by date, subject...") },
+                leadingIcon = {
+                    Icon(imageVector = Icons.Default.Search, contentDescription = "Search", tint = AppTheme.colors.textSecondary)
+                },
+                singleLine = true,
+                colors = appTextFieldColors(),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 280.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                if (filteredSessions.isEmpty()) {
+                    Text(
+                        text = "No matching sessions found",
+                        fontSize = 13.sp,
+                        color = AppTheme.colors.textSecondary,
+                        modifier = Modifier.padding(vertical = 12.dp)
+                    )
+                } else {
+                    filteredSessions.forEach { session ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    onSelectSession(session)
+                                }
+                                .padding(horizontal = 8.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = formatSessionDateTime(session.startedAt),
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = AppTheme.colors.textPrimary
+                            )
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = AppTheme.colors.textMuted.copy(alpha = 0.6f),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        dismissButton = {
+            if (searchQuery.isNotBlank()) {
+                TextButton(onClick = {
+                    searchQuery = ""
+                    onApplySearch("")
+                }) {
+                    Text("Clear", color = AppTheme.colors.textSecondary)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onApplySearch(searchQuery)
+                onDismiss()
+            }) {
+                Text(if (searchQuery.isNotBlank()) "Filter List" else "Close", color = AppTheme.colors.primaryPurple)
+            }
+        }
+    )
+}
+
+// Past attendance session list sorted by latest first with top filters and bottom search
 @Composable
 private fun OlderSessionsView(
     pastSessions: List<AttendanceSessionResponse>,
     isLoading: Boolean,
     onSelectSession: (AttendanceSessionResponse) -> Unit
 ) {
-    Column(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
+    val sortedSessions = remember(pastSessions) {
+        pastSessions.sortedByDescending { it.startedAt ?: "" }
+    }
+
+    var showFilterDialog by remember { mutableStateOf(false) }
+    var filterCourse by remember { mutableStateOf<String?>(null) }
+    var filterClassType by remember { mutableStateOf<String?>(null) }
+    var filterSemester by remember { mutableStateOf<String?>(null) }
+    var searchQuery by remember { mutableStateOf("") }
+    var showSearchDialog by remember { mutableStateOf(false) }
+
+    val activeFilterCount = (if (filterCourse != null) 1 else 0) +
+        (if (filterClassType != null) 1 else 0) +
+        (if (filterSemester != null) 1 else 0)
+
+    val filteredSessions = remember(sortedSessions, filterCourse, filterClassType, filterSemester, searchQuery) {
+        val curCourse = filterCourse
+        val curClassType = filterClassType
+        val curSemester = filterSemester
+        sortedSessions.filter { session ->
+            val details = getSessionAcademicDetails(session)
+            val formattedDate = formatSessionDateTime(session.startedAt)
+
+            val matchesCourse = curCourse == null || details.courseProgram.equals(curCourse, ignoreCase = true)
+            val matchesClassType = curClassType == null || details.classType.contains(curClassType, ignoreCase = true)
+            val matchesSemester = curSemester == null || details.semester.contains(curSemester, ignoreCase = true)
+
+            val matchesSearch = if (searchQuery.isBlank()) true else {
+                formattedDate.contains(searchQuery, ignoreCase = true) ||
+                    (session.startedAt?.contains(searchQuery, ignoreCase = true) == true) ||
+                    details.subjectName.contains(searchQuery, ignoreCase = true) ||
+                    details.courseProgram.contains(searchQuery, ignoreCase = true) ||
+                    details.branch.contains(searchQuery, ignoreCase = true) ||
+                    details.topicCovered.contains(searchQuery, ignoreCase = true)
+            }
+
+            matchesCourse && matchesClassType && matchesSemester && matchesSearch
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
         if (isLoading) {
             Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
+                modifier = Modifier.fillMaxSize(),
                 contentAlignment = Alignment.Center
             ) {
-                CircularProgressIndicator(color = primaryBlue, strokeWidth = 2.5.dp)
-            }
-        } else if (pastSessions.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f)
-                    .background(cardBg, RoundedCornerShape(14.dp))
-                    .border(1.dp, cardBorder, RoundedCornerShape(14.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = "No past attendance sessions found.",
-                        color = textMuted,
-                        fontSize = 13.sp
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Sessions you conduct will be archived here.",
-                        color = textSecondary,
-                        fontSize = 11.sp
-                    )
-                }
+                CircularProgressIndicator(color = AppTheme.colors.primaryPurple, strokeWidth = 2.5.dp)
             }
         } else {
-            LazyColumn(
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                items(pastSessions, key = { it.id }) { session ->
-                    val details = remember(session) { getSessionAcademicDetails(session) }
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onSelectSession(session) },
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = cardBg),
-                        border = BorderStroke(1.dp, cardBorder)
+                // Filter bar at the top with Filter button and All option
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // Filter dialog button
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (activeFilterCount > 0) AppTheme.colors.primaryPurple.copy(alpha = 0.15f) else AppTheme.colors.surface,
+                        border = BorderStroke(1.dp, if (activeFilterCount > 0) AppTheme.colors.primaryPurple else AppTheme.colors.surfaceBorder),
+                        modifier = Modifier.clickable { showFilterDialog = true }
                     ) {
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 13.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
-                            val sessionTitle = when {
-                                !details.courseProgram.isNullOrBlank() && details.courseProgram != "—" && !details.semester.isNullOrBlank() && details.semester != "—" ->
-                                    "${details.courseProgram} • ${details.semester}"
-                                !details.courseProgram.isNullOrBlank() && details.courseProgram != "—" ->
-                                    details.courseProgram
-                                !session.courseCode.isNullOrBlank() ->
-                                    session.courseCode
-                                else ->
-                                    "Session ${session.sessionToken}"
-                            }
-                            Text(
-                                text = sessionTitle,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = textPrimary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f, fill = false)
+                            Icon(
+                                imageVector = Icons.Default.FilterList,
+                                contentDescription = "Filter",
+                                tint = if (activeFilterCount > 0) AppTheme.colors.primaryPurple else AppTheme.colors.textSecondary,
+                                modifier = Modifier.size(16.dp)
                             )
-                            Spacer(modifier = Modifier.width(12.dp))
                             Text(
-                                text = formatSessionDate(session.startedAt),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = textSecondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                text = if (activeFilterCount > 0) "Filter ($activeFilterCount)" else "Filter",
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = if (activeFilterCount > 0) AppTheme.colors.primaryPurple else AppTheme.colors.textSecondary
                             )
                         }
                     }
+
+                    // All chip to display all sessions or reset active filters
+                    val isAllSelected = activeFilterCount == 0 && searchQuery.isBlank()
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (isAllSelected) AppTheme.colors.primaryPurple else AppTheme.colors.surface,
+                        border = BorderStroke(1.dp, if (isAllSelected) AppTheme.colors.primaryPurple else AppTheme.colors.surfaceBorder),
+                        modifier = Modifier.clickable {
+                            filterCourse = null
+                            filterClassType = null
+                            filterSemester = null
+                            searchQuery = ""
+                        }
+                    ) {
+                        Text(
+                            text = "All",
+                            fontSize = 12.5.sp,
+                            fontWeight = if (isAllSelected) FontWeight.Bold else FontWeight.Medium,
+                            color = if (isAllSelected) Color.White else AppTheme.colors.textSecondary,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                        )
+                    }
                 }
+
+                // Active search banner with clear action
+                if (searchQuery.isNotBlank()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = "Filtered by: \"$searchQuery\"",
+                            fontSize = 12.sp,
+                            color = AppTheme.colors.textSecondary
+                        )
+                        Text(
+                            text = "Clear",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = AppTheme.colors.primaryPurple,
+                            modifier = Modifier.clickable { searchQuery = "" }
+                        )
+                    }
+                }
+
+                // Single big island containing past sessions
+                if (filteredSessions.isEmpty()) {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = AppTheme.colors.surface,
+                        border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 36.dp, horizontal = 16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = if (pastSessions.isEmpty()) "No past attendance sessions found" else "No sessions match your filter",
+                                    fontSize = 14.sp,
+                                    color = AppTheme.colors.textSecondary,
+                                    fontWeight = FontWeight.Medium
+                                )
+                                if (activeFilterCount > 0 || searchQuery.isNotBlank()) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = "Reset all filters",
+                                        fontSize = 12.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = AppTheme.colors.primaryPurple,
+                                        modifier = Modifier.clickable {
+                                            filterCourse = null
+                                            filterClassType = null
+                                            filterSemester = null
+                                            searchQuery = ""
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = AppTheme.colors.surface,
+                        border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            filteredSessions.forEachIndexed { index, session ->
+                                if (index > 0) {
+                                    HorizontalDivider(
+                                        color = AppTheme.colors.background,
+                                        thickness = 1.dp,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+
+                                // Single session row displaying only date and time
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onSelectSession(session) }
+                                        .padding(horizontal = 18.dp, vertical = 15.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = formatSessionDateTime(session.startedAt),
+                                        fontSize = 14.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = AppTheme.colors.textPrimary
+                                    )
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                        contentDescription = null,
+                                        tint = AppTheme.colors.textMuted.copy(alpha = 0.6f),
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Clearance for floating search pill
+                Spacer(modifier = Modifier.height(72.dp))
             }
+
+            // Floating search pill pinned at bottom
+            AppSearchPill(
+                placeholder = if (searchQuery.isBlank()) "Search" else searchQuery,
+                onSearchClick = { showSearchDialog = true },
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 12.dp)
+            )
         }
+    }
+
+    if (showFilterDialog) {
+        OlderSessionsFilterDialog(
+            selectedCourse = filterCourse,
+            selectedClassType = filterClassType,
+            selectedSemester = filterSemester,
+            onApply = { c, cls, sem ->
+                filterCourse = c
+                filterClassType = cls
+                filterSemester = sem
+            },
+            onDismiss = { showFilterDialog = false }
+        )
+    }
+
+    if (showSearchDialog) {
+        OlderSessionsSearchDialog(
+            pastSessions = sortedSessions,
+            initialQuery = searchQuery,
+            onSelectSession = { session ->
+                showSearchDialog = false
+                onSelectSession(session)
+            },
+            onApplySearch = { query ->
+                searchQuery = query
+                showSearchDialog = false
+            },
+            onDismiss = { showSearchDialog = false }
+        )
     }
 }
 
 // Detailed roster and breakdown view for a selected attendance session
 @Composable
 private fun SessionDetailScreen(
-    session: AttendanceSessionResponse
+    session: AttendanceSessionResponse,
+    onExportAttendance: () -> Unit
 ) {
     val details = remember(session) { getSessionAcademicDetails(session) }
     val records = session.records ?: emptyList()
@@ -1358,251 +1911,210 @@ private fun SessionDetailScreen(
             compareRollNumbers(getDisplayRollNo(r1), getDisplayRollNo(r2))
         }
     }
-    val (verifiedCount, unverifiedCount, flaggedCount) = remember(sortedRecords) {
-        var v = 0
-        var u = 0
-        var f = 0
-        for (i in sortedRecords.indices) {
-            when (getRecordAuditStatus(sortedRecords[i])) {
-                "Verified" -> v++
-                "Unverified" -> u++
-                "Flagged" -> f++
-            }
-        }
-        Triple(v, u, f)
-    }
 
-    Column(
+    LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // Session Details Card (clean details card, top bar handled by main Scaffold)
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(14.dp),
-            colors = CardDefaults.cardColors(containerColor = cardBg),
-            border = BorderStroke(1.dp, cardBorder)
-        ) {
+        item {
+            // Details on top in same island format as while filling in before taking attendance
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Row 1: Course, Branch, Semester, Class Type
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    SessionDetailPropertyField(label = "Course", value = details.courseProgram, modifier = Modifier.weight(1f))
-                    if (details.branch.isNotBlank() && details.branch != "--") {
-                        SessionDetailPropertyField(label = "Branch", value = details.branch, modifier = Modifier.weight(1f))
+                // 1. Class Type
+                AppDetailIsland(
+                    label = "Class Type",
+                    value = details.classType,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // 2. Course & Branch
+                if (details.courseProgram == "BCA" || details.branch == "--" || details.branch.isBlank()) {
+                    AppDetailIsland(
+                        label = "Course",
+                        value = details.courseProgram,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        AppDetailIsland(
+                            label = "Course",
+                            value = details.courseProgram,
+                            modifier = Modifier.weight(1f)
+                        )
+                        AppDetailIsland(
+                            label = "Branch",
+                            value = details.branch,
+                            modifier = Modifier.weight(1f)
+                        )
                     }
-                    SessionDetailPropertyField(label = "Semester", value = details.semester, modifier = Modifier.weight(1f))
-                    SessionDetailPropertyField(label = "Class Type", value = details.classType, modifier = Modifier.weight(1f))
                 }
 
-                // Row 2: Subject, Unit, Batch
+                // 3. Semester & Batch
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    SessionDetailPropertyField(label = "Subject", value = details.subjectName, modifier = Modifier.weight(1.8f))
-                    SessionDetailPropertyField(label = "Unit", value = details.unit, modifier = Modifier.weight(1.0f))
-                    SessionDetailPropertyField(label = "Batch", value = details.batchType, modifier = Modifier.weight(1.0f))
+                    AppDetailIsland(
+                        label = "Semester",
+                        value = details.semester,
+                        modifier = Modifier.weight(1f)
+                    )
+                    AppDetailIsland(
+                        label = "Batch",
+                        value = details.batchType,
+                        modifier = Modifier.weight(1f)
+                    )
                 }
 
-                // Row 3: Topic Covered (full-width so long syllabus topics never overflow)
-                SessionDetailPropertyField(
+                // 4. Subject Name & Unit (unit size smaller than subject name)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    AppDetailIsland(
+                        label = "Subject Name",
+                        value = details.subjectName,
+                        modifier = Modifier.weight(1.8f)
+                    )
+                    AppDetailIsland(
+                        label = "Unit",
+                        value = details.unit,
+                        modifier = Modifier.weight(1.0f)
+                    )
+                }
+
+                // 5. Full horizontal length topic name
+                AppDetailIsland(
                     label = "Topic Covered",
                     value = details.topicCovered,
-                    modifier = Modifier.fillMaxWidth(),
-                    allowMultiLine = true,
-                    maxLines = 3
+                    modifier = Modifier.fillMaxWidth()
                 )
-
-                HorizontalDivider(color = cardBorder, modifier = Modifier.padding(vertical = 1.dp))
-
-                // Stats row
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    MetricStatMiniCard(count = verifiedCount, label = "Verified", color = successGreen, bg = successGreenBg, modifier = Modifier.weight(1f))
-                    MetricStatMiniCard(count = unverifiedCount, label = "Unverified", color = warningOrange, bg = warningOrangeBg, modifier = Modifier.weight(1f))
-                    MetricStatMiniCard(count = flaggedCount, label = "Flagged", color = alertRed, bg = alertRedBg, modifier = Modifier.weight(1f))
-                }
             }
         }
 
-        // Compact list of students sorted by roll numbers
-        if (sortedRecords.isEmpty()) {
-            Box(
+        item {
+            Spacer(modifier = Modifier.height(6.dp))
+
+            // Attendance list title with grey Export text option
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f)
-                    .background(cardBg, RoundedCornerShape(12.dp))
-                    .border(1.dp, cardBorder, RoundedCornerShape(12.dp)),
-                contentAlignment = Alignment.Center
+                    .padding(horizontal = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "No students recorded in this session.",
-                    fontSize = 13.sp,
-                    color = textMuted
+                    text = "Attendance list",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = AppTheme.colors.textPrimary
+                )
+
+                Text(
+                    text = "Export",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = AppTheme.colors.textSecondary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { onExportAttendance() }
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
                 )
             }
+        }
+
+        // Attendance student roster in same format
+        if (sortedRecords.isEmpty()) {
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(100.dp)
+                        .background(AppTheme.colors.surface, RoundedCornerShape(12.dp))
+                        .border(1.dp, AppTheme.colors.surfaceBorder, RoundedCornerShape(12.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No students recorded in this session.",
+                        fontSize = 13.sp,
+                        color = textMuted
+                    )
+                }
+            }
         } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                verticalArrangement = Arrangement.spacedBy(5.dp)
-            ) {
-                items(sortedRecords, key = { it.id ?: it.bleDeviceId }) { rec ->
-                    val status = remember(rec) { getRecordAuditStatus(rec) }
-                    val statusColor = when (status) {
-                        "Verified" -> successGreen
-                        "Unverified" -> warningOrange
-                        else -> alertRed
-                    }
-                    val statusBg = when (status) {
-                        "Verified" -> successGreenBg
-                        "Unverified" -> warningOrangeBg
-                        else -> alertRedBg
-                    }
-                    val rollNo = remember(rec) { getDisplayRollNo(rec) }
-                    val shortRoll = remember(rollNo) { rollNo.takeLast(2) }
-                    val studentName = remember(rec) { getDisplayStudentName(rec) }
+            items(sortedRecords, key = { it.id ?: it.bleDeviceId }) { rec ->
+                val isPresent = isRecordPresent(rec)
+                val statusText = if (isPresent) "Present" else "Absent"
+                val statusColor = if (isPresent) successGreen else alertRed
+                val statusBg = if (isPresent) successGreenBg else alertRedBg
 
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = CardDefaults.cardColors(containerColor = cardBg),
-                        border = BorderStroke(1.dp, cardBorder)
+                val rollNo = remember(rec) { getDisplayRollNo(rec) }
+                val shortRoll = remember(rollNo) { getRollNumberTwoDigits(rollNo) }
+                val studentName = remember(rec) { getDisplayStudentName(rec) }
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = CardDefaults.cardColors(containerColor = AppTheme.colors.surface),
+                    border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Row(
+                        // Circle in front of name: last two digits of roll number (01, 02, 03..)
+                        Box(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                .size(32.dp)
+                                .background(AppTheme.colors.background, CircleShape)
+                                .border(1.dp, AppTheme.colors.surfaceBorder, CircleShape),
+                            contentAlignment = Alignment.Center
                         ) {
-                            // Circle in front of name: last two digits of roll number (01, 02, 03..)
-                            Box(
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .background(AppTheme.colors.background, CircleShape)
-                                    .border(1.dp, AppTheme.colors.surfaceBorder, CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = shortRoll,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = AppTheme.colors.textPrimary
-                                )
-                            }
-
-                            // Student name only (no roll number underneath)
                             Text(
-                                text = studentName,
-                                fontSize = 14.sp,
+                                text = shortRoll,
+                                fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = textPrimary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
+                                fontFamily = FontFamily.Monospace,
+                                color = AppTheme.colors.textPrimary
                             )
+                        }
 
-                            // Compact status pill
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = statusBg,
-                                border = BorderStroke(1.dp, statusColor.copy(alpha = 0.4f))
-                            ) {
-                                Text(
-                                    text = status,
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = statusColor
-                                )
-                            }
+                        // Student name only (no roll number underneath)
+                        Text(
+                            text = studentName,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = AppTheme.colors.textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+
+                        // Compact status pill: Present or Absent only
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = statusBg,
+                            border = BorderStroke(1.dp, statusColor.copy(alpha = 0.4f))
+                        ) {
+                            Text(
+                                text = statusText,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = statusColor
+                            )
                         }
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun SessionDetailPropertyField(
-    label: String,
-    value: String,
-    modifier: Modifier = Modifier,
-    allowMultiLine: Boolean = false,
-    maxLines: Int = 1
-) {
-    Box(
-        modifier = modifier
-            .background(cardBorder.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
-            .border(1.dp, cardBorder, RoundedCornerShape(8.dp))
-            .padding(horizontal = 8.dp, vertical = 6.dp)
-    ) {
-        Column {
-            Text(
-                text = label.uppercase(),
-                fontSize = 9.sp,
-                fontWeight = FontWeight.Bold,
-                color = textSecondary
-            )
-            Spacer(modifier = Modifier.height(1.dp))
-            Text(
-                text = value,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = textPrimary,
-                maxLines = if (allowMultiLine) maxLines else 1,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
-}
-
-@Composable
-private fun MetricStatMiniCard(
-    count: Int,
-    label: String,
-    color: Color,
-    bg: Color,
-    modifier: Modifier = Modifier
-) {
-    Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = bg),
-        border = BorderStroke(1.dp, color.copy(alpha = 0.4f))
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 6.dp, horizontal = 4.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text(
-                text = "$count",
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Black,
-                color = color
-            )
-            Text(
-                text = label,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = color
-            )
         }
     }
 }
@@ -1623,6 +2135,48 @@ private val SEMESTER_REGEX_1 = Regex("Semester\\s*\\d", RegexOption.IGNORE_CASE)
 private val SEMESTER_REGEX_2 = Regex("Sem\\s*\\d", RegexOption.IGNORE_CASE)
 private val UNIT_REGEX = Regex("Unit\\s*\\d", RegexOption.IGNORE_CASE)
 
+// Extracts a clean subject name from course name metadata or course code
+internal fun extractSubjectName(rawCourseName: String?, courseCode: String?): String {
+    val raw = rawCourseName?.trim().orEmpty()
+    if (raw.isNotBlank()) {
+        if (raw.contains("•")) {
+            val prefix = raw.substringBefore("•").trim()
+            val isClassTypePrefix = prefix.startsWith("Regular", ignoreCase = true) ||
+                prefix.startsWith("Extra", ignoreCase = true) ||
+                prefix.startsWith("Adjustment", ignoreCase = true) ||
+                prefix.startsWith("Lecture", ignoreCase = true) ||
+                prefix.startsWith("Lab", ignoreCase = true) ||
+                prefix.startsWith("Tutorial", ignoreCase = true)
+            if (!isClassTypePrefix && prefix.isNotBlank()) {
+                return prefix
+            }
+        } else {
+            val isClassTypeOnly = raw.startsWith("Regular", ignoreCase = true) ||
+                raw.startsWith("Extra", ignoreCase = true) ||
+                raw.startsWith("Adjustment", ignoreCase = true)
+            if (!isClassTypeOnly) {
+                return raw
+            }
+        }
+    }
+
+    val combined = "$raw ${courseCode.orEmpty()}"
+    return when {
+        combined.contains("Network", ignoreCase = true) || combined.contains("BLE", ignoreCase = true) || combined.contains("Packet", ignoreCase = true) -> "Computer Networks"
+        combined.contains("Operating System", ignoreCase = true) || combined.contains("Deadlock", ignoreCase = true) || combined.contains("Process", ignoreCase = true) -> "Operating Systems"
+        combined.contains("Database", ignoreCase = true) || combined.contains("Relational", ignoreCase = true) || combined.contains("SQL", ignoreCase = true) -> "Database Management Systems"
+        combined.contains("Structure", ignoreCase = true) || combined.contains("Algorithm", ignoreCase = true) -> "Data Structures & Algorithms"
+        combined.contains("Software", ignoreCase = true) -> "Software Engineering"
+        combined.contains("Web", ignoreCase = true) -> "Web Technologies"
+        combined.contains("Python", ignoreCase = true) -> "Python Programming"
+        combined.contains("Java", ignoreCase = true) -> "Java Programming"
+        combined.contains("C++", ignoreCase = true) || combined.contains("Programming in C", ignoreCase = true) -> "Programming in C"
+        courseCode?.contains("Semester 1", ignoreCase = true) == true || courseCode?.contains("Sem 1", ignoreCase = true) == true -> "Programming in C"
+        else -> "Computer Networks"
+    }
+}
+
+// Parses and reconstructs academic session fields from session response metadata
 private fun getSessionAcademicDetails(session: AttendanceSessionResponse): SessionAcademicDetails {
     val courseProg = session.courseProgram
         ?: if (session.courseCode?.contains("BCA", ignoreCase = true) == true) "BCA"
@@ -1643,12 +2197,15 @@ private fun getSessionAcademicDetails(session: AttendanceSessionResponse): Sessi
         ?: if (session.courseCode?.isNotBlank() == true) session.courseCode else "Semester 1"
 
     val rawName = session.courseName ?: ""
-    val subject = if (rawName.contains("•")) {
-        rawName.substringBefore("•").trim()
+    val subject = session.subjectName?.takeIf { it.isNotBlank() }
+        ?: extractSubjectName(rawName, session.courseCode)
+    val remainder = if (rawName.startsWith(subject)) {
+        rawName.removePrefix(subject).removePrefix("•").trim()
+    } else if (rawName.contains("•")) {
+        rawName.substringAfter("•").trim()
     } else {
-        "Computer Networks"
+        rawName
     }
-    val remainder = if (rawName.contains("•")) rawName.substringAfter("•").trim() else rawName
 
     val clsType = session.classType ?: when {
         remainder.contains("Extra", ignoreCase = true) -> "Extra"

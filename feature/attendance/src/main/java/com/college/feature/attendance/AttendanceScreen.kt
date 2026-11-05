@@ -123,8 +123,6 @@ fun AttendanceScreen(
                             viewModel.selectedSessionForDetails = null
                         } else if (viewModel.isSessionActive) {
                             viewModel.resetSession()
-                        } else if (user.canTakeAttendance() && viewModel.teacherViewMode == TeacherViewMode.OLDER_SESSIONS && viewModel.finalizedRecords.isEmpty()) {
-                            viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
                         } else if (viewModel.finalizedRecords.isNotEmpty()) {
                             viewModel.resetSession()
                         } else if (user.hasRole(Role.STUDENT) && viewModel.studentPhase != StudentPhase.STANDBY) {
