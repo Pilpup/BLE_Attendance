@@ -214,6 +214,7 @@ internal fun StudentSection(
                             totalTargetsSpawned = report.totalSpawns
                             onBehavioralReport(report)
                             onChallengeResult(report.hits, report.totalSpawns)
+                            onNext()
                         }
                     )
                 }
@@ -302,6 +303,13 @@ internal fun StudentSection(
                                     fontSize = 19.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = AppTheme.colors.textPrimary
+                                )
+                            } else if (isUnverified && !studentStatusMessage.isNullOrBlank()) {
+                                Text(
+                                    text = studentStatusMessage,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = AppTheme.colors.textSecondary
                                 )
                             }
                         }
