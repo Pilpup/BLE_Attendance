@@ -171,12 +171,12 @@ fun LibraryScreen(
             .fillMaxSize()
             .background(AppTheme.colors.background)
             .systemBarsPadding()
-            .imePadding()
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 16.dp),
+                .padding(horizontal = 16.dp)
+                .imePadding(),
             verticalArrangement = Arrangement.spacedBy(if (isLandscape) 8.dp else 12.dp)
         ) {
             // Top Navigation Bar (responsive for portrait & landscape)
@@ -367,7 +367,9 @@ fun LibraryScreen(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(horizontal = 16.dp)
+                    .imePadding()
+                    .padding(bottom = 16.dp)
             ) {
                 Row(
                     modifier = Modifier
@@ -1256,6 +1258,8 @@ private fun AddEditBookDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                val requiredBorderColor = AppTheme.colors.primaryPurple.copy(alpha = 0.8f)
+
                 // Barcode scanner trigger at top of intake dialog
                 if (!isEdit) {
                     OutlinedButton(
@@ -1274,7 +1278,7 @@ private fun AddEditBookDialog(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Scan Barcode (Auto-Fill Details)",
+                            text = "Scan Barcode",
                             fontWeight = FontWeight.Bold,
                             color = AppTheme.colors.primaryPurple,
                             fontSize = 13.sp
@@ -1302,29 +1306,7 @@ private fun AddEditBookDialog(
                     }
                 }
 
-                // Book Title
-                AppTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    placeholder = { Text("Book Title *") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = appTextFieldColors(),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                // Author
-                AppTextField(
-                    value = author,
-                    onValueChange = { author = it },
-                    placeholder = { Text("Author *") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = appTextFieldColors(),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                // ISBN with Auto-Fill button
+                // ISBN with Auto-Fill button (placed above title for fast intake)
                 AppTextField(
                     value = isbn,
                     onValueChange = { isbn = it },
@@ -1373,29 +1355,29 @@ private fun AddEditBookDialog(
                             }
                         }
                     },
-                    colors = appTextFieldColors(),
+                    colors = appTextFieldColors(unfocusedBorderColor = requiredBorderColor),
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // Edition
+                // Book Title
                 AppTextField(
-                    value = edition,
-                    onValueChange = { edition = it },
-                    placeholder = { Text("Edition") },
+                    value = title,
+                    onValueChange = { title = it },
+                    placeholder = { Text("Book Title *") },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
-                    colors = appTextFieldColors(),
+                    colors = appTextFieldColors(unfocusedBorderColor = requiredBorderColor),
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // Index / Shelf Location
+                // Author
                 AppTextField(
-                    value = shelfText,
-                    onValueChange = { shelfText = it },
-                    placeholder = { Text("Shelf Location") },
+                    value = author,
+                    onValueChange = { author = it },
+                    placeholder = { Text("Author *") },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
-                    colors = appTextFieldColors(),
+                    colors = appTextFieldColors(unfocusedBorderColor = requiredBorderColor),
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -1406,7 +1388,29 @@ private fun AddEditBookDialog(
                     placeholder = { Text("Category *") },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
-                    colors = appTextFieldColors(),
+                    colors = appTextFieldColors(unfocusedBorderColor = requiredBorderColor),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // Edition
+                AppTextField(
+                    value = edition,
+                    onValueChange = { edition = it },
+                    placeholder = { Text("Edition") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = appTextFieldColors(unfocusedBorderColor = AppTheme.colors.surfaceBorder),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // Index / Shelf Location
+                AppTextField(
+                    value = shelfText,
+                    onValueChange = { shelfText = it },
+                    placeholder = { Text("Shelf Location") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = appTextFieldColors(unfocusedBorderColor = AppTheme.colors.surfaceBorder),
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -1417,7 +1421,7 @@ private fun AddEditBookDialog(
                     placeholder = { Text("Overview") },
                     singleLine = false,
                     shape = RoundedCornerShape(12.dp),
-                    colors = appTextFieldColors(),
+                    colors = appTextFieldColors(unfocusedBorderColor = AppTheme.colors.surfaceBorder),
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -1428,7 +1432,7 @@ private fun AddEditBookDialog(
                     placeholder = { Text("Table of Contents") },
                     singleLine = false,
                     shape = RoundedCornerShape(12.dp),
-                    colors = appTextFieldColors(),
+                    colors = appTextFieldColors(unfocusedBorderColor = AppTheme.colors.surfaceBorder),
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -1440,7 +1444,7 @@ private fun AddEditBookDialog(
                         placeholder = { Text(if (isEdit) "Total Copies *" else "Copies *") },
                         singleLine = true,
                         shape = RoundedCornerShape(12.dp),
-                        colors = appTextFieldColors(),
+                        colors = appTextFieldColors(unfocusedBorderColor = requiredBorderColor),
                         modifier = Modifier.weight(1f)
                     )
                     if (isEdit) {
@@ -1450,7 +1454,7 @@ private fun AddEditBookDialog(
                             placeholder = { Text("Available *") },
                             singleLine = true,
                             shape = RoundedCornerShape(12.dp),
-                            colors = appTextFieldColors(),
+                            colors = appTextFieldColors(unfocusedBorderColor = requiredBorderColor),
                             modifier = Modifier.weight(1f)
                         )
                     }

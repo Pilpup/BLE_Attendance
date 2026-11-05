@@ -322,13 +322,16 @@ fun AppSearchPill(
 
 // Text field color styling matching active theme
 @Composable
-fun appTextFieldColors() = OutlinedTextFieldDefaults.colors(
+fun appTextFieldColors(
+    unfocusedBorderColor: Color = AppTheme.colors.surfaceBorder,
+    focusedBorderColor: Color = AppTheme.colors.primaryPurple
+) = OutlinedTextFieldDefaults.colors(
     focusedTextColor = AppTheme.colors.textPrimary,
     unfocusedTextColor = AppTheme.colors.textPrimary,
     focusedContainerColor = AppTheme.colors.surface,
     unfocusedContainerColor = AppTheme.colors.surface,
-    focusedBorderColor = AppTheme.colors.primaryPurple,
-    unfocusedBorderColor = AppTheme.colors.surfaceBorder,
+    focusedBorderColor = focusedBorderColor,
+    unfocusedBorderColor = unfocusedBorderColor,
     focusedLabelColor = AppTheme.colors.primaryPurple,
     unfocusedLabelColor = AppTheme.colors.textSecondary,
     cursorColor = AppTheme.colors.primaryPurple
