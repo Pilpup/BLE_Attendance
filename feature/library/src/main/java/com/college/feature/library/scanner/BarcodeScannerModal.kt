@@ -296,7 +296,7 @@ fun BarcodeScannerModal(
                     AppTextField(
                         value = manualIsbnInput,
                         onValueChange = { manualIsbnInput = it },
-                        placeholder = { Text("Or enter ISBN (e.g. 9780133594140)", fontSize = 12.5.sp) },
+                        placeholder = { Text("Or enter ISBN manually", fontSize = 12.5.sp) },
                         singleLine = true,
                         shape = RoundedCornerShape(14.dp),
                         colors = appTextFieldColors(),
