@@ -150,15 +150,16 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var lastFocusReport by mutableStateOf<com.college.feature.attendance.telemetry.CognitiveFocusReport?>(null)
     val challengeScorePercentage: Int
         get() = if (challengeTotalTargets > 0) (challengeScore * 100) / challengeTotalTargets else 0
+
+    // Students always play the reflex game, but behavioral telemetry is informational and does not veto attendance
     val isChallengePassed: Boolean
-        get() = (challengeTotalTargets == 0 || challengeScorePercentage >= 55) &&
-                (lastFocusReport == null || lastFocusReport?.isPassing == true)
+        get() = true
 
     val isDividedProxy: Boolean
-        get() = lastFocusReport?.classification == com.college.feature.attendance.telemetry.FocusClassification.DIVIDED_ATTENTION_PROXY
+        get() = false
 
     val hasLocalDefenseFailed: Boolean
-        get() = isDividedProxy || !isChallengePassed || faceProxyDetected || ultrasonicProximityDetected
+        get() = faceProxyDetected || ultrasonicProximityDetected
 
     fun recordChallengeResult(hit: Int, total: Int) {
         challengeScore = hit

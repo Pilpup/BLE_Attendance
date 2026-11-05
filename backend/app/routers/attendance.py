@@ -722,45 +722,14 @@ async def submit_student_neighbors(
                 detail=f"Biometric proxy rejected: {face_check_result.remarks}",
             )
 
-    # Flag divided attention proxy (simultaneous multi-device gameplay)
+    # Layer 2 Behavioral analysis (divided attention and cognitive reflex challenge)
+    # Note: Students play the in-app reflex challenge during check-in, but behavioral scoring
+    # is informational only and does not veto or reject attendance.
     if payload.divided_attention_detected:
-        remarks = "Divided attention proxy detected (simultaneous multi-device gameplay)"
-        logger.warning(f"[Layer 2 Behaviour Proxy] {student_key} divided attention flagged")
-        await _record_proxy_violation(
-            db=db,
-            session_id=session_obj.id,
-            device_id=student_key,
-            status="DIVIDED_ATTENTION_PROXY",
-            verification_method="BEHAVIOUR_ANALYSIS_FAILED",
-            remarks=remarks,
-            student_id=current_user.id if current_user else None,
-            reported_neighbors=normalized_neighbors,
-        )
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=remarks,
-        )
+        logger.info(f"[Layer 2 Behaviour Info] {student_key} divided attention reported (bypassed veto)")
 
-    # Flag cognitive reflex challenge failure (Layer 2)
     if payload.challenge_passed is False or (payload.challenge_score is not None and payload.challenge_score == 0):
-        remarks = f"Cognitive reflex challenge failed (score {payload.challenge_score or 0} below threshold)"
-        logger.warning(f"[Layer 2 Challenge Failed] {student_key}: {remarks}")
-        await _record_proxy_violation(
-            db=db,
-            session_id=session_obj.id,
-            device_id=student_key,
-            status="COGNITIVE_CHALLENGE_FAILED",
-            verification_method="BEHAVIOUR_ANALYSIS_FAILED",
-            remarks=remarks,
-            student_id=current_user.id if current_user else None,
-            reported_neighbors=normalized_neighbors,
-        )
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=remarks,
-        )
+        logger.info(f"[Layer 2 Challenge Info] {student_key}: reflex score {payload.challenge_score or 0} reported (bypassed veto)")
 
     # Flag ultrasonic acoustic proximity proxy (< 20 cm)
     if payload.ultrasonic_proximity_detected:
