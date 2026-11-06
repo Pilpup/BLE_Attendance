@@ -5,6 +5,7 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -62,6 +64,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalConfiguration
@@ -80,7 +84,6 @@ import com.college.core.ui.components.AppCardGroup
 import com.college.core.ui.components.AppDivider
 import com.college.core.ui.components.AppHeader
 import com.college.core.ui.components.AppTextField
-import com.college.core.ui.components.appScrollbar
 import com.college.core.ui.components.appTextFieldColors
 import com.college.core.ui.theme.AppTheme
 import com.college.feature.library.model.Book
@@ -165,12 +168,12 @@ fun LibraryScreen(
             .fillMaxSize()
             .background(AppTheme.colors.background)
             .systemBarsPadding()
-            .imePadding()
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 16.dp),
+                .padding(horizontal = 16.dp)
+                .imePadding(),
             verticalArrangement = Arrangement.spacedBy(if (isLandscape) 8.dp else 12.dp)
         ) {
             // Top Navigation Bar (responsive for portrait & landscape)
@@ -257,8 +260,8 @@ fun LibraryScreen(
                 }
             }
 
-            // Header Title (rendered prominent in portrait, compact in landscape)
-            if (!isLandscape) {
+            // Header Title (rendered prominent in portrait for staff/dev with tabs, compact in landscape)
+            if (!isLandscape && viewModel.canUseStaffTools) {
                 AppHeader(
                     title = "Library",
                     modifier = Modifier.padding(top = 0.dp, bottom = 4.dp)
@@ -338,11 +341,11 @@ fun LibraryScreen(
             ) {
                 when (activeTab) {
                     LibraryTab.CATALOGUE -> CatalogueTabContent(
-                        viewModel = viewModel
+                        viewModel = viewModel,
+                        isLandscape = isLandscape
                     )
                     LibraryTab.STAFF_INVENTORY -> StaffInventoryTabContent(
                         viewModel = viewModel,
-                        onAddBook = { showAddBookDialog = true },
                         onEdit = { editingBook = it }
                     )
                     LibraryTab.DEV_MAINTENANCE -> DevMaintenanceTabContent(viewModel)
@@ -353,65 +356,89 @@ fun LibraryScreen(
         // Floating search bar pinned at bottom center in Catalogue (types directly, aligns with keyboard)
         if (activeTab == LibraryTab.CATALOGUE) {
             val keyboardController = LocalSoftwareKeyboardController.current
+            val focusRequester = remember { FocusRequester() }
+            val screenWidth = LocalConfiguration.current.screenWidthDp.dp
+            val minPillWidth = (screenWidth / 3f).coerceIn(125.dp, 200.dp)
+            val maxPillWidth = (screenWidth - 32.dp).coerceAtLeast(minPillWidth)
+
             Surface(
-                shape = RoundedCornerShape(22.dp),
+                shape = RoundedCornerShape(26.dp),
                 color = AppTheme.colors.surface,
                 border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
                 shadowElevation = if (AppTheme.colors.isDark) 0.dp else 4.dp,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(horizontal = 16.dp)
+                    .imePadding()
+                    .padding(bottom = 16.dp)
+                    .animateContentSize()
+                    .widthIn(min = minPillWidth, max = maxPillWidth)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {
+                        focusRequester.requestFocus()
+                    }
             ) {
-                Row(
+                Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .height(52.dp)
+                        .padding(horizontal = 16.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = "Search",
-                        tint = AppTheme.colors.textSecondary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    BasicTextField(
-                        value = viewModel.searchQuery,
-                        onValueChange = { viewModel.searchQuery = it },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                        keyboardActions = KeyboardActions(onSearch = { keyboardController?.hide() }),
-                        textStyle = TextStyle(
-                            color = AppTheme.colors.textPrimary,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Normal
-                        ),
-                        cursorBrush = SolidColor(AppTheme.colors.primaryPurple),
-                        decorationBox = { innerTextField ->
-                            if (viewModel.searchQuery.isEmpty()) {
-                                Text(
-                                    text = "Search title, author or ISBN…",
-                                    color = AppTheme.colors.textSecondary,
-                                    fontSize = 14.5.sp,
-                                    fontWeight = FontWeight.Normal
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = "Search",
+                            tint = AppTheme.colors.textSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        BasicTextField(
+                            value = viewModel.searchQuery,
+                            onValueChange = { viewModel.searchQuery = it },
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .focusRequester(focusRequester),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                            keyboardActions = KeyboardActions(onSearch = { keyboardController?.hide() }),
+                            textStyle = TextStyle(
+                                color = AppTheme.colors.textPrimary,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Normal
+                            ),
+                            cursorBrush = SolidColor(AppTheme.colors.primaryPurple),
+                            decorationBox = { innerTextField ->
+                                Box(contentAlignment = Alignment.CenterStart) {
+                                    if (viewModel.searchQuery.isEmpty()) {
+                                        Text(
+                                            text = "Search",
+                                            color = AppTheme.colors.textSecondary,
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.Normal
+                                        )
+                                    }
+                                    innerTextField()
+                                }
+                            }
+                        )
+                        if (viewModel.searchQuery.isNotEmpty()) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            IconButton(
+                                onClick = { viewModel.searchQuery = "" },
+                                modifier = Modifier.size(22.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "Clear",
+                                    tint = AppTheme.colors.textSecondary,
+                                    modifier = Modifier.size(16.dp)
                                 )
                             }
-                            innerTextField()
-                        }
-                    )
-                    if (viewModel.searchQuery.isNotEmpty()) {
-                        IconButton(
-                            onClick = { viewModel.searchQuery = "" },
-                            modifier = Modifier.size(24.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "Clear",
-                                tint = AppTheme.colors.textSecondary,
-                                modifier = Modifier.size(18.dp)
-                            )
                         }
                     }
                 }
@@ -456,7 +483,8 @@ fun LibraryScreen(
 // Catalogue tab content displaying available books in a card island
 @Composable
 private fun CatalogueTabContent(
-    viewModel: LibraryViewModel
+    viewModel: LibraryViewModel,
+    isLandscape: Boolean
 ) {
     val scrollState = rememberScrollState()
     val books = viewModel.filteredBooks
@@ -464,10 +492,16 @@ private fun CatalogueTabContent(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .appScrollbar(scrollState)
             .verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        // Prominent title scrolls with the catalogue for student/teacher view
+        if (!viewModel.canUseStaffTools && !isLandscape) {
+            AppHeader(
+                title = "Library",
+                modifier = Modifier.padding(top = 0.dp, bottom = 4.dp)
+            )
+        }
         if (books.isEmpty()) {
             Surface(
                 modifier = Modifier
@@ -537,7 +571,6 @@ private fun CatalogueTabContent(
 @Composable
 private fun StaffInventoryTabContent(
     viewModel: LibraryViewModel,
-    onAddBook: () -> Unit,
     onEdit: (Book) -> Unit
 ) {
     val scrollState = rememberScrollState()
@@ -546,57 +579,24 @@ private fun StaffInventoryTabContent(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .appScrollbar(scrollState)
             .verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         // Inventory Overview Card
         AppCardGroup {
-            Column(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                    .padding(horizontal = 20.dp, vertical = 18.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "INVENTORY OVERVIEW",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = AppTheme.colors.textSecondary
+                InventoryStatItem(label = "Titles", value = "${viewModel.catalogueSize}")
+                InventoryStatItem(label = "On Shelf", value = "${viewModel.availableCount}")
+                InventoryStatItem(
+                    label = "Borrowed",
+                    value = "${viewModel.catalogueSize - viewModel.availableCount}"
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    InventoryStatItem(label = "Titles", value = "${viewModel.catalogueSize}")
-                    InventoryStatItem(label = "On Shelf", value = "${viewModel.availableCount}")
-                    InventoryStatItem(
-                        label = "Borrowed",
-                        value = "${viewModel.catalogueSize - viewModel.availableCount}"
-                    )
-                }
-                HorizontalDivider(color = AppTheme.colors.background, thickness = 1.dp)
-
-                Button(
-                    onClick = onAddBook,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.primaryPurple)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "Add Book",
-                        tint = Color.White,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "Add Book to Inventory",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color.White
-                    )
-                }
             }
         }
 
@@ -614,7 +614,7 @@ private fun StaffInventoryTabContent(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "Catalogue is empty. Use 'Add Book to Inventory' above to start intake.",
+                        text = "Catalogue is empty. Use '+ Add Book' below to start intake.",
                         color = AppTheme.colors.textMuted,
                         fontSize = 13.5.sp
                     )
@@ -654,10 +654,11 @@ private fun InventoryStatItem(label: String, value: String) {
     Column {
         Text(
             text = value,
-            fontSize = 18.sp,
+            fontSize = 26.sp,
             fontWeight = FontWeight.Bold,
             color = AppTheme.colors.textPrimary
         )
+        Spacer(modifier = Modifier.height(2.dp))
         Text(
             text = label,
             fontSize = 12.sp,
@@ -674,7 +675,6 @@ private fun DevMaintenanceTabContent(viewModel: LibraryViewModel) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .appScrollbar(scrollState)
             .verticalScroll(scrollState),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
@@ -1221,7 +1221,7 @@ private fun AddEditBookDialog(
         shape = RoundedCornerShape(24.dp),
         title = {
             Text(
-                text = if (isEdit) "Edit Book Details" else "Add Book to Catalogue",
+                text = if (isEdit) "Edit Book Details" else "Add Book",
                 fontWeight = FontWeight.Bold,
                 fontSize = 18.sp,
                 color = AppTheme.colors.textPrimary
@@ -1235,6 +1235,8 @@ private fun AddEditBookDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                val requiredBorderColor = AppTheme.colors.primaryPurple.copy(alpha = 0.8f)
+
                 // Barcode scanner trigger at top of intake dialog
                 if (!isEdit) {
                     OutlinedButton(
@@ -1253,7 +1255,7 @@ private fun AddEditBookDialog(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Scan Barcode (Auto-Fill Details)",
+                            text = "Scan Barcode",
                             fontWeight = FontWeight.Bold,
                             color = AppTheme.colors.primaryPurple,
                             fontSize = 13.sp
@@ -1281,29 +1283,7 @@ private fun AddEditBookDialog(
                     }
                 }
 
-                // Book Title
-                AppTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    placeholder = { Text("Book Title *") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = appTextFieldColors(),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                // Author
-                AppTextField(
-                    value = author,
-                    onValueChange = { author = it },
-                    placeholder = { Text("Author *") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    colors = appTextFieldColors(),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                // ISBN with Auto-Fill button
+                // ISBN with Auto-Fill button (placed above title for fast intake)
                 AppTextField(
                     value = isbn,
                     onValueChange = { isbn = it },
@@ -1352,29 +1332,29 @@ private fun AddEditBookDialog(
                             }
                         }
                     },
-                    colors = appTextFieldColors(),
+                    colors = appTextFieldColors(unfocusedBorderColor = requiredBorderColor),
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // Edition
+                // Book Title
                 AppTextField(
-                    value = edition,
-                    onValueChange = { edition = it },
-                    placeholder = { Text("Edition") },
+                    value = title,
+                    onValueChange = { title = it },
+                    placeholder = { Text("Book Title *") },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
-                    colors = appTextFieldColors(),
+                    colors = appTextFieldColors(unfocusedBorderColor = requiredBorderColor),
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                // Index / Shelf Location
+                // Author
                 AppTextField(
-                    value = shelfText,
-                    onValueChange = { shelfText = it },
-                    placeholder = { Text("Shelf Location") },
+                    value = author,
+                    onValueChange = { author = it },
+                    placeholder = { Text("Author *") },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
-                    colors = appTextFieldColors(),
+                    colors = appTextFieldColors(unfocusedBorderColor = requiredBorderColor),
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -1385,7 +1365,53 @@ private fun AddEditBookDialog(
                     placeholder = { Text("Category *") },
                     singleLine = true,
                     shape = RoundedCornerShape(12.dp),
-                    colors = appTextFieldColors(),
+                    colors = appTextFieldColors(unfocusedBorderColor = requiredBorderColor),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // Copies (placed above edition)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AppTextField(
+                        value = copiesText,
+                        onValueChange = { copiesText = it.filter { c -> c.isDigit() } },
+                        placeholder = { Text(if (isEdit) "Total Copies *" else "Copies *") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = appTextFieldColors(unfocusedBorderColor = requiredBorderColor),
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (isEdit) {
+                        AppTextField(
+                            value = availableText,
+                            onValueChange = { availableText = it.filter { c -> c.isDigit() } },
+                            placeholder = { Text("Available *") },
+                            singleLine = true,
+                            shape = RoundedCornerShape(12.dp),
+                            colors = appTextFieldColors(unfocusedBorderColor = requiredBorderColor),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
+                // Edition
+                AppTextField(
+                    value = edition,
+                    onValueChange = { edition = it },
+                    placeholder = { Text("Edition") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = appTextFieldColors(unfocusedBorderColor = AppTheme.colors.surfaceBorder),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // Index / Shelf Location
+                AppTextField(
+                    value = shelfText,
+                    onValueChange = { shelfText = it },
+                    placeholder = { Text("Shelf Location") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    colors = appTextFieldColors(unfocusedBorderColor = AppTheme.colors.surfaceBorder),
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -1396,7 +1422,7 @@ private fun AddEditBookDialog(
                     placeholder = { Text("Overview") },
                     singleLine = false,
                     shape = RoundedCornerShape(12.dp),
-                    colors = appTextFieldColors(),
+                    colors = appTextFieldColors(unfocusedBorderColor = AppTheme.colors.surfaceBorder),
                     modifier = Modifier.fillMaxWidth()
                 )
 
@@ -1407,33 +1433,9 @@ private fun AddEditBookDialog(
                     placeholder = { Text("Table of Contents") },
                     singleLine = false,
                     shape = RoundedCornerShape(12.dp),
-                    colors = appTextFieldColors(),
+                    colors = appTextFieldColors(unfocusedBorderColor = AppTheme.colors.surfaceBorder),
                     modifier = Modifier.fillMaxWidth()
                 )
-
-                // Copies
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AppTextField(
-                        value = copiesText,
-                        onValueChange = { copiesText = it.filter { c -> c.isDigit() } },
-                        placeholder = { Text(if (isEdit) "Total Copies *" else "Copies *") },
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = appTextFieldColors(),
-                        modifier = Modifier.weight(1f)
-                    )
-                    if (isEdit) {
-                        AppTextField(
-                            value = availableText,
-                            onValueChange = { availableText = it.filter { c -> c.isDigit() } },
-                            placeholder = { Text("Available *") },
-                            singleLine = true,
-                            shape = RoundedCornerShape(12.dp),
-                            colors = appTextFieldColors(),
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
             }
         },
         confirmButton = {
@@ -1460,7 +1462,7 @@ private fun AddEditBookDialog(
                 )
             ) {
                 Text(
-                    text = if (isEdit) "Save" else "Add to Catalogue",
+                    text = if (isEdit) "Save" else "Add Book",
                     fontWeight = FontWeight.Bold,
                     color = Color.White
                 )
