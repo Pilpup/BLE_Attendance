@@ -54,9 +54,16 @@ class SubmissionBuffer:
             session_buf = self._buffers.setdefault(session_id, {})
             existing = session_buf.get(device_key)
             if existing:
-                existing.reported_neighbors = reported_neighbors
-                if student_id:
-                    existing.student_id = student_id
+                # Merge snapshots instead of overwriting: interim submissions arrive
+                # through asymmetric BLE discovery windows, so a later snapshot can
+                # know FEWER peers than an earlier one (and then fail mutual
+                # confirmation at finalize). Union of claims lets mutual links
+                # converge by finalize. student_id keeps the earliest identity binding.
+                merged_claims = list(dict.fromkeys(
+                    list(existing.reported_neighbors) + list(reported_neighbors)
+                ))
+                existing.reported_neighbors = merged_claims
+                existing.student_id = existing.student_id or student_id
             else:
                 session_buf[device_key] = StagedSubmission(
                     device_key=device_key,

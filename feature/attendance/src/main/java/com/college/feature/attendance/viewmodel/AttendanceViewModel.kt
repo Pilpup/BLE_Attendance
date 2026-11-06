@@ -192,7 +192,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
     private val testedUltrasonicPeers = mutableSetOf<String>()
 
-    // Batched top 3 nearest desk/bench neighbors (median RSSI >= -82 dBm)
+    // Batched top 3 nearest desk/bench neighbors (median RSSI >= -92 dBm)
     var topDeskNeighbours by mutableStateOf<List<PeerData>>(emptyList())
         private set
 
@@ -202,7 +202,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             while (isActive) {
                 delay(300L)
                 val top = rawDiscoveredPeers.values
-                    .filter { it.medianRssi >= -82 }
+                    .filter { it.medianRssi >= -92 }
                     .sortedByDescending { it.medianRssi }
                     .take(3)
                 withContext(Dispatchers.Main) {
@@ -219,7 +219,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun flushPeerBatchImmediately() {
         topDeskNeighbours = rawDiscoveredPeers.values
-            .filter { it.medianRssi >= -82 }
+            .filter { it.medianRssi >= -92 }
             .sortedByDescending { it.medianRssi }
             .take(3)
     }
@@ -704,7 +704,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             studentPhase = if (hasLocalDefenseFailed) StudentPhase.UNVERIFIED_FLAGGED else StudentPhase.WAITING_FOR_AUDIT
                             startPollingForAudit(sessId)
                         }
-                        if (!keepRadioActive) {
+                        // Keep probe advertising alive until the discovery window ends so
+                        // mutual claims converge before finalize (an early tap-Next submit
+                        // must not freeze its phone's peer snapshot mid-accumulation)
+                        if (!keepRadioActive && studentDiscoverySecondsRemaining <= 0) {
                             onStopBroadcasting?.invoke()
                         }
                     }
@@ -725,25 +728,30 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                 onStopBroadcasting?.invoke()
                             }
                         } else {
-                            if (!keepRadioActive || studentDiscoverySecondsRemaining == 0) {
+                            if (studentDiscoverySecondsRemaining <= 0) {
                                 studentStatusMessage = detail
                                 studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                                 startPollingForAudit(sessId)
                                 onStartScanning?.invoke()
                                 onStopBroadcasting?.invoke()
                             } else {
-                                android.util.Log.w("AttendanceViewModel", "Intermediate peer sync pending: ${result.code} - $detail")
+                                // Mid-window rejection (e.g. session state flipped mid-submit):
+                                // stay in the discovery view and keep probing — the window-end
+                                // submit retries and the audit poll resolves the final state
+                                android.util.Log.w("AttendanceViewModel", "Mid-window peer sync pending: ${result.code} - $detail")
                             }
                         }
                     }
                     is NetworkResult.Exception -> {
-                        if (!keepRadioActive || studentDiscoverySecondsRemaining == 0) {
+                        if (studentDiscoverySecondsRemaining <= 0) {
                             studentStatusMessage = "Connection failed: Please verify classroom Wi-Fi connection"
                             studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                             onStartScanning?.invoke()
                             onStopBroadcasting?.invoke()
                         } else {
-                            android.util.Log.w("AttendanceViewModel", "Intermediate peer sync network error: ${result.throwable.message}")
+                            // Mid-window network failure (e.g. cold backend latency): keep probing
+                            // and let the window-end submit retry instead of freezing early
+                            android.util.Log.w("AttendanceViewModel", "Mid-window peer sync network error (retry at window end): ${result.throwable.message}")
                         }
                     }
                 }
@@ -1475,9 +1483,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     }
 
                     // Layer 4 Ultrasonic Proximity Evaluation:
-                    // Close proximity (RSSI >= -65 dBm, including touching >= -55 dBm) activates the ultrasonic acoustic distance handshake.
+                    // Close proximity (RSSI >= -68 dBm) activates the ultrasonic acoustic distance handshake.
                     // Neither radio nor ultrasonic alone can flag a student: both must independently agree.
-                    val isClosePeer = rssi >= -65 || updatedPeer.medianRssi >= -65
+                    val isClosePeer = rssi >= -68 || updatedPeer.medianRssi >= -68
                     if (isClosePeer && !testedUltrasonicPeers.contains(peerId)) {
                         testedUltrasonicPeers.add(peerId)
                         triggerUltrasonicProximityHandshake(peerId)
@@ -1571,7 +1579,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                             myRecord.status == "CO_LOCATED_SAME_DESK_PROXY" -> "Desk co-location rejected"
                                             myRecord.status == "DUPLICATE_FACE_PROXY" -> "Duplicate face biometric rejected"
                                             myRecord.status == "NO_FACE_DETECTED" -> "No face detected in check-in"
-                                            myRecord.status == "SALT_REJECTED" || myRecord.status == "SPOOFER_REJECTED" -> "In-room beacon verification failed"
+                                            myRecord.status == "SALT_REJECTED" -> "In-room beacon verification failed"
+                                            myRecord.status == "SPOOFER_REJECTED" && myRecord.verificationMethod == "SALT_REJECTED" -> "In-room beacon verification failed"
+                                            myRecord.status == "SPOOFER_REJECTED" -> "Peer claims unconfirmed — please ask your instructor to review"
                                             myRecord.status == "ISOLATED_FLAGGED" -> "Needs instructor confirmation"
                                             else -> myRecord.remarks ?: "Attendance not confirmed"
                                         }
@@ -1647,6 +1657,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                     studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                                     studentStatusMessage = when {
                                         hasLocalDefenseFailed -> "Attendance not confirmed. Please see instructor."
+                                        myRecord.status == "SPOOFER_REJECTED" -> "Peer claims unconfirmed — please ask your instructor to review"
                                         myRecord.status == "ISOLATED_FLAGGED" -> "Needs instructor confirmation"
                                         else -> "Attendance not confirmed"
                                     }

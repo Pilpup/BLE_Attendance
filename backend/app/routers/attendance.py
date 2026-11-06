@@ -734,6 +734,10 @@ async def submit_student_neighbors(
         else:
             raw_key = payload.student_id or "STUD"
         claimed_key = raw_key[-4:].upper() if len(raw_key) >= 4 else raw_key.upper()
+        logger.warning(
+            f"[Salt Gate] Session {session_obj.id}: submit rejected for key {claimed_key} "
+            f"(authenticated={current_user is not None}) — beacon salt mismatch"
+        )
 
         # Record spoofer flag for beacon salt mismatch
         await _record_proxy_violation(
@@ -1033,6 +1037,18 @@ async def audit_and_finalize_session(
 
     # Execute social-graph audit engine
     audit_results = audit_classroom_mesh(combined_reports)
+
+    # Log the verdict so manual classroom tests are self-explaining in server logs
+    verdict_counts: dict[str, int] = {}
+    for item in audit_results:
+        verdict_counts[item["status"]] = verdict_counts.get(item["status"], 0) + 1
+    logger.info(f"[Audit Verdict] Session: {session_obj.id} -> {verdict_counts}")
+    for item in audit_results:
+        if item["status"] != "VERIFIED_PRESENT":
+            logger.info(
+                f"[Audit Detail] Session: {session_obj.id} node {item['ble_device_id']} "
+                f"-> {item['status']} :: {item['remarks']}"
+            )
 
     # Batch load all prior attendance records for this session
     prior_records_res = await db.execute(

@@ -123,18 +123,35 @@ def audit_classroom_mesh(reports: dict[str, list[str]]) -> list[dict]:
                 remarks = f"Unreciprocated link to [{', '.join(sorted_bridges)}] (Pending Teacher Confirmation)"
 
             elif len(shared_bridges) == 1:
+                # Classic component-riding attack: claiming a verified classroom
+                # node without reciprocation stays flagged as spoofer
                 status = "SPOOFER_REJECTED"
                 method = "NONE"
                 affinity = 0.00
                 bridge = None
-                remarks = f"Unreciprocated link to [{', '.join(claimed_neighbors)}] (Hallway Spoofer)"
+                remarks = f"Unreciprocated link to [{', '.join(claimed_neighbors)}] (Hallway Spoofer - claimed a verified classroom node without reciprocation)"
 
             else:
-                status = "SPOOFER_REJECTED"
-                method = "NONE"
-                affinity = 0.00
-                bridge = None
-                remarks = f"Unreciprocated link to [{', '.join(claimed_neighbors)}] (Hallway Spoofer)"
+                # Zero verified bridges: distinguishes radio-timing asymmetry from
+                # fabricated claims. A claim pointing at a peer that itself
+                # submitted a report during this session is a plausible real-world
+                # neighbor that simply did not reciprocate before finalize (BLE
+                # discovery windows are asymmetric) — flag for manual review, not
+                # spoofer. Claims referencing keys that never checked in remain
+                # spoofed — nobody with that device was in the room.
+                submitted_peers = [peer for peer in claimed_neighbors if peer in reports]
+                if submitted_peers:
+                    status = "ISOLATED_FLAGGED"
+                    method = "PEER_UNCONFIRMED"
+                    affinity = 0.25
+                    bridge = None
+                    remarks = f"Unreciprocated link to [{', '.join(sorted(claimed_neighbors))}] (Referenced peer submitted a report but did not confirm) - Teacher manual override recommended"
+                else:
+                    status = "SPOOFER_REJECTED"
+                    method = "NONE"
+                    affinity = 0.00
+                    bridge = None
+                    remarks = f"Unreciprocated link to [{', '.join(claimed_neighbors)}] (Claimed peers never checked in during the session)"
 
         results.append({
             "ble_device_id": student_id,
