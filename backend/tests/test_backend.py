@@ -419,9 +419,43 @@ async def test_submit_neighbors_salt_enforcement():
 
         submit_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
 
+        # JWT is now mandatory on submit: register the three in-room students.
+        # Rolls are chosen so the audit's last-4 record keys stay 1234/3456/5678.
+        student_tokens = {}
+        for s_name, s_email, s_roll in [
+            ("Gate Spoofer", "gate.spoofer@univ.edu", "22B3456"),
+            ("Gate Alpha", "gate.alpha@univ.edu", "22B1234"),
+            ("Gate Beta", "gate.beta@univ.edu", "22B5678"),
+        ]:
+            s_reg = await client.post(
+                "/api/v1/auth/register",
+                json={
+                    "name": s_name,
+                    "email": s_email,
+                    "password": "Password123!",
+                    "role": "STUDENT",
+                    "roll_number": s_roll,
+                    "department": "CSE",
+                    "program": "B.Tech",
+                    "semester": 6,
+                    "section": "A",
+                },
+            )
+            assert s_reg.status_code == 200, s_reg.text
+            async with test_session_factory() as s:
+                s_otp = (await s.execute(select(EmailOTP).where(EmailOTP.email == s_email))).scalars().first()
+                s_otp_code = s_otp.otp_code
+            s_verify = await client.post(
+                "/api/v1/auth/register/verify-otp",
+                json={"email": s_email, "otp_code": s_otp_code},
+            )
+            assert s_verify.status_code == 201, s_verify.text
+            student_tokens[s_roll] = s_verify.json()["access_token"]
+
         # 1) Missing salt (absent student replaying only the session token from chat)
         missing = await client.post(
             submit_url,
+            headers={"Authorization": f"Bearer {student_tokens['22B3456']}"},
             json={"student_id": "3456", "neighbors": ["1234", "2345"]},
         )
         assert missing.status_code == 403
@@ -429,6 +463,7 @@ async def test_submit_neighbors_salt_enforcement():
         # 2) Wrong salt (again: knowledge of the token alone is not enough)
         wrong = await client.post(
             submit_url,
+            headers={"Authorization": f"Bearer {student_tokens['22B3456']}"},
             json={"student_id": "3456", "neighbors": ["1234", "2345"], "session_salt": "WRNG"},
         )
         assert wrong.status_code == 403
@@ -437,6 +472,7 @@ async def test_submit_neighbors_salt_enforcement():
         # 3) Matching salt — in-room students who actually heard the beacon (mutual pair)
         valid_one = await client.post(
             submit_url,
+            headers={"Authorization": f"Bearer {student_tokens['22B1234']}"},
             json={"student_id": "1234", "neighbors": ["5678"], "session_salt": "Y7K9"},
         )
         assert valid_one.status_code == 200
@@ -444,6 +480,7 @@ async def test_submit_neighbors_salt_enforcement():
 
         valid_two = await client.post(
             submit_url,
+            headers={"Authorization": f"Bearer {student_tokens['22B5678']}"},
             json={"student_id": "5678", "neighbors": ["1234"], "session_salt": "Y7K9"},
         )
         assert valid_two.status_code == 200
@@ -698,6 +735,47 @@ def test_face_engine_robustness_guards():
     assert "old_sess" not in registry._registry
 
 
+# Registers a throwaway student in the test's own attendance DB and returns a
+# Bearer token: submission now requires JWT, and each battery test mounts its
+# own in-memory get_db override (mirroring the salt-gate test's pattern).
+async def _register_battery_student(client, session_factory) -> str:
+    import uuid as _uuid
+    from sqlalchemy import select
+
+    from app.models.attendance import EmailOTP
+
+    uid = _uuid.uuid4().hex[:8].upper()
+    email = f"battery-{uid.lower()}@univ.edu"
+    res = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "name": f"Battery Student {uid}",
+            "email": email,
+            "password": "Password123!",
+            "role": "STUDENT",
+            "roll_number": f"RB{uid}X",
+            "department": "CSE",
+            "program": "B.Tech",
+            "semester": 6,
+            "section": "A",
+        },
+    )
+    assert res.status_code == 200, res.text
+    async with session_factory() as s:
+        otp_rec = (
+            await s.execute(
+                select(EmailOTP).where(EmailOTP.email == email, EmailOTP.purpose == "REGISTER")
+            )
+        ).scalars().first()
+        otp_code = otp_rec.otp_code
+    verify_res = await client.post(
+        "/api/v1/auth/register/verify-otp",
+        json={"email": email, "otp_code": otp_code},
+    )
+    assert verify_res.status_code == 201, verify_res.text
+    return verify_res.json()["access_token"]
+
+
 # Verifies debug session auto-provisioning and duplicate face detection via API endpoint
 @pytest.mark.anyio
 async def test_debug_session_auto_provision_and_duplicate_rejection():
@@ -705,6 +783,24 @@ async def test_debug_session_auto_provision_and_duplicate_rejection():
     import io
     from PIL import Image
     from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base
+
+    # Deterministic in-memory DB for this battery test: the module shares one
+    # app instance, so without an own override the endpoint would serve whatever
+    # DB a previous test left mounted in dependency_overrides.
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    battery_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with battery_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
 
     img = Image.new("RGB", (100, 100), color=(180, 140, 120))
     buf = io.BytesIO()
@@ -713,9 +809,13 @@ async def test_debug_session_auto_provision_and_duplicate_rejection():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_stud1 = await _register_battery_student(client, battery_db)
+        tok_stud2 = await _register_battery_student(client, battery_db)
+
         # First student check-in to auto-provisioned debug session AUTO-101
         res1 = await client.post(
             "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
+            headers={"Authorization": f"Bearer {tok_stud1}"},
             json={
                 "student_id": "STUD1",
                 "neighbors": ["PEER-A1", "PEER-B2"],
@@ -728,6 +828,7 @@ async def test_debug_session_auto_provision_and_duplicate_rejection():
         # Second student check-in with the exact same face image (proxy attempt)
         res2 = await client.post(
             "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
+            headers={"Authorization": f"Bearer {tok_stud2}"},
             json={
                 "student_id": "STUD2",
                 "neighbors": ["PEER-A1", "PEER-B2"],
@@ -743,12 +844,29 @@ async def test_debug_session_auto_provision_and_duplicate_rejection():
 @pytest.mark.anyio
 async def test_ultrasonic_proximity_rejection():
     from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    battery_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with battery_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_us = await _register_battery_student(client, battery_db)
         # Student submits with ultrasonic proximity detected to another peer on same desk
         res = await client.post(
             "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
+            headers={"Authorization": f"Bearer {tok_us}"},
             json={
                 "student_id": "STUD3",
                 "neighbors": ["STUD4"],
@@ -768,6 +886,10 @@ async def test_submit_neighbors_binary_upload():
     import io
     from PIL import Image
     from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base
     from app.services.face_engine import face_registry
 
     # Clears in-memory registry before test
@@ -778,14 +900,29 @@ async def test_submit_neighbors_binary_upload():
     img.save(buf, format="JPEG")
     raw_jpeg = buf.getvalue()
 
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    battery_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with battery_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_bin1 = await _register_battery_student(client, battery_db)
+        tok_bin2 = await _register_battery_student(client, battery_db)
+
         # Rejects submission when salt header is invalid
         bad_res = await client.post(
             "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
             content=raw_jpeg,
             headers={
                 "Content-Type": "image/jpeg",
+                "Authorization": f"Bearer {tok_bin1}",
                 "X-Session-Salt": "BAD_SALT",
                 "X-Student-Id": "BIN1",
                 "X-Neighbors": "PEER-A1,PEER-B2",
@@ -799,6 +936,7 @@ async def test_submit_neighbors_binary_upload():
             content=raw_jpeg,
             headers={
                 "Content-Type": "image/jpeg",
+                "Authorization": f"Bearer {tok_bin1}",
                 "X-Session-Salt": "DEMO1",
                 "X-Student-Id": "BIN1",
                 "X-Neighbors": "PEER-A1,PEER-B2",
@@ -813,6 +951,7 @@ async def test_submit_neighbors_binary_upload():
             content=raw_jpeg,
             headers={
                 "Content-Type": "image/jpeg",
+                "Authorization": f"Bearer {tok_bin2}",
                 "X-Session-Salt": "DEMO1",
                 "X-Student-Id": "BIN2",
                 "X-Neighbors": "PEER-A1,PEER-B2",
@@ -822,7 +961,7 @@ async def test_submit_neighbors_binary_upload():
         assert "Biometric proxy rejected" in dup_res.json()["detail"]
 
 
-# Verifies in-memory submission staging, relay merging, and TTL pruning
+# Verifies in-memory submission staging, claim union-merging, and TTL pruning
 @pytest.mark.anyio
 async def test_submission_buffer_staging_and_pruning():
     import uuid
@@ -848,19 +987,22 @@ async def test_submission_buffer_staging_and_pruning():
         reported_neighbors=["NBR1", "NBR2", "NBR3"],
     )
 
-    # Stages relayed reports from offline peers
-    await buffer.stage_relayed_reports(
+    # A later, emptier snapshot must not erase earlier claims: interim submits
+    # arrive through asymmetric BLE discovery windows, so union-merge is what
+    # keeps transient one-way discoveries alive until mutual confirmation.
+    await buffer.stage_submission(
         session_id=sess_id,
-        relayed_reports={"OFF1": ["STU1"]},
+        device_key="STU1",
+        student_id=student_uuid,
+        reported_neighbors=["NBR2"],
     )
 
-    # Extracts and verifies staged submissions
+    # Extracts and verifies staged submissions (single surviving node now that
+    # the unauthenticated offline-voucher channel is gone)
     staged = await buffer.pop_submissions(sess_id)
-    assert len(staged) == 2
+    assert len(staged) == 1
     assert staged["STU1"].reported_neighbors == ["NBR1", "NBR2", "NBR3"]
     assert staged["STU1"].student_id == student_uuid
-    assert staged["OFF1"].reported_neighbors == ["STU1"]
-    assert staged["OFF1"].student_id is None
 
     # Verifies buffer is empty after popping
     empty_staged = await buffer.pop_submissions(sess_id)

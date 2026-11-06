@@ -71,29 +71,6 @@ class SubmissionBuffer:
                     reported_neighbors=reported_neighbors,
                 )
 
-    # Stages relayed reports from offline peers in memory
-    async def stage_relayed_reports(
-        self,
-        session_id: str,
-        relayed_reports: dict[str, list[str]],
-    ) -> None:
-        if not relayed_reports:
-            return
-        now = time.time()
-        async with self._lock:
-            self._prune_stale(now)
-            self._last_accessed[session_id] = now
-            session_buf = self._buffers.setdefault(session_id, {})
-            for offline_sender, offline_nbrs in relayed_reports.items():
-                sender_key = offline_sender[-4:].upper() if len(offline_sender) >= 4 else offline_sender.upper()
-                if sender_key not in session_buf:
-                    norm_nbrs = [n[-4:].upper() if len(n) >= 4 else n.upper() for n in offline_nbrs]
-                    session_buf[sender_key] = StagedSubmission(
-                        device_key=sender_key,
-                        student_id=None,
-                        reported_neighbors=norm_nbrs,
-                    )
-
     # Extracts and removes all staged submissions for a session upon final audit
     async def pop_submissions(self, session_id: str) -> dict[str, StagedSubmission]:
         async with self._lock:

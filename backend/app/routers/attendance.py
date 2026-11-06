@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import logging
 import os
 import uuid
@@ -33,6 +32,7 @@ from app.core.security import (
     require_teacher,
 )
 from app.database import get_db
+from app.services.rate_limiter import submit_rate_limiter
 from app.models.attendance import AttendanceRecord, AttendanceSession, Course, SessionSubmission, User
 from app.schemas.attendance import (
     AttendanceRecordResponse,
@@ -651,10 +651,12 @@ async def finalize_attendance_session(
     session_obj.total_verified = verified_count
     session_obj.total_spoofers = spoofer_count
 
-    face_registry.clear_session(str(session_obj.id))
     await submission_buffer.clear_session(str(session_obj.id))
     await db.commit()
     await db.refresh(session_obj)
+    # H2: clear face biometrics only AFTER the commit (final grace-window dedup
+    # must keep its registry until the records are durable) — see finalize path.
+    face_registry.clear_session(str(session_obj.id))
 
     await _populate_course_metadata(session_obj, db)
 
@@ -670,7 +672,7 @@ async def submit_student_neighbors(
     request: Request,
     payload: Union[SubmitNeighborsRequest, bytes] = Body(...),
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[User] = Depends(get_optional_user),
+    current_user: User = Depends(get_current_user),
 ):
     # Extracts binary face bytes and headers if request is raw image payload
     raw_face_bytes = None
@@ -685,13 +687,6 @@ async def submit_student_neighbors(
         co_located_peer_id = request.headers.get("x-co-located-peer-id")
         ultrasonic_proximity_str = request.headers.get("x-ultrasonic-proximity-detected")
         ultrasonic_proximity = ultrasonic_proximity_str.lower() in ("true", "1") if ultrasonic_proximity_str is not None else False
-        relayed_raw = request.headers.get("x-relayed-reports")
-        relayed_reports = None
-        if relayed_raw:
-            try:
-                relayed_reports = json.loads(relayed_raw)
-            except Exception:
-                relayed_reports = None
 
         payload = SubmitNeighborsRequest(
             student_id=student_id,
@@ -701,7 +696,6 @@ async def submit_student_neighbors(
             face_image_base64=None,
             ultrasonic_proximity_detected=ultrasonic_proximity,
             co_located_peer_id=co_located_peer_id,
-            relayed_reports=relayed_reports,
         )
 
     session_obj = await _resolve_session(session_id, db)
@@ -723,20 +717,29 @@ async def submit_student_neighbors(
         await db.commit()
         raise HTTPException(status_code=400, detail="Attendance session has expired")
 
+    # Per-(session, account) submit budget — deliberately NOT per-IP, the whole
+    # classroom shares one Wi-Fi gateway address. Throttles salt brute-forcing
+    # and resubmit floods for a single account without 429-ing its classmates.
+    if not await submit_rate_limiter.check(str(session_obj.id), str(current_user.id)):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many check-in submissions for this session; resubmit shortly",
+        )
+
     # Layer 2 anti-remote-submission guard (ProjectSummary §1.1):
     # the student's phone must possess the salt distributed ONLY via the
     # teacher's BLE beacon — proof of radio reception at the classroom.
     if payload.session_salt != session_obj.session_salt:
         # Flag the attempted remote submission so it surfaces on the teacher's
         # audit dashboard instead of vanishing as a silent rejection.
-        if current_user:
-            raw_key = current_user.roll_number or str(current_user.id).replace("-", "")[:4]
-        else:
-            raw_key = payload.student_id or "STUD"
+        # JWT identity only (auth is mandatory on submit): rejected keys always
+        # belong to a real enrolled account — client-chosen keys are impossible,
+        # so spoofer flags can no longer be framed onto honest classmates.
+        raw_key = current_user.roll_number or str(current_user.id).replace("-", "")[:4]
         claimed_key = raw_key[-4:].upper() if len(raw_key) >= 4 else raw_key.upper()
         logger.warning(
             f"[Salt Gate] Session {session_obj.id}: submit rejected for key {claimed_key} "
-            f"(authenticated={current_user is not None}) — beacon salt mismatch"
+            f"(authenticated) — beacon salt mismatch"
         )
 
         # Record spoofer flag for beacon salt mismatch
@@ -747,7 +750,7 @@ async def submit_student_neighbors(
             status="SPOOFER_REJECTED",
             verification_method="SALT_REJECTED",
             remarks="Remote check-in blocked: in-room beacon salt mismatch",
-            student_id=current_user.id if current_user else None,
+            student_id=current_user.id,
             reported_neighbors=[
                 n[-4:].upper() if len(n) >= 4 else n.upper() for n in payload.neighbors
             ],
@@ -760,10 +763,12 @@ async def submit_student_neighbors(
         )
 
     target_session_id = session_obj.id
-    user_id = current_user.id if current_user else None
+    user_id = current_user.id
 
-    # Bind submission identity to authenticated user roll number if available
-    raw_key = (current_user.roll_number if current_user and current_user.roll_number else None) or payload.student_id or "STUD"
+    # Bind submission identity to the JWT account: client-chosen keys can no
+    # longer select someone else's graph node or merge accounts. Roll number
+    # when set; UUID prefix keeps record keys stable for users without one.
+    raw_key = current_user.roll_number or str(current_user.id).replace("-", "")[:4]
     student_key = raw_key[-4:].upper() if len(raw_key) >= 4 else raw_key.upper()
 
     normalized_neighbors = [n[-4:].upper() if len(n) >= 4 else n.upper() for n in payload.neighbors]
@@ -772,7 +777,7 @@ async def submit_student_neighbors(
     # Face deduplication check (Layer 3: Camera Face Biometric Deduplication)
     face_check_result = None
     if payload.face_image_base64 or raw_face_bytes:
-        raw_roll = (current_user.roll_number if current_user else None) or payload.student_id or student_key
+        raw_roll = current_user.roll_number or student_key
 
         # Compile proximity cluster peers: close peers (RSSI >= -65), reported desk neighbors, and co-located peer
         cluster_peers = set(normalized_close)
@@ -878,13 +883,6 @@ async def submit_student_neighbors(
         student_id=user_id,
         reported_neighbors=normalized_neighbors,
     )
-
-    # Save relayed neighbor reports from offline peers in memory buffer
-    if payload.relayed_reports:
-        await submission_buffer.stage_relayed_reports(
-            session_id=str(target_session_id),
-            relayed_reports=payload.relayed_reports,
-        )
 
     # Re-read session status after staging: if finalize committed while this submission was in
     # flight (the finalize already popped the buffer), reroute through the grace path below so
@@ -1168,9 +1166,12 @@ async def audit_and_finalize_session(
     )
     session_obj.total_spoofers = spoofer_res.scalar() or 0
 
-    face_registry.clear_session(str(session_obj.id))
     await db.commit()
     await db.refresh(session_obj)
+    # H2: clear face biometrics only AFTER the commit — clearing before commit
+    # left a blind window during the 90s grace period where a duplicate-face
+    # resubmission hit an empty registry and slipped past dedup.
+    face_registry.clear_session(str(session_obj.id))
 
     await _populate_course_metadata(session_obj, db)
 

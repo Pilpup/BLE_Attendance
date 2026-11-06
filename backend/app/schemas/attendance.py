@@ -116,10 +116,6 @@ class SubmitNeighborsRequest(BaseModel):
         default=None,
         description="Peers detected in close proximity cluster (RSSI >= -65 dBm)"
     )
-    relayed_reports: Optional[dict[str, list[str]]] = Field(
-        default=None,
-        description="Vouchers collected from offline peers over BLE: {offline_student_id: [nbr1, nbr2, nbr3]}"
-    )
     session_salt: Optional[str] = Field(
         default=None,
         description="Salt captured from the teacher's in-room beacon; submissions without the matching salt are rejected"

@@ -149,9 +149,9 @@ async def test_30_student_classroom_mesh_simulation():
             "ST07": (["ST06", "OF01"], None),
             "ST08": (["ST07", "ST09"], None),
             "ST09": (["ST08"], None),
-            "ST10": (["OF02", "ST11"], {"OF02": ["ST10", "ST11"]}),
+            "ST10": (["OF02", "ST11", "ST12"], None),
             "ST11": (["ST10", "OF02", "OF03"], None),
-            "ST12": (["OF03", "ST11"], {"OF03": ["ST11", "ST12"]}),
+            "ST12": (["OF03", "ST11", "ST10"], None),
             "ST13": (["ST14", "ST15"], None),
             "ST14": (["ST13", "ST15"], None),
             "ST15": (["ST13", "ST14"], None),
@@ -168,11 +168,11 @@ async def test_30_student_classroom_mesh_simulation():
         }
 
         # Online students upload reports ( Beacon salt "Y7Q9" heard in-room from teacher's S: beacon )
-        for sid, (nbrs, relayed) in cluster_reports.items():
+        # (the offline-voucher channel relayed_reports was removed as the C1
+        # forgery fix; offline students now verify through the >=2-witness rule)
+        for sid, (nbrs, _relayed) in cluster_reports.items():
             headers = {"Authorization": f"Bearer {student_tokens[sid]}"}
             payload = {"neighbors": nbrs, "session_salt": "Y7Q9"}
-            if relayed:
-                payload["relayed_reports"] = relayed
             sub_res = await client.post(
                 "/api/v1/attendance/sessions/89F2/submit-neighbors",
                 headers=headers,
@@ -212,7 +212,8 @@ async def test_30_student_classroom_mesh_simulation():
             assert record_map[sid]["status"] == "VERIFIED_PRESENT"
             assert record_map[sid]["affinity_score"] >= 0.50
 
-        # Verify all 4 offline students are marked present via relayed vouchers
+        # Verify all 4 offline students are marked present via the peer-witness
+        # rule (each is claimed by two verified in-room reporters)
         for off_id in ["OF01", "OF02", "OF03", "OF04"]:
             assert off_id in record_map
             assert record_map[off_id]["status"] == "VERIFIED_PRESENT"
