@@ -153,7 +153,8 @@ internal fun StudentSection(
     val isScanning = studentPhase == StudentPhase.LISTENING_FOR_TEACHER ||
             studentPhase == StudentPhase.PROBING_NEIGHBORS
 
-    val orbTotalTargets = 18
+    // Mirrors GameTelemetryEngine.DEFAULT_TARGETS_GOAL (24 targets ≈ 20s round, 30s session design)
+    val orbTotalTargets = 24
     var targetsHit by remember { mutableIntStateOf(0) }
     var totalTargetsSpawned by remember { mutableIntStateOf(orbTotalTargets) }
     var isGameOver by remember { mutableStateOf(false) }

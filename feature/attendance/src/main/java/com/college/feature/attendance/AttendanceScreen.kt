@@ -176,6 +176,7 @@ fun AttendanceScreen(
                     remainingSeconds = viewModel.remainingSeconds,
                     finalizedRecords = viewModel.finalizedRecords,
                     isCloudSyncing = viewModel.isCloudSyncing,
+                    isCancelling = viewModel.isCancelling,
                     cloudStatusMessage = viewModel.cloudStatusMessage,
                     onSelectCourse = { viewModel.selectedCourse = it },
                     onStartSession = callbacks.onStartTeacherSession,

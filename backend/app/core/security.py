@@ -16,6 +16,10 @@ from app.models.attendance import User
 
 security_scheme = HTTPBearer()
 
+# Check if application is running inside a test runner
+def is_test_environment() -> bool:
+    return bool(os.environ.get("PYTEST_CURRENT_TEST"))
+
 # Hash plain password using bcrypt
 def hash_password(password: str) -> str:
     salt = bcrypt.gensalt()
@@ -52,7 +56,7 @@ async def get_current_user(
 ) -> User:
     token = credentials.credentials
     # Allow mock tokens only during automated tests
-    if bool(os.environ.get("PYTEST_CURRENT_TEST")) and (token.startswith("mock-") or "mock" in token):
+    if is_test_environment() and (token.startswith("mock-") or "mock" in token):
         stmt = select(User).where(User.role == "TEACHER").limit(1)
         res = await db.execute(stmt)
         user = res.scalars().first()

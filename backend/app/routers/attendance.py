@@ -29,6 +29,7 @@ def _is_session_stale(started_at: Optional[datetime], minutes: int) -> bool:
 from app.core.security import (
     get_current_user,
     get_optional_user,
+    is_test_environment,
     require_teacher,
 )
 from app.database import get_db
@@ -60,7 +61,7 @@ async def _resolve_session(session_id: str, db: AsyncSession) -> Optional[Attend
     load_opts = selectinload(AttendanceSession.records)
 
     # Allow debug sessions only during test execution
-    if bool(os.environ.get("PYTEST_CURRENT_TEST")) and session_id.upper() in ("AUTO-101", "DEMO", "DEBUG-1"):
+    if is_test_environment() and session_id.upper() in ("AUTO-101", "DEMO", "DEBUG-1"):
         debug_token = session_id.upper()
         debug_res = await db.execute(
             select(AttendanceSession).options(load_opts).where(AttendanceSession.session_token == debug_token)
@@ -218,6 +219,22 @@ async def _commit_proxy_violation(db: AsyncSession) -> None:
     except IntegrityError as exc:
         await db.rollback()
         logger.warning(f"Concurrent proxy violation commit collision: {exc}")
+
+
+# Serializes concurrent finalize calls (a teacher tap racing the auto-finalize timer):
+# the second caller blocks on the session row until the first commits, then re-reads the
+# committed status so a duplicate finalize exits idempotently instead of double-inserting.
+# SQLite (test environment) ignores FOR UPDATE; PostgreSQL enforces it.
+async def _lock_session_for_finalize(db: AsyncSession, session_obj: AttendanceSession) -> AttendanceSession:
+    lock_res = await db.execute(
+        select(AttendanceSession.id).where(AttendanceSession.id == session_obj.id).with_for_update()
+    )
+    lock_res.scalars().first()
+    fresh_status = (
+        await db.execute(select(AttendanceSession.status).where(AttendanceSession.id == session_obj.id))
+    ).scalar_one()
+    session_obj.status = fresh_status
+    return session_obj
 
 
 # Course Endpoints
@@ -461,16 +478,19 @@ async def cancel_attendance_session(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You can only cancel your own attendance sessions",
         )
+
+    # Serialize against concurrent finalize calls: a cancel racing an in-flight finalize must
+    # observe the committed result instead of flipping a just-finalized session to CANCELLED
+    session_obj = await _lock_session_for_finalize(db, session_obj)
     if session_obj.status == "COMPLETED":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot cancel an attendance session that has already been finalized/completed",
         )
     if session_obj.status == "CANCELLED":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Attendance session is already cancelled",
-        )
+        # Idempotent: re-cancel of an already-cancelled session is a no-op success
+        await db.refresh(session_obj)
+        return session_obj
 
     # Cancel session and remove ephemeral submissions
     session_obj.status = "CANCELLED"
@@ -481,10 +501,11 @@ async def cancel_attendance_session(
     await db.commit()
     await db.refresh(session_obj)
 
-    await _populate_course_metadata(session_obj, db)
-
-    face_registry.clear_session(str(session_obj.id))
+    # Discard volatile in-RAM state so a cancelled session leaves nothing behind
     await submission_buffer.clear_session(str(session_obj.id))
+    face_registry.clear_session(str(session_obj.id))
+
+    await _populate_course_metadata(session_obj, db)
     logger.info(f"[Session Cancelled] Session: {session_obj.id}")
     return session_obj
 
@@ -515,14 +536,29 @@ async def finalize_attendance_session(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot finalize a cancelled session",
         )
+    # Serialize overlapping finalizes: block on the session row, then re-read committed status
+    session_obj = await _lock_session_for_finalize(db, session_obj)
+
     if session_obj.status == "COMPLETED":
+        # Idempotent exit: attach the finalized counters and records so the caller gets the
+        # completed session rather than the stale pre-lock snapshot
+        await db.refresh(session_obj)
+        final_recs = await db.execute(
+            select(AttendanceRecord).where(AttendanceRecord.session_id == session_obj.id)
+        )
+        session_obj.records = list(final_recs.scalars().all())
+        await _populate_course_metadata(session_obj, db)
         return session_obj
 
-    # Load prior proxy violations to prevent client record tampering
+    # Load prior records to update existing entries and avoid duplicates
     prior_res = await db.execute(
         select(AttendanceRecord).where(AttendanceRecord.session_id == session_obj.id)
     )
-    prior_map = {r.ble_device_id.upper(): r for r in prior_res.scalars().all()}
+    prior_records = prior_res.scalars().all()
+    prior_device_map = {r.ble_device_id.upper(): r for r in prior_records}
+    prior_student_map = {r.student_id: r for r in prior_records if r.student_id}
+    seen_devices = set(prior_device_map.keys())
+    seen_students = set(prior_student_map.keys())
 
     verified_count = 0
     spoofer_count = 0
@@ -530,14 +566,31 @@ async def finalize_attendance_session(
     records_to_create = []
     for item in payload.records:
         device_id = item.ble_device_id.upper()
-        prior_rec = prior_map.get(device_id)
-        if prior_rec and prior_rec.status in (
-            "DUPLICATE_FACE_PROXY",
-            "CO_LOCATED_SAME_DESK_PROXY",
-            "NO_FACE_DETECTED",
-            "SPOOFER_REJECTED",
-        ):
+        prior_rec = prior_device_map.get(device_id) or (prior_student_map.get(item.student_id) if item.student_id else None)
+        if prior_rec:
+            if prior_rec.status in (
+                "DUPLICATE_FACE_PROXY",
+                "CO_LOCATED_SAME_DESK_PROXY",
+                "NO_FACE_DETECTED",
+                "SPOOFER_REJECTED",
+            ):
+                continue
+            if item.status == "VERIFIED_PRESENT":
+                verified_count += 1
+            elif item.status == "SPOOFER_REJECTED":
+                spoofer_count += 1
+            prior_rec.status = item.status
+            prior_rec.verification_method = item.verification_method
+            prior_rec.affinity_score = item.affinity_score
+            prior_rec.remarks = item.remarks
+            prior_rec.reported_neighbors = item.reported_neighbors
             continue
+
+        if device_id in seen_devices or (item.student_id and item.student_id in seen_students):
+            continue
+        seen_devices.add(device_id)
+        if item.student_id:
+            seen_students.add(item.student_id)
 
         if item.status == "VERIFIED_PRESENT":
             verified_count += 1
@@ -560,6 +613,35 @@ async def finalize_attendance_session(
             )
         )
 
+    # Drain cloud-staged submissions to avoid dropping internet check-ins
+    staged = await submission_buffer.pop_submissions(str(session_obj.id))
+
+    for staged_key, staged_sub in staged.items():
+        dev_upper = staged_key.upper()
+        if dev_upper in seen_devices or (staged_sub.student_id and staged_sub.student_id in seen_students):
+            continue
+        seen_devices.add(dev_upper)
+        if staged_sub.student_id:
+            seen_students.add(staged_sub.student_id)
+
+        is_ver = bool(staged_sub.reported_neighbors)
+        if is_ver:
+            verified_count += 1
+        records_to_create.append(
+            AttendanceRecord(
+                id=uuid.uuid4(),
+                session_id=session_obj.id,
+                student_id=staged_sub.student_id,
+                ble_device_id=dev_upper,
+                status="VERIFIED_PRESENT" if is_ver else "ISOLATED_FLAGGED",
+                verification_method="BLE_MESH" if is_ver else "NONE",
+                affinity_score=1.00 if is_ver else 0.00,
+                reported_neighbors=staged_sub.reported_neighbors,
+                remarks="Cloud staged check-in merged at finalization",
+                recorded_at=datetime.now(timezone.utc),
+            )
+        )
+
     # Batch inserts all records and cleans staged submissions
     if records_to_create:
         db.add_all(records_to_create)
@@ -569,6 +651,7 @@ async def finalize_attendance_session(
     session_obj.total_verified = verified_count
     session_obj.total_spoofers = spoofer_count
 
+    face_registry.clear_session(str(session_obj.id))
     await submission_buffer.clear_session(str(session_obj.id))
     await db.commit()
     await db.refresh(session_obj)
@@ -675,8 +758,8 @@ async def submit_student_neighbors(
     target_session_id = session_obj.id
     user_id = current_user.id if current_user else None
 
-    # Always use the BLE ID actually transmitted over the radio (payload.student_id)
-    raw_key = payload.student_id or (current_user.roll_number if current_user else None) or "STUD"
+    # Bind submission identity to authenticated user roll number if available
+    raw_key = (current_user.roll_number if current_user and current_user.roll_number else None) or payload.student_id or "STUD"
     student_key = raw_key[-4:].upper() if len(raw_key) >= 4 else raw_key.upper()
 
     normalized_neighbors = [n[-4:].upper() if len(n) >= 4 else n.upper() for n in payload.neighbors]
@@ -799,6 +882,20 @@ async def submit_student_neighbors(
             relayed_reports=payload.relayed_reports,
         )
 
+    # Re-read session status after staging: if finalize committed while this submission was in
+    # flight (the finalize already popped the buffer), reroute through the grace path below so
+    # the straggler gets an attendance record instead of being silently orphaned.
+    fresh_status_res = await db.execute(
+        select(AttendanceSession.status).where(AttendanceSession.id == session_obj.id)
+    )
+    session_obj.status = fresh_status_res.scalar_one_or_none() or session_obj.status
+
+    if session_obj.status == "CANCELLED":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Attendance session has been cancelled",
+        )
+
     # For in-flight submissions arriving during the grace period of an already COMPLETED session,
     # immediately evaluate and record their attendance so they don't get orphaned without an AttendanceRecord.
     if session_obj.status == "COMPLETED":
@@ -822,7 +919,7 @@ async def submit_student_neighbors(
 
             if verified_neighbors:
                 rec_status = "VERIFIED_PRESENT"
-                verif_method = "DIRECT_MUTUAL"
+                verif_method = "IN_FLIGHT_GRACE_PEER"
                 affinity = 1.00
                 bridge = None
                 remarks = f"In-flight check-in verified via mutual desk neighbor [{', '.join(verified_neighbors)}]"
@@ -901,7 +998,18 @@ async def audit_and_finalize_session(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot finalize a cancelled session",
         )
+    # Serialize overlapping finalizes: block on the session row, then re-read committed status
+    session_obj = await _lock_session_for_finalize(db, session_obj)
+
     if session_obj.status == "COMPLETED":
+        # Idempotent exit: attach the finalized counters and records so the caller gets the
+        # completed session rather than the stale pre-lock snapshot
+        await db.refresh(session_obj)
+        final_recs = await db.execute(
+            select(AttendanceRecord).where(AttendanceRecord.session_id == session_obj.id)
+        )
+        session_obj.records = list(final_recs.scalars().all())
+        await _populate_course_metadata(session_obj, db)
         return session_obj
 
     # Fetch all cloud-submitted student and relay reports from memory buffer and fallback database
@@ -930,7 +1038,11 @@ async def audit_and_finalize_session(
     prior_records_res = await db.execute(
         select(AttendanceRecord).where(AttendanceRecord.session_id == session_obj.id)
     )
-    prior_map = {r.ble_device_id: r for r in prior_records_res.scalars().all()}
+    prior_records = prior_records_res.scalars().all()
+    prior_device_map = {r.ble_device_id.upper(): r for r in prior_records}
+    prior_student_map = {r.student_id: r for r in prior_records if r.student_id}
+    seen_devices = set(prior_device_map.keys())
+    seen_students = set(prior_student_map.keys())
 
     # Batch resolve unmatched student roll numbers with ambiguity protection
     unresolved_keys = [
@@ -962,25 +1074,44 @@ async def audit_and_finalize_session(
 
     for item in audit_results:
         device_id = item["ble_device_id"].upper()
+        resolved_student_id = user_map.get(device_id)
 
-        # Skip devices already flagged for proxy violations
-        prior_rec = prior_map.get(device_id)
-        if prior_rec and prior_rec.status in (
-            "DUPLICATE_FACE_PROXY",
-            "CO_LOCATED_SAME_DESK_PROXY",
-            "DIVIDED_ATTENTION_PROXY",
-            "COGNITIVE_CHALLENGE_FAILED",
-            "NO_FACE_DETECTED",
-            "SPOOFER_REJECTED",
-        ):
+        prior_rec = prior_device_map.get(device_id) or (prior_student_map.get(resolved_student_id) if resolved_student_id else None)
+        if prior_rec:
+            # Skip modifying existing security proxy violations
+            if prior_rec.status in (
+                "DUPLICATE_FACE_PROXY",
+                "CO_LOCATED_SAME_DESK_PROXY",
+                "DIVIDED_ATTENTION_PROXY",
+                "COGNITIVE_CHALLENGE_FAILED",
+                "NO_FACE_DETECTED",
+                "SPOOFER_REJECTED",
+            ):
+                continue
+            # Update existing record in place without duplicate insert
+            if item["status"] == "VERIFIED_PRESENT":
+                verified_count += 1
+            elif item["status"] == "SPOOFER_REJECTED":
+                spoofer_count += 1
+            prior_rec.status = item["status"]
+            prior_rec.verification_method = item["verification_method"]
+            prior_rec.affinity_score = item["affinity_score"]
+            prior_rec.remarks = item["remarks"]
+            prior_rec.reported_neighbors = item["reported_neighbors"]
+            if resolved_student_id and not prior_rec.student_id:
+                prior_rec.student_id = resolved_student_id
             continue
+
+        if device_id in seen_devices or (resolved_student_id and resolved_student_id in seen_students):
+            continue
+        seen_devices.add(device_id)
+        if resolved_student_id:
+            seen_students.add(resolved_student_id)
 
         if item["status"] == "VERIFIED_PRESENT":
             verified_count += 1
         elif item["status"] == "SPOOFER_REJECTED":
             spoofer_count += 1
-
-        resolved_student_id = user_map.get(device_id)
 
         records_to_create.append(
             AttendanceRecord(
@@ -1021,6 +1152,7 @@ async def audit_and_finalize_session(
     )
     session_obj.total_spoofers = spoofer_res.scalar() or 0
 
+    face_registry.clear_session(str(session_obj.id))
     await db.commit()
     await db.refresh(session_obj)
 
@@ -1038,7 +1170,7 @@ async def get_session_details(
     current_user: Optional[User] = Depends(get_optional_user),
 ):
     # Require authentication in production
-    if not current_user and not bool(os.environ.get("PYTEST_CURRENT_TEST")):
+    if not current_user and not is_test_environment():
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
 
     session_obj = await _resolve_session(session_id, db)

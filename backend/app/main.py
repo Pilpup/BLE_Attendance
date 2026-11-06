@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from sqlalchemy import delete, text
 from app.config import settings
+from app.core.security import is_test_environment
 from app.database import AsyncSessionLocal, engine, is_postgres
 from app.models.attendance import Base, EmailOTP
 from app.routers import attendance, auth, library
@@ -74,6 +75,11 @@ BEGIN
         SELECT 1 FROM pg_constraint WHERE conname = 'unique_session_ble_device'
     ) THEN
         ALTER TABLE attendance_records ADD CONSTRAINT unique_session_ble_device UNIQUE (session_id, ble_device_id);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'unique_session_student'
+    ) THEN
+        ALTER TABLE attendance_records ADD CONSTRAINT unique_session_student UNIQUE (session_id, student_id);
     END IF;
 
     -- session_submissions (for multi-worker staging)
@@ -187,8 +193,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="BLE Attendance Verification API",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/docs" if settings.APP_ENV != "production" else None,
+    redoc_url="/redoc" if settings.APP_ENV != "production" else None,
     lifespan=lifespan,
 )
 
@@ -260,7 +266,7 @@ async def health_check():
 # Diagnostic endpoint restricted to test environments
 @app.get("/debug-db", tags=["System"])
 async def debug_db():
-    if not bool(os.environ.get("PYTEST_CURRENT_TEST")):
+    if not is_test_environment():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     try:
         async with engine.begin() as conn:

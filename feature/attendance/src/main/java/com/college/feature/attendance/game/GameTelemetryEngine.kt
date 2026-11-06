@@ -11,7 +11,9 @@ import kotlin.math.sqrt
 // Analyzes tap timing and spatial accuracy to verify single-device human operation
 object GameTelemetryEngine {
 
-    const val DEFAULT_TARGETS_GOAL = 18
+    // 24 targets ≈ 20s round at the 900ms orb lifetime pacing — matches the 30s session design
+    // (game fills t≈0-20s of the session; final student submit lands at t≈25s, teacher finalize t≈30s)
+    const val DEFAULT_TARGETS_GOAL = 24
     const val MIN_PASSING_ACCURACY = 55
     const val MIN_PASSING_CREDIBILITY = 50
 

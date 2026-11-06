@@ -125,6 +125,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var backendSessionId: String? by mutableStateOf(null)
     var finalizedRecords by mutableStateOf<List<AttendanceRecordItem>>(emptyList())
     var isCloudSyncing: Boolean by mutableStateOf(false)
+    var isCancelling: Boolean by mutableStateOf(false)
     var cloudStatusMessage: String? by mutableStateOf(null)
     var studentStatusMessage: String? by mutableStateOf(null)
 
@@ -286,20 +287,38 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Clear previous audit results or cancel active session to start fresh
     fun resetSession() {
+        // Prevent double-taps and overlapping cancel/finalize requests
+        if (isCancelling || isCloudSyncing) return
         val sessId = backendSessionId
-        if (isSessionActive && SessionManager.default.isLoggedIn && sessId != null) {
-            viewModelScope.launch(Dispatchers.IO) {
-                try {
-                    api.cancelSession(sessId)
-                } catch (_: Exception) { }
-            }
-        }
+        val wasSessionActive = isSessionActive
         stopTeacherSession()
         airVerdictJob?.cancel()
         airVerdictJob = null
-        backendSessionId = null
-        finalizedRecords = emptyList()
-        cloudStatusMessage = null
+
+        if (wasSessionActive && SessionManager.default.isLoggedIn && sessId != null) {
+            isCancelling = true
+            cloudStatusMessage = "Cancelling session…"
+            viewModelScope.launch(Dispatchers.IO) {
+                val result = safeApiCall { api.cancelSession(sessId) }
+                withContext(Dispatchers.Main) {
+                    isCancelling = false
+                    backendSessionId = null
+                    finalizedRecords = emptyList()
+                    cloudStatusMessage = when (result) {
+                        is NetworkResult.Success ->
+                            "Session cancelled • student records retained on server"
+                        is NetworkResult.Error ->
+                            "Session cancelled • couldn't reach server, it will auto-expire"
+                        is NetworkResult.Exception ->
+                            "Cancelled locally • offline — server session will auto-expire"
+                    }
+                }
+            }
+        } else {
+            backendSessionId = null
+            finalizedRecords = emptyList()
+            cloudStatusMessage = null
+        }
     }
 
     // Persist and update student roll number (even offline)
@@ -800,6 +819,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Finalize session and trigger server-side mesh audit
     fun finalizeSessionAndAudit() {
+        // Re-entry guard: the auto-finalize timer and a manual Stop tap can overlap;
+        // only one finalize request may be in flight at a time
+        if (isCloudSyncing) return
         stopTeacherSession()
 
         val sessId = backendSessionId ?: sessionId.takeIf { it != "----" }
@@ -1359,15 +1381,15 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun startStudentDiscoveryWindow() {
         startPeerBatchUpdates()
-        studentDiscoverySecondsRemaining = 15
+        studentDiscoverySecondsRemaining = 25
         val probePayload = "$detectedSessionId$studentShortId"
         onStartBroadcasting?.invoke(probePayload, AdvertiseSettings.ADVERTISE_TX_POWER_LOW)
 
         studentTimer?.cancel()
-        studentTimer = object : CountDownTimer(15000L, 1000L) {
+        studentTimer = object : CountDownTimer(25000L, 1000L) {
             override fun onTick(millisUntilFinished: Long) {
                 studentDiscoverySecondsRemaining = (millisUntilFinished / 1000L).toInt()
-                val elapsed = 15 - studentDiscoverySecondsRemaining
+                val elapsed = 25 - studentDiscoverySecondsRemaining
                 // Initial quick cloud check-in after 3 seconds so the server records this student in the session
                 if (elapsed == 3 || (elapsed > 3 && elapsed % 4 == 0 && topDeskNeighbours.isNotEmpty())) {
                     submitMyNeighborsToCloud(keepRadioActive = true)
@@ -1391,7 +1413,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
         if (isTeacherMode) return
 
-        // Option 2: Air Verdict packet broadcast by teacher (V:<ID>:OK)
+        // Process teacher air verdict packets with offline/online gating
         if (cleanMsg.startsWith("V:")) {
             val parts = cleanMsg.split(":")
             if (parts.size >= 3 && parts[2] == "OK") {
@@ -1401,12 +1423,15 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         (targetId.isNotEmpty() && currentRollNumber.endsWith(targetId, ignoreCase = true))
                 if (isMatch) {
                     stopPeerBatchUpdates()
-                    studentPhase = StudentPhase.VERIFIED_PRESENT
-                    studentStatusMessage = "Attendance Confirmed"
-                    auditPollingJob?.cancel()
-                    auditPollingJob = null
-                    onStopScanning?.invoke()
-                    onStopBroadcasting?.invoke()
+                    val isPollingOnline = auditPollingJob?.isActive == true
+                    if (!isPollingOnline) {
+                        studentPhase = StudentPhase.VERIFIED_PRESENT
+                        studentStatusMessage = "Attendance Confirmed"
+                        onStopScanning?.invoke()
+                        onStopBroadcasting?.invoke()
+                    } else {
+                        studentStatusMessage = "Air verdict detected; confirming with server"
+                    }
                     return
                 }
             }
@@ -1563,9 +1588,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             }
                         } else if (session?.status == "CANCELLED") {
                             withContext(Dispatchers.Main) {
-                                studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-                                studentStatusMessage = "Session was cancelled by the instructor"
-                                onStopScanning?.invoke()
+                                handleSessionCancelled()
                             }
                             break
                         }
@@ -1573,6 +1596,28 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 } catch (_: Exception) { }
             }
         }
+    }
+
+    // Reset student state and resume scanning when session is cancelled
+    private fun handleSessionCancelled() {
+        studentTimer?.cancel()
+        studentTimer = null
+        studentDiscoverySecondsRemaining = 0
+        stopPeerBatchUpdates()
+        onStopBroadcasting?.invoke()
+        rawDiscoveredPeers.clear()
+        topDeskNeighbours = emptyList()
+        capturedFaceBase64 = null
+        capturedFaceBytes = null
+        testedUltrasonicPeers.clear()
+        ultrasonicProximityDetected = false
+        coLocatedPeerId = null
+        auditedRecord = null
+        detectedSessionId = "----"
+        detectedSessionSalt = "------"
+        studentPhase = StudentPhase.LISTENING_FOR_TEACHER
+        studentStatusMessage = "Session cancelled by instructor — waiting for a new session"
+        onStartScanning?.invoke()
     }
 
     fun refreshAuditStatus() {
@@ -1608,6 +1653,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                     onStartScanning?.invoke()
                                 }
                             }
+                        }
+                    } else if (session?.status == "CANCELLED") {
+                        withContext(Dispatchers.Main) {
+                            handleSessionCancelled()
                         }
                     }
                 }

@@ -8,6 +8,7 @@ from email.mime.text import MIMEText
 import httpx
 
 from app.config import settings
+from app.core.security import is_test_environment
 
 logger = logging.getLogger("email_service")
 
@@ -90,7 +91,7 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "LOGIN") -
         return await asyncio.to_thread(_send_smtp_email_sync, to_email, subject, text_content)
 
     # Return success for local test suites when mailers are disabled
-    if bool(os.environ.get("PYTEST_CURRENT_TEST")):
+    if is_test_environment():
         return True
 
     logger.warning("No email provider configured (BREVO_API_KEY or SMTP_HOST required)")

@@ -19,6 +19,8 @@ except ImportError:
     ort = None
     ORT_AVAILABLE = False
 
+from app.core.security import is_test_environment
+
 logger = logging.getLogger("uvicorn.error")
 
 # Standard OpenCV SFace cosine distance threshold (0.363 achieves 99.9% verification accuracy, FAR < 0.1%)
@@ -26,7 +28,7 @@ DEFAULT_SIMILARITY_THRESHOLD = 0.363
 YUNET_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "weights", "face_detection_yunet.onnx")
 SFACE_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "weights", "face_recognition_sface.onnx")
 MAX_PAYLOAD_BYTES = 4_000_000
-SESSION_TTL_SECONDS = 86_400
+SESSION_TTL_SECONDS = 7_200
 MAX_FLAGGED_PAIRS_PER_SESSION = 50
 MAX_IMAGE_DIMENSION = 640
 
@@ -163,7 +165,7 @@ class FaceMatchingEngine:
                     _, faces = self.detector.detect(img)
 
                     # Special-case synthetic single-color images only during automated pytest runs
-                    is_testing = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+                    is_testing = is_test_environment()
                     if (faces is None or len(faces) == 0) and is_synthetic and is_testing:
                         mean_colors = np.mean(img, axis=(0, 1)).astype(np.float32)
                         tiled = np.tile(mean_colors, 43)[:128]

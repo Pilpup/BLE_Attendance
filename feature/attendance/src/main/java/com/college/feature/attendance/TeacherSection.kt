@@ -169,6 +169,7 @@ internal fun TeacherSection(
     remainingSeconds: Int,
     finalizedRecords: List<AttendanceRecordItem>,
     isCloudSyncing: Boolean,
+    isCancelling: Boolean = false,
     cloudStatusMessage: String?,
     onSelectCourse: (CourseResponse) -> Unit,
     onStartSession: () -> Unit,
@@ -580,6 +581,7 @@ internal fun TeacherSection(
             // Stop session button in solar orange with white text
             Button(
                 onClick = onStopSession,
+                enabled = !isCancelling,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),
@@ -594,6 +596,22 @@ internal fun TeacherSection(
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color.White
+                )
+            }
+
+            // Cancel session button — aborts without finalizing; student records retained server-side
+            TextButton(
+                onClick = onResetSession,
+                enabled = !isCancelling,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(40.dp)
+            ) {
+                Text(
+                    text = if (isCancelling) "Cancelling…" else "Cancel Session",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (isCancelling) AppTheme.colors.textMuted else AppTheme.colors.dangerRed
                 )
             }
         }
