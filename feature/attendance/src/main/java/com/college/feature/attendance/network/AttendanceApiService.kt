@@ -52,9 +52,6 @@ interface AttendanceApiService {
         @Header("X-Neighbors") neighbors: String?,
         @Header("X-Close-Neighbors") closeNeighbors: String?,
         @Header("X-Co-Located-Peer-Id") coLocatedPeerId: String?,
-        @Header("X-Challenge-Passed") challengePassed: Boolean?,
-        @Header("X-Challenge-Score") challengeScore: Int?,
-        @Header("X-Divided-Attention-Detected") dividedAttentionDetected: Boolean?,
         @Header("X-Ultrasonic-Proximity-Detected") ultrasonicProximityDetected: Boolean?,
         @Header("X-Relayed-Reports") relayedReportsJson: String?,
         @Body imageBytes: RequestBody

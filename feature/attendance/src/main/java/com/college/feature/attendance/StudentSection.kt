@@ -82,7 +82,6 @@ import com.college.feature.attendance.camera.PassiveFaceCaptureManager
 import com.college.feature.attendance.game.GameTelemetryEngine
 import com.college.feature.attendance.game.OrbPoppingGame
 import com.college.feature.attendance.network.AttendanceRecordItem
-import com.college.feature.attendance.telemetry.CognitiveFocusReport
 import com.college.feature.attendance.viewmodel.StudentPhase
 
 // Student attendance portal displaying instructions island, game challenge, and completion
@@ -94,13 +93,11 @@ internal fun StudentSection(
     sessionSalt: String = "",
     studentId: String = "",
     studentStatusMessage: String? = null,
-    lastFocusReport: CognitiveFocusReport? = null,
     capturedFacePayload: String? = null,
     auditedRecord: AttendanceRecordItem? = null,
     onRefreshAudit: (() -> Unit)? = null,
     isRefreshingAudit: Boolean = false,
     onChallengeResult: (hit: Int, total: Int) -> Unit = { _, _ -> },
-    onBehavioralReport: (CognitiveFocusReport) -> Unit = {},
     onFaceCaptured: (String, ByteArray?) -> Unit = { _, _ -> },
     onStartScanning: () -> Unit,
     onStopScanning: () -> Unit,
@@ -291,7 +288,6 @@ internal fun StudentSection(
                             )
                             targetsHit = report.hits
                             totalTargetsSpawned = report.totalSpawns
-                            onBehavioralReport(report)
                             onChallengeResult(report.hits, report.totalSpawns)
                             onNext()
                         }

@@ -312,7 +312,7 @@ fun OrbPoppingGame(
                         modifier = Modifier
                             .offset(x = xDp, y = yDp)
                             .size(targetSize)
-                            .pointerInput(target.id) {
+                            .pointerInput(target.id, target.isTapped) {
                                 detectTapGestures { offset ->
                                     if (target.isTapped) return@detectTapGestures
                                     val nowTapTime = System.currentTimeMillis()

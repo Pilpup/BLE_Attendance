@@ -144,19 +144,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     private var peerBatchJob: Job? = null
     val discoveredPeers: Map<String, PeerData> get() = rawDiscoveredPeers
 
-    // Interactive reflex challenge state and telemetry
+    // Interactive reflex challenge state (score is cosmetic, informational only)
     var challengeScore by mutableIntStateOf(0)
     var challengeTotalTargets by mutableIntStateOf(0)
-    var lastFocusReport by mutableStateOf<com.college.feature.attendance.telemetry.CognitiveFocusReport?>(null)
     val challengeScorePercentage: Int
         get() = if (challengeTotalTargets > 0) (challengeScore * 100) / challengeTotalTargets else 0
-
-    // Students always play the reflex game, but behavioral telemetry is informational and does not veto attendance
-    val isChallengePassed: Boolean
-        get() = true
-
-    val isDividedProxy: Boolean
-        get() = false
 
     val hasLocalDefenseFailed: Boolean
         get() = faceProxyDetected || ultrasonicProximityDetected
@@ -164,10 +156,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     fun recordChallengeResult(hit: Int, total: Int) {
         challengeScore = hit
         challengeTotalTargets = total
-    }
-
-    fun recordBehavioralReport(report: com.college.feature.attendance.telemetry.CognitiveFocusReport) {
-        lastFocusReport = report
     }
 
     var capturedFaceBase64 by mutableStateOf<String?>(null)
@@ -658,9 +646,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             .map { it.peerId }
         val facePayload = capturedFaceBase64
         val faceBytes = capturedFaceBytes
-        val dividedAttention = isDividedProxy
-        val challengePassed = isChallengePassed
-        val challengeHits = challengeScore
         viewModelScope.launch(Dispatchers.IO) {
             val result = if (faceBytes != null) {
                 // Submits attendance report with raw binary JPEG payload bypassing Base64 overhead
@@ -676,9 +661,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         neighbors = neighborsHeader,
                         closeNeighbors = closeHeader,
                         coLocatedPeerId = coLocatedPeerId,
-                        challengePassed = challengePassed,
-                        challengeScore = challengeHits,
-                        dividedAttentionDetected = dividedAttention,
                         ultrasonicProximityDetected = ultrasonicProximityDetected,
                         relayedReportsJson = null,
                         imageBytes = requestBody
@@ -692,10 +674,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     sessionSalt = detectedSessionSalt.takeIf { it != "------" },
                     faceImageBase64 = facePayload,
                     ultrasonicProximityDetected = ultrasonicProximityDetected,
-                    coLocatedPeerId = coLocatedPeerId,
-                    dividedAttentionDetected = dividedAttention,
-                    challengePassed = challengePassed,
-                    challengeScore = challengeHits
+                    coLocatedPeerId = coLocatedPeerId
                 )
                 safeApiCall { api.submitNeighbors(sessId, req) }
             }
@@ -1286,7 +1265,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         studentStatusMessage = null
         challengeScore = 0
         challengeTotalTargets = 0
-        lastFocusReport = null
         capturedFaceBase64 = null
         capturedFaceBytes = null
         faceProxyDetected = false
@@ -1333,7 +1311,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         studentStatusMessage = null
         challengeScore = 0
         challengeTotalTargets = 0
-        lastFocusReport = null
         capturedFaceBase64 = null
         capturedFaceBytes = null
         faceProxyDetected = false
@@ -1451,11 +1428,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         // Check for student peer discovery packet
         val isPeerProbe = (cleanMsg.length == 8 || (cleanMsg.length > 8 && cleanMsg.startsWith(detectedSessionId)))
                 && !cleanMsg.startsWith("S:") && !cleanMsg.startsWith("SESSION:")
-        val canReceiveProbe = studentPhase == StudentPhase.PROBING_NEIGHBORS ||
-                studentPhase == StudentPhase.WAITING_FOR_AUDIT ||
-                studentPhase == StudentPhase.VERIFIED_PRESENT ||
-                studentPhase == StudentPhase.DISCOVERY_COMPLETE ||
-                studentPhase == StudentPhase.UNVERIFIED_FLAGGED
+        // Ingest peer probes only during active probing phase to keep submitted snapshot stable
+        val canReceiveProbe = studentPhase == StudentPhase.PROBING_NEIGHBORS
 
         if (isPeerProbe && canReceiveProbe && detectedSessionId != "----") {
             // Verify packet matches active session ID

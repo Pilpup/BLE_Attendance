@@ -89,10 +89,7 @@ data class SubmitNeighborsRequest(
     @SerializedName("relayed_reports") val relayedReports: Map<String, List<String>>? = null,
     @SerializedName("face_image_base64") val faceImageBase64: String? = null,
     @SerializedName("ultrasonic_proximity_detected") val ultrasonicProximityDetected: Boolean? = null,
-    @SerializedName("co_located_peer_id") val coLocatedPeerId: String? = null,
-    @SerializedName("divided_attention_detected") val dividedAttentionDetected: Boolean? = null,
-    @SerializedName("challenge_passed") val challengePassed: Boolean? = null,
-    @SerializedName("challenge_score") val challengeScore: Int? = null
+    @SerializedName("co_located_peer_id") val coLocatedPeerId: String? = null
 )
 
 // Face Biometric Diagnostic Lab Models

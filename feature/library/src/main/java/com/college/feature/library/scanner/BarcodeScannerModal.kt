@@ -166,9 +166,17 @@ fun BarcodeScannerModal(
                 ) {
                     if (hasCameraPermission) {
                         val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
+                        var activeCameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+                        var activeScanner by remember { mutableStateOf<com.google.mlkit.vision.barcode.BarcodeScanner?>(null) }
 
+                        // Release camera bindings and scanner on dialog dismiss
                         DisposableEffect(Unit) {
                             onDispose {
+                                try {
+                                    activeCameraProvider?.unbindAll()
+                                    activeScanner?.close()
+                                } catch (_: Exception) {
+                                }
                                 cameraExecutor.shutdown()
                             }
                         }
@@ -180,6 +188,7 @@ fun BarcodeScannerModal(
 
                                 cameraProviderFuture.addListener({
                                     val cameraProvider = cameraProviderFuture.get()
+                                    activeCameraProvider = cameraProvider
                                     val preview = Preview.Builder().build().also {
                                         it.setSurfaceProvider(previewView.surfaceProvider)
                                     }
@@ -195,6 +204,7 @@ fun BarcodeScannerModal(
                                         )
                                         .build()
                                     val barcodeScanner = BarcodeScanning.getClient(options)
+                                    activeScanner = barcodeScanner
 
                                     val imageAnalysis = ImageAnalysis.Builder()
                                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)

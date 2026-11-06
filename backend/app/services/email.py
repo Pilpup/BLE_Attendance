@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import secrets
 import smtplib
 from email.mime.text import MIMEText
@@ -76,8 +77,8 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "LOGIN") -
     subject = f"{otp_code} is your verification code"
     text_content = f"Your verification code is: {otp_code}\n\nThis code will expire in {settings.OTP_EXPIRE_MINUTES} minutes."
 
-    # Logs dispatched OTP to application logger
-    logger.info(f"[OTP DISPATCH] To: {to_email} | Purpose: {purpose} | Code: {otp_code}")
+    # Log email dispatch event without leaking plaintext code
+    logger.info(f"[OTP DISPATCH] To: {to_email} | Purpose: {purpose}")
 
     # Dispatches email via Brevo HTTPS API if configured
     if settings.BREVO_API_KEY:
@@ -88,4 +89,21 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "LOGIN") -
     if settings.SMTP_HOST:
         return await asyncio.to_thread(_send_smtp_email_sync, to_email, subject, text_content)
 
-    return True
+    # Return success for local test suites when mailers are disabled
+    if bool(os.environ.get("PYTEST_CURRENT_TEST")):
+        return True
+
+    logger.warning("No email provider configured (BREVO_API_KEY or SMTP_HOST required)")
+    return False
+
+
+# Background-task wrapper: FastAPI BackgroundTasks discard coroutine return
+# values, so dispatch failures would silently vanish at the call sites. This
+# wrapper observes the result and logs a loud error when no email is sent.
+async def dispatch_otp_email(to_email: str, otp_code: str, purpose: str = "LOGIN") -> None:
+    sent = await send_otp_email(to_email, otp_code, purpose=purpose)
+    if not sent:
+        logger.error(
+            f"[OTP DISPATCH FAILED] No provider configured or delivery failed — "
+            f"{to_email} did not receive the verification code (purpose={purpose})"
+        )

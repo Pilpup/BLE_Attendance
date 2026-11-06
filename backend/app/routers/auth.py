@@ -1,3 +1,4 @@
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
@@ -23,7 +24,7 @@ from app.schemas.auth import (
     UserResponse,
     VerifyOtpRequest,
 )
-from app.services.email import generate_otp, send_otp_email
+from app.services.email import dispatch_otp_email, generate_otp
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -136,7 +137,7 @@ async def register_send_otp(
     await db.commit()
 
     # Dispatch verification email in background
-    background_tasks.add_task(send_otp_email, payload.email.strip().lower(), otp_code, purpose="REGISTER")
+    background_tasks.add_task(dispatch_otp_email, payload.email.strip().lower(), otp_code, purpose="REGISTER")
 
     return OtpSentResponse(
         message=f"Verification code sent to {payload.email}",
@@ -186,8 +187,9 @@ async def register_verify_otp(
             detail="Too many incorrect attempts. Please request a new code.",
         )
 
-    # Check submitted OTP code against stored code
-    if otp_record.otp_code != payload.otp_code.strip():
+    # Check submitted OTP code against stored code using constant-time comparison
+    # (encoded to bytes so non-ASCII input can't raise TypeError inside compare_digest)
+    if not secrets.compare_digest(otp_record.otp_code.encode(), payload.otp_code.strip().encode()):
         otp_record.attempts += 1
         await db.commit()
         remaining = 5 - otp_record.attempts
@@ -274,7 +276,7 @@ async def login(
     await db.commit()
 
     # Dispatch 2FA email in background
-    background_tasks.add_task(send_otp_email, email, otp_code, purpose="LOGIN")
+    background_tasks.add_task(dispatch_otp_email, email, otp_code, purpose="LOGIN")
 
     return LoginResponse(
         requires_otp=True,
@@ -319,8 +321,9 @@ async def login_verify_otp(
             detail="Too many incorrect attempts. Please request a new code.",
         )
 
-    # Check submitted OTP code against stored code
-    if otp_record.otp_code != payload.otp_code.strip():
+    # Check submitted OTP code against stored code using constant-time comparison
+    # (encoded to bytes so non-ASCII input can't raise TypeError inside compare_digest)
+    if not secrets.compare_digest(otp_record.otp_code.encode(), payload.otp_code.strip().encode()):
         otp_record.attempts += 1
         await db.commit()
         remaining = 5 - otp_record.attempts
@@ -406,7 +409,7 @@ async def resend_otp(
     await db.commit()
 
     # Dispatch email in background
-    background_tasks.add_task(send_otp_email, email, otp_code, purpose=purpose)
+    background_tasks.add_task(dispatch_otp_email, email, otp_code, purpose=purpose)
 
     return OtpSentResponse(
         message=f"New verification code sent to {email}",

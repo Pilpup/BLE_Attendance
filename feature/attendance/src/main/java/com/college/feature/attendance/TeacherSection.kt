@@ -329,7 +329,7 @@ internal fun TeacherSection(
                     ) {
                         itemsIndexed(
                             items = sortedDisplayList,
-                            key = { _, rec -> rec.bleDeviceId }
+                            key = { _, rec -> rec.id ?: rec.bleDeviceId }
                         ) { index, rec ->
                             if (index > 0) {
                                 HorizontalDivider(

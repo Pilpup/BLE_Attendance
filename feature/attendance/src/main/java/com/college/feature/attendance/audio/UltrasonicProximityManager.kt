@@ -288,6 +288,9 @@ class UltrasonicProximityManager(private val context: Context) {
         onResult: (UltrasonicDetectionResult) -> Unit
     ) {
         if (isListening.get()) {
+            mainHandler.post {
+                onResult(UltrasonicDetectionResult(isDetected = false, snrDb = 0.0, targetPower = 0.0))
+            }
             return
         }
 
@@ -372,6 +375,8 @@ class UltrasonicProximityManager(private val context: Context) {
         onComplete: (AcousticStatisticalSummary) -> Unit
     ) {
         if (isListening.get()) {
+            val emptySummary = GoertzelDetector.computeTrimmedMeanStats(emptyList(), calibratedRefPowerDb)
+            mainHandler.post { onComplete(emptySummary) }
             return
         }
 

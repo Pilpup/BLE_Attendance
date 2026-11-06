@@ -201,7 +201,7 @@ class LibraryViewModel : ViewModel() {
 
         val total = copies.coerceAtLeast(0)
         val book = Book(
-            id = "book-" + UUID.randomUUID().toString().replace("-", "").take(6),
+            id = UUID.randomUUID().toString(),
             title = title.trim(),
             author = author.trim(),
             isbn = isbn.trim().replace("-", "").uppercase(),

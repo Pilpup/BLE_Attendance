@@ -136,18 +136,6 @@ class SubmitNeighborsRequest(BaseModel):
         default=None,
         description="The peer student ID detected within ultrasonic range on the same desk"
     )
-    divided_attention_detected: Optional[bool] = Field(
-        default=None,
-        description="Whether divided attention gameplay proxy was detected by local game telemetry"
-    )
-    challenge_passed: Optional[bool] = Field(
-        default=None,
-        description="Whether student passed the cognitive reflex challenge (score >= 55% and targets >= 6)"
-    )
-    challenge_score: Optional[int] = Field(
-        default=None,
-        description="Total targets hit in the attention challenge"
-    )
 
     # Strips whitespace from student identifier
     @field_validator("student_id", mode="before")

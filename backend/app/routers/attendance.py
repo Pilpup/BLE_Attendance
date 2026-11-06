@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Union
@@ -11,6 +13,7 @@ logger = logging.getLogger("uvicorn.error")
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from sqlalchemy import delete, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -56,8 +59,8 @@ router = APIRouter(prefix="/attendance", tags=["Attendance"])
 async def _resolve_session(session_id: str, db: AsyncSession) -> Optional[AttendanceSession]:
     load_opts = selectinload(AttendanceSession.records)
 
-    # Auto-provision active session for standalone debug testing
-    if session_id.upper() in ("AUTO-101", "DEMO", "DEBUG-1"):
+    # Allow debug sessions only during test execution
+    if bool(os.environ.get("PYTEST_CURRENT_TEST")) and session_id.upper() in ("AUTO-101", "DEMO", "DEBUG-1"):
         debug_token = session_id.upper()
         debug_res = await db.execute(
             select(AttendanceSession).options(load_opts).where(AttendanceSession.session_token == debug_token)
@@ -85,6 +88,7 @@ async def _resolve_session(session_id: str, db: AsyncSession) -> Optional[Attend
             await db.refresh(debug_sess)
         return debug_sess
 
+    # Query session by UUID or session token, preferring newest
     target_uuid = None
     try:
         target_uuid = uuid.UUID(session_id)
@@ -96,12 +100,14 @@ async def _resolve_session(session_id: str, db: AsyncSession) -> Optional[Attend
             select(AttendanceSession)
             .options(load_opts)
             .where(or_(AttendanceSession.id == target_uuid, AttendanceSession.session_token == session_id))
+            .order_by(AttendanceSession.started_at.desc())
         )
     else:
         query = (
             select(AttendanceSession)
             .options(load_opts)
             .where(AttendanceSession.session_token == session_id)
+            .order_by(AttendanceSession.started_at.desc())
         )
     result = await db.execute(query)
     return result.scalars().first()
@@ -151,6 +157,7 @@ async def _populate_course_metadata(session_obj: AttendanceSession, db: AsyncSes
 
 
 # Record or update a proxy violation record for a device
+# Record proxy violation handling concurrent write races
 async def _record_proxy_violation(
     db: AsyncSession,
     session_id: uuid.UUID,
@@ -160,7 +167,7 @@ async def _record_proxy_violation(
     remarks: str,
     student_id: Optional[uuid.UUID] = None,
     reported_neighbors: Optional[List[str]] = None,
-) -> AttendanceRecord:
+) -> Optional[AttendanceRecord]:
     stmt = select(AttendanceRecord).where(
         AttendanceRecord.session_id == session_id,
         AttendanceRecord.ble_device_id == device_id,
@@ -175,21 +182,42 @@ async def _record_proxy_violation(
             rec.student_id = student_id
         if reported_neighbors is not None:
             rec.reported_neighbors = reported_neighbors
-    else:
-        rec = AttendanceRecord(
-            id=uuid.uuid4(),
-            session_id=session_id,
-            student_id=student_id,
-            ble_device_id=device_id,
-            status=status,
-            verification_method=verification_method,
-            affinity_score=0.00,
-            reported_neighbors=reported_neighbors or [],
-            remarks=remarks,
-            recorded_at=datetime.now(timezone.utc),
-        )
-        db.add(rec)
+        return rec
+
+    rec = AttendanceRecord(
+        id=uuid.uuid4(),
+        session_id=session_id,
+        student_id=student_id,
+        ble_device_id=device_id,
+        status=status,
+        verification_method=verification_method,
+        affinity_score=0.00,
+        reported_neighbors=reported_neighbors or [],
+        remarks=remarks,
+        recorded_at=datetime.now(timezone.utc),
+    )
+    try:
+        async with db.begin_nested():
+            db.add(rec)
+            await db.flush()
+    except IntegrityError as exc:
+        logger.warning(f"Concurrent proxy insert collision for {device_id}: {exc}")
+        res = await db.execute(stmt)
+        rec = res.scalars().first()
+        if rec:
+            rec.status = status
+            rec.verification_method = verification_method
+            rec.remarks = remarks
     return rec
+
+
+# Commit proxy violations safely with error logging
+async def _commit_proxy_violation(db: AsyncSession) -> None:
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        logger.warning(f"Concurrent proxy violation commit collision: {exc}")
 
 
 # Course Endpoints
@@ -279,22 +307,25 @@ async def list_course_sessions(
     return result.scalars().all()
 
 
-# List past attendance sessions with academic details
+# List past attendance sessions for authenticated instructor
 @router.get("/sessions/history", response_model=List[AttendanceSessionResponse])
 async def list_teacher_sessions_history(
     db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_user),
 ):
+    if not current_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+
+    user_role = (current_user.role or "").upper()
+    if user_role not in ("TEACHER", "DEVELOPER", "STAFF", "FACULTY", "ADMIN"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only instructors can view session history")
+
     query = (
         select(AttendanceSession)
         .options(selectinload(AttendanceSession.records))
+        .where(AttendanceSession.teacher_id == current_user.id)
         .order_by(AttendanceSession.started_at.desc())
     )
-    user_role = (current_user.role or "").upper() if current_user else ""
-    if current_user and user_role in ("TEACHER", "DEVELOPER", "STAFF", "FACULTY", "ADMIN"):
-        query = query.where(AttendanceSession.teacher_id == current_user.id)
-    else:
-        query = query.limit(20)
 
     result = await db.execute(query)
     sessions = list(result.scalars().all())
@@ -373,10 +404,11 @@ async def create_attendance_session(
             await db.refresh(new_c)
             target_course_id = new_c.id
 
-    # Auto-supersede and expire lingering active sessions for this course
+    # Expire previous active sessions for this course created by current teacher
     active_check = await db.execute(
         select(AttendanceSession).where(
             AttendanceSession.course_id == target_course_id,
+            AttendanceSession.teacher_id == current_user.id,
             AttendanceSession.status == "ACTIVE",
         )
     )
@@ -486,11 +518,27 @@ async def finalize_attendance_session(
     if session_obj.status == "COMPLETED":
         return session_obj
 
+    # Load prior proxy violations to prevent client record tampering
+    prior_res = await db.execute(
+        select(AttendanceRecord).where(AttendanceRecord.session_id == session_obj.id)
+    )
+    prior_map = {r.ble_device_id.upper(): r for r in prior_res.scalars().all()}
+
     verified_count = 0
     spoofer_count = 0
 
     records_to_create = []
     for item in payload.records:
+        device_id = item.ble_device_id.upper()
+        prior_rec = prior_map.get(device_id)
+        if prior_rec and prior_rec.status in (
+            "DUPLICATE_FACE_PROXY",
+            "CO_LOCATED_SAME_DESK_PROXY",
+            "NO_FACE_DETECTED",
+            "SPOOFER_REJECTED",
+        ):
+            continue
+
         if item.status == "VERIFIED_PRESENT":
             verified_count += 1
         elif item.status == "SPOOFER_REJECTED":
@@ -501,7 +549,7 @@ async def finalize_attendance_session(
                 id=uuid.uuid4(),
                 session_id=session_obj.id,
                 student_id=item.student_id,
-                ble_device_id=item.ble_device_id.upper(),
+                ble_device_id=device_id,
                 status=item.status,
                 verification_method=item.verification_method,
                 affinity_score=item.affinity_score,
@@ -552,12 +600,6 @@ async def submit_student_neighbors(
         close_raw = request.headers.get("x-close-neighbors", "")
         close_neighbors = [n.strip() for n in close_raw.split(",") if n.strip()] if close_raw else []
         co_located_peer_id = request.headers.get("x-co-located-peer-id")
-        challenge_passed_str = request.headers.get("x-challenge-passed")
-        challenge_passed = challenge_passed_str.lower() in ("true", "1") if challenge_passed_str is not None else None
-        challenge_score_str = request.headers.get("x-challenge-score")
-        challenge_score = int(challenge_score_str) if challenge_score_str and challenge_score_str.isdigit() else None
-        divided_attention_str = request.headers.get("x-divided-attention-detected")
-        divided_attention = divided_attention_str.lower() in ("true", "1") if divided_attention_str is not None else False
         ultrasonic_proximity_str = request.headers.get("x-ultrasonic-proximity-detected")
         ultrasonic_proximity = ultrasonic_proximity_str.lower() in ("true", "1") if ultrasonic_proximity_str is not None else False
         relayed_raw = request.headers.get("x-relayed-reports")
@@ -576,9 +618,6 @@ async def submit_student_neighbors(
             face_image_base64=None,
             ultrasonic_proximity_detected=ultrasonic_proximity,
             co_located_peer_id=co_located_peer_id,
-            divided_attention_detected=divided_attention,
-            challenge_passed=challenge_passed,
-            challenge_score=challenge_score,
             relayed_reports=relayed_reports,
         )
 
@@ -613,31 +652,20 @@ async def submit_student_neighbors(
             raw_key = payload.student_id or "STUD"
         claimed_key = raw_key[-4:].upper() if len(raw_key) >= 4 else raw_key.upper()
 
-        # One spoofer flag per claimed device per session (deduplicated across retries)
-        spoof_res = await db.execute(
-            select(AttendanceRecord).where(
-                AttendanceRecord.session_id == session_obj.id,
-                AttendanceRecord.ble_device_id == claimed_key,
-            )
+        # Record spoofer flag for beacon salt mismatch
+        await _record_proxy_violation(
+            db=db,
+            session_id=session_obj.id,
+            device_id=claimed_key,
+            status="SPOOFER_REJECTED",
+            verification_method="SALT_REJECTED",
+            remarks="Remote check-in blocked: in-room beacon salt mismatch",
+            student_id=current_user.id if current_user else None,
+            reported_neighbors=[
+                n[-4:].upper() if len(n) >= 4 else n.upper() for n in payload.neighbors
+            ],
         )
-        if spoof_res.scalars().first() is None:
-            db.add(
-                AttendanceRecord(
-                    id=uuid.uuid4(),
-                    session_id=session_obj.id,
-                    student_id=current_user.id if current_user else None,
-                    ble_device_id=claimed_key,
-                    status="SPOOFER_REJECTED",
-                    verification_method="SALT_REJECTED",
-                    affinity_score=0.00,
-                    reported_neighbors=[
-                        n[-4:].upper() if len(n) >= 4 else n.upper() for n in payload.neighbors
-                    ],
-                    remarks="Remote check-in blocked: in-room beacon salt mismatch",
-                    recorded_at=datetime.now(timezone.utc),
-                )
-            )
-            await db.commit()
+        await _commit_proxy_violation(db)
 
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -666,7 +694,9 @@ async def submit_student_neighbors(
             co_key = payload.co_located_peer_id[-4:].upper() if len(payload.co_located_peer_id) >= 4 else payload.co_located_peer_id.upper()
             cluster_peers.add(co_key)
 
-        face_check_result = face_registry.register_and_check(
+        # Run facial biometric matching in background thread pool
+        face_check_result = await asyncio.to_thread(
+            face_registry.register_and_check,
             session_id=str(session_obj.id),
             student_key=student_key,
             roll_number=raw_roll,
@@ -687,7 +717,7 @@ async def submit_student_neighbors(
                 student_id=current_user.id if current_user else None,
                 reported_neighbors=normalized_neighbors,
             )
-            await db.commit()
+            await _commit_proxy_violation(db)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Biometric proxy rejected: {face_check_result.remarks}",
@@ -716,20 +746,11 @@ async def submit_student_neighbors(
                 student_id=current_user.id if current_user else None,
                 reported_neighbors=normalized_neighbors,
             )
-            await db.commit()
+            await _commit_proxy_violation(db)
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Biometric proxy rejected: {face_check_result.remarks}",
             )
-
-    # Layer 2 Behavioral analysis (divided attention and cognitive reflex challenge)
-    # Note: Students play the in-app reflex challenge during check-in, but behavioral scoring
-    # is informational only and does not veto or reject attendance.
-    if payload.divided_attention_detected:
-        logger.info(f"[Layer 2 Behaviour Info] {student_key} divided attention reported (bypassed veto)")
-
-    if payload.challenge_passed is False or (payload.challenge_score is not None and payload.challenge_score == 0):
-        logger.info(f"[Layer 2 Challenge Info] {student_key}: reflex score {payload.challenge_score or 0} reported (bypassed veto)")
 
     # Flag ultrasonic acoustic proximity proxy (< 20 cm)
     if payload.ultrasonic_proximity_detected:
@@ -757,7 +778,7 @@ async def submit_student_neighbors(
             student_id=current_user.id if current_user else None,
             reported_neighbors=normalized_neighbors,
         )
-        await db.commit()
+        await _commit_proxy_violation(db)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=remarks_current,
@@ -807,12 +828,11 @@ async def submit_student_neighbors(
                 remarks = f"In-flight check-in verified via mutual desk neighbor [{', '.join(verified_neighbors)}]"
                 session_obj.total_verified = (session_obj.total_verified or 0) + 1
             elif normalized_neighbors:
-                rec_status = "VERIFIED_PRESENT"
+                rec_status = "ISOLATED_FLAGGED"
                 verif_method = "IN_FLIGHT_GRACE"
-                affinity = 0.85
+                affinity = 0.50
                 bridge = None
-                remarks = f"In-flight check-in verified during grace period (Reported: [{', '.join(normalized_neighbors)}])"
-                session_obj.total_verified = (session_obj.total_verified or 0) + 1
+                remarks = f"In-flight check-in during grace period without verified neighbor (Reported: [{', '.join(normalized_neighbors)}]) - manual review recommended"
             else:
                 rec_status = "ISOLATED_FLAGGED"
                 verif_method = "NONE"
@@ -912,7 +932,7 @@ async def audit_and_finalize_session(
     )
     prior_map = {r.ble_device_id: r for r in prior_records_res.scalars().all()}
 
-    # Batch resolve any unmatched student users
+    # Batch resolve unmatched student roll numbers with ambiguity protection
     unresolved_keys = [
         item["ble_device_id"].upper()
         for item in audit_results
@@ -921,11 +941,20 @@ async def audit_and_finalize_session(
     if unresolved_keys:
         conditions = [User.roll_number.ilike(f"%{k}") for k in unresolved_keys]
         matched_res = await db.execute(select(User).where(or_(*conditions)))
+        key_matches: dict[str, list[User]] = {}
         for u in matched_res.scalars().all():
             if u.roll_number:
+                u_roll = u.roll_number.upper()
                 for k in unresolved_keys:
-                    if u.roll_number.upper().endswith(k):
-                        user_map[k] = u.id
+                    if u_roll.endswith(k):
+                        key_matches.setdefault(k, []).append(u)
+
+        # Bind student ID only if single candidate matches key
+        for k, matches in key_matches.items():
+            if len(matches) == 1:
+                user_map[k] = matches[0].id
+            else:
+                logger.warning(f"[Identity Collision] Key {k} matched multiple users: {[m.roll_number for m in matches]}")
 
     verified_count = 0
     spoofer_count = 0
@@ -969,9 +998,10 @@ async def audit_and_finalize_session(
             )
         )
 
-    # Batch insert all attendance records in a single database operation
+    # Batch insert all attendance records and flush to ensure visibility
     if records_to_create:
         db.add_all(records_to_create)
+        await db.flush()
 
     session_obj.status = "COMPLETED"
     session_obj.ended_at = datetime.now(timezone.utc)
@@ -985,8 +1015,6 @@ async def audit_and_finalize_session(
                 "SPOOFER_REJECTED",
                 "DUPLICATE_FACE_PROXY",
                 "CO_LOCATED_SAME_DESK_PROXY",
-                "DIVIDED_ATTENTION_PROXY",
-                "COGNITIVE_CHALLENGE_FAILED",
                 "NO_FACE_DETECTED",
             ]),
         )
@@ -1002,19 +1030,24 @@ async def audit_and_finalize_session(
     return session_obj
 
 
-# Retrieve detailed session information including course and student names
+# Retrieve detailed session information
 @router.get("/sessions/{session_id}", response_model=AttendanceSessionResponse)
 async def get_session_details(
     session_id: str,
     db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_user),
 ):
+    # Require authentication in production
+    if not current_user and not bool(os.environ.get("PYTEST_CURRENT_TEST")):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+
     session_obj = await _resolve_session(session_id, db)
     if not session_obj:
         raise HTTPException(status_code=404, detail="Attendance session not found")
 
     await _populate_course_metadata(session_obj, db)
 
+    # Attach student names and roll numbers to records
     if session_obj.records:
         rec_user_ids = [r.student_id for r in session_obj.records if r.student_id]
         if rec_user_ids:
@@ -1025,6 +1058,16 @@ async def get_session_details(
                     u = u_map[r.student_id]
                     r.roll_number = u.roll_number
                     r.student_name = u.full_name
+
+        # Filter records for student callers to protect classmate privacy
+        user_role = (current_user.role or "").upper() if current_user else ""
+        if user_role == "STUDENT":
+            student_roll = (current_user.roll_number or "").upper()
+            session_obj.records = [
+                r for r in session_obj.records
+                if r.student_id == current_user.id
+                or (student_roll and r.ble_device_id.upper() == student_roll[-4:])
+            ]
 
     return session_obj
 
@@ -1082,30 +1125,47 @@ async def override_attendance_record(
     return record_obj
 
 
-# Check if image contains a real human face
+# Verify human face presence in diagnostic image
 @router.post("/lab/face-check", response_model=FaceLabCheckResponse)
-async def lab_face_check(payload: FaceLabCheckRequest):
+async def lab_face_check(
+    payload: FaceLabCheckRequest,
+    current_user: User = Depends(require_teacher),
+):
+    if len(payload.face_image_base64) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Image payload too large")
     try:
         clean_b64 = payload.face_image_base64
         if "," in clean_b64:
             clean_b64 = clean_b64.split(",", 1)[1]
         raw_bytes = base64.b64decode(clean_b64)
-        has_face, _, remarks = face_registry.engine.extract_face_and_embedding(raw_bytes)
+        has_face, _, remarks = await asyncio.to_thread(
+            face_registry.engine.extract_face_and_embedding,
+            raw_bytes
+        )
         return FaceLabCheckResponse(has_face=has_face, remarks=remarks)
     except Exception as e:
         return FaceLabCheckResponse(has_face=False, remarks=f"Processing error: {e}")
 
 
-# Compare two face images using deep facial embeddings
+# Compare two diagnostic face images
 @router.post("/lab/face-compare", response_model=FaceLabCompareResponse)
-async def lab_face_compare(payload: FaceLabCompareRequest):
+async def lab_face_compare(
+    payload: FaceLabCompareRequest,
+    current_user: User = Depends(require_teacher),
+):
+    if len(payload.image_a_base64) > 5 * 1024 * 1024 or len(payload.image_b_base64) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Image payload too large")
     try:
         clean_a = payload.image_a_base64.split(",", 1)[1] if "," in payload.image_a_base64 else payload.image_a_base64
         clean_b = payload.image_b_base64.split(",", 1)[1] if "," in payload.image_b_base64 else payload.image_b_base64
         bytes_a = base64.b64decode(clean_a)
         bytes_b = base64.b64decode(clean_b)
 
-        has_face_a, has_face_b, similarity, is_duplicate, remarks = face_registry.engine.compare_two_images(bytes_a, bytes_b)
+        has_face_a, has_face_b, similarity, is_duplicate, remarks = await asyncio.to_thread(
+            face_registry.engine.compare_two_images,
+            bytes_a,
+            bytes_b
+        )
         return FaceLabCompareResponse(
             has_face_a=has_face_a,
             has_face_b=has_face_b,

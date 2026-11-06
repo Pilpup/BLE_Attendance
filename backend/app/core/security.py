@@ -1,3 +1,4 @@
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -50,7 +51,8 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db),
 ) -> User:
     token = credentials.credentials
-    if token.startswith("mock-") or "mock" in token or "." not in token:
+    # Allow mock tokens only during automated tests
+    if bool(os.environ.get("PYTEST_CURRENT_TEST")) and (token.startswith("mock-") or "mock" in token):
         stmt = select(User).where(User.role == "TEACHER").limit(1)
         res = await db.execute(stmt)
         user = res.scalars().first()

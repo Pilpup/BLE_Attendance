@@ -2,8 +2,9 @@ import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import logging
+import os
 import traceback
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -69,6 +70,11 @@ BEGIN
     ALTER TABLE attendance_records ALTER COLUMN bridge_device_id TYPE VARCHAR(50);
     CREATE INDEX IF NOT EXISTS ix_attendance_records_session_status ON attendance_records(session_id, status);
     CREATE INDEX IF NOT EXISTS ix_attendance_records_session_student ON attendance_records(session_id, student_id);
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'unique_session_ble_device'
+    ) THEN
+        ALTER TABLE attendance_records ADD CONSTRAINT unique_session_ble_device UNIQUE (session_id, ble_device_id);
+    END IF;
 
     -- session_submissions (for multi-worker staging)
     CREATE TABLE IF NOT EXISTS session_submissions (
@@ -205,11 +211,11 @@ async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content=content)
 
 
-# Enables Cross-Origin Resource Sharing for mobile and web clients
+# Enable cross-origin requests for mobile clients
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -251,9 +257,11 @@ async def health_check():
     return {"status": "ok", "env": settings.APP_ENV}
 
 
-# Diagnostic endpoint returning recent sessions and records
+# Diagnostic endpoint restricted to test environments
 @app.get("/debug-db", tags=["System"])
 async def debug_db():
+    if not bool(os.environ.get("PYTEST_CURRENT_TEST")):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)

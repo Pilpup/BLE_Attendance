@@ -255,3 +255,34 @@ async def reserve_book(
     await db.refresh(book)
     return book
 
+
+# Cancel active book reservation and restore available copy count
+@router.post("/reservations/{reservation_id}/cancel", response_model=BookResponse)
+async def cancel_reservation(
+    reservation_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    res = await db.execute(select(BookReservation).where(BookReservation.id == reservation_id))
+    reservation = res.scalars().first()
+    if not reservation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reservation not found")
+
+    if reservation.status != "ACTIVE":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reservation is not active")
+
+    # Authorize cancellation by owner or library staff
+    user_role = (current_user.role or "").upper()
+    if reservation.user_id != current_user.id and user_role not in ("STAFF", "DEVELOPER", "ADMIN"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot cancel another user's reservation")
+
+    book_res = await db.execute(select(Book).where(Book.id == reservation.book_id).with_for_update())
+    book = book_res.scalars().first()
+    if book:
+        book.available_copies = min(book.total_copies, book.available_copies + 1)
+
+    reservation.status = "CANCELLED"
+    await db.commit()
+    await db.refresh(book)
+    return book
+
