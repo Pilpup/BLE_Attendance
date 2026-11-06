@@ -33,6 +33,33 @@ MAX_FLAGGED_PAIRS_PER_SESSION = 50
 MAX_IMAGE_DIMENSION = 640
 
 
+# Lifts local contrast in shadows via CLAHE on the L channel of Lab: a strongly
+# backlit or dimly lit face can fall below the detector's score threshold as a
+# dark silhouette, despite the face being genuinely present.
+def _rescue_dark_image(img: np.ndarray) -> np.ndarray:
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    lifted = clahe.apply(l_channel)
+    return cv2.cvtColor(cv2.merge((lifted, a_channel, b_channel)), cv2.COLOR_LAB2BGR)
+
+
+# Builds the zero-detection rejection remark from measured image statistics so
+# instructors can tell a dark/backlit selfie apart from a mis-aimed camera
+# (replaces the misleading fixed "ceiling/desk" copy).
+def _no_face_remark(img: np.ndarray) -> str:
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    mean = float(np.mean(gray))
+    contrast = float(np.std(gray))
+    if mean < 80:
+        hint = "frame is very dark — likely backlit face or dim lighting; face a light source and retry"
+    elif contrast > 70:
+        hint = "high contrast with a dark foreground — typical backlit silhouette; turn away from the light behind you"
+    else:
+        hint = "camera may not be pointing at a face — keep your face in the front camera when submitting"
+    return f"REJECTED: No human face detected (mean brightness {mean:.0f}/255, contrast {contrast:.0f}; {hint})"
+
+
 # Biometric face verification and deduplication result payload
 @dataclass
 class FaceCheckResult:
@@ -161,8 +188,13 @@ class FaceMatchingEngine:
 
             if self.detector is not None and self.recognizer is not None:
                 with self._lock:
-                    self.detector.setInputSize((w, h))
-                    _, faces = self.detector.detect(img)
+
+                    def run_detection(image: np.ndarray):
+                        self.detector.setInputSize((image.shape[1], image.shape[0]))
+                        _, detected = self.detector.detect(image)
+                        return detected
+
+                    faces = run_detection(img)
 
                     # Special-case synthetic single-color images only during automated pytest runs
                     is_testing = is_test_environment()
@@ -173,9 +205,26 @@ class FaceMatchingEngine:
                         emb = tiled / norm if norm > 1e-6 else np.ones(128, dtype=np.float32) / np.sqrt(128)
                         return True, emb.reshape(1, 128), "Synthetic test face verified"
 
-                    # Reject inanimate surfaces, ceilings, desks, or walls with 0 detected faces
+                    # Exposure rescue (one bounded attempt): a strongly backlit or dim
+                    # frame can sit below the detector's score threshold as a dark
+                    # silhouette while a face is genuinely present. Lift local contrast
+                    # once (CLAHE) and re-run the SAME detector — verification
+                    # strictness is unchanged, only the illumination of a
+                    # failed-first-attempt capture is normalized.
+                    was_rescued = False
                     if faces is None or len(faces) == 0:
-                        return False, None, "REJECTED: No human face detected (Room top / ceiling / empty desk rejected)"
+                        rescued_img = _rescue_dark_image(img)
+                        faces = run_detection(rescued_img)
+                        if faces is not None and len(faces) > 0:
+                            img = rescued_img  # align/feature run on the equalized frame
+                            was_rescued = True
+                            logger.info("[FaceEngine] Exposure rescue: face recovered after CLAHE on zero-detection frame")
+
+                    # Reject when no face is in the frame — with measured brightness so
+                    # instructors can distinguish an honest backlit selfie from a
+                    # mis-aimed camera capture.
+                    if faces is None or len(faces) == 0:
+                        return False, None, _no_face_remark(img)
 
                     # Selects foreground face with largest bounding box area
                     primary_face = max(faces, key=lambda f: float(f[2] * f[3]))
@@ -183,7 +232,8 @@ class FaceMatchingEngine:
                     # Align and crop face using 5 facial landmarks (eyes, nose, mouth corners)
                     aligned_face = self.recognizer.alignCrop(img, primary_face)
                     feature = self.recognizer.feature(aligned_face)
-                    return True, feature, "Human face verified and aligned"
+                    remark = "Human face verified and aligned (exposure-rescued)" if was_rescued else "Human face verified and aligned"
+                    return True, feature, remark
             else:
                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 resized = cv2.resize(gray, (16, 8)).astype(np.float32).flatten()
@@ -338,7 +388,7 @@ class SessionFaceRegistry:
             return FaceCheckResult(
                 is_duplicate=False,
                 has_human_face=False,
-                remarks=remarks or "REJECTED: No human face detected (Room top / ceiling / empty desk rejected)"
+                remarks=remarks or "REJECTED: No human face detected"
             )
 
         # Updates session activity timestamp and cleans stale registries

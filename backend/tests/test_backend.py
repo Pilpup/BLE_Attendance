@@ -735,6 +735,92 @@ def test_face_engine_robustness_guards():
     assert "old_sess" not in registry._registry
 
 
+# Verifies the exposure rescue path: a dark/backlit frame whose first detection
+# pass finds no face is lifted once (CLAHE) and re-detected instead of being
+# rejected, keeping verification strictness unchanged.
+def test_face_engine_exposure_rescue_recovered():
+    import cv2 as _cv2
+    import numpy as np
+
+    from app.services.face_engine import FaceMatchingEngine, _rescue_dark_image
+
+    # Dark textured frame (mean ~8/255, spatial std above the 1.0 synthetic cut-off)
+    rng = np.random.default_rng(7)
+    img = (rng.integers(0, 4, size=(48, 48, 3)) + 8).astype(np.uint8)
+    png_bytes = _cv2.imencode(".png", img)[1].tobytes()
+
+    fake_face_row = np.array([2, 2, 28, 28, 8, 6, 20, 6, 14, 14, 8, 22, 20, 22, 0.9], dtype=np.float32)
+    fake_faces = np.array([fake_face_row])
+
+    class _FakeDetector:
+        def __init__(self, outcomes):
+            self.outcomes = list(outcomes)
+            self.calls = 0
+
+        def setInputSize(self, size):
+            self.size = size
+
+        def detect(self, image):
+            result = self.outcomes[min(self.calls, len(self.outcomes) - 1)]
+            self.calls += 1
+            return None, result
+
+    class _FakeRecognizer:
+        def alignCrop(self, image, face):
+            return image[0:16, 0:16]
+
+        def feature(self, aligned):
+            return np.ones((1, 128), dtype=np.float32)
+
+    engine = FaceMatchingEngine(detector_path="/nonexistent", recognizer_path="/nonexistent")
+    engine.detector = _FakeDetector([None, fake_faces])
+    engine.recognizer = _FakeRecognizer()
+
+    has_face, embedding, remark = engine.extract_face_and_embedding(png_bytes)
+    assert has_face is True
+    assert embedding is not None
+    assert "exposure-rescued" in remark
+    assert engine.detector.calls == 2  # first pass + exactly ONE rescue re-detection
+
+    # The rescue helper itself: dims preserved, contrast lifted on a dark frame
+    rescued = _rescue_dark_image(img)
+    assert rescued.shape == img.shape
+    assert float(np.mean(rescued)) > float(np.mean(img))
+
+
+# Verifies zero-face rejections carry measured brightness diagnostics instead of
+# the old misleading ceiling/desk phrasing.
+def test_face_engine_no_face_remark_reports_brightness():
+    import cv2 as _cv2
+    import numpy as np
+
+    from app.services.face_engine import FaceMatchingEngine
+
+    rng = np.random.default_rng(11)
+    img = (rng.integers(0, 4, size=(48, 48, 3)) + 8).astype(np.uint8)
+    png_bytes = _cv2.imencode(".png", img)[1].tobytes()
+
+    class _FakeDetectorAlwaysEmpty:
+        def setInputSize(self, size):
+            self.size = size
+
+        def detect(self, image):
+            return None, None
+
+    engine = FaceMatchingEngine(detector_path="/nonexistent", recognizer_path="/nonexistent")
+    engine.detector = _FakeDetectorAlwaysEmpty()
+    engine.recognizer = object()  # aligned/feature path is never reached on rejection
+
+    has_face, embedding, remark = engine.extract_face_and_embedding(png_bytes)
+    assert has_face is False
+    assert embedding is None
+    assert "mean brightness" in remark
+    assert "/255" in remark
+    # An honestly dark frame blames the lighting, not the room
+    assert "ceiling" not in remark
+    assert "very dark" in remark
+
+
 # Registers a throwaway student in the test's own attendance DB and returns a
 # Bearer token: submission now requires JWT, and each battery test mounts its
 # own in-memory get_db override (mirroring the salt-gate test's pattern).
