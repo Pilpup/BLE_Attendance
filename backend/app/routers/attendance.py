@@ -143,13 +143,13 @@ async def _get_or_create_mock_context(db: AsyncSession):
         await db.commit()
         await db.refresh(teacher)
 
-    c_result = await db.execute(select(Course).where(Course.course_code == "CS401"))
+    c_result = await db.execute(select(Course).order_by(Course.course_code.asc()).limit(1))
     course = c_result.scalars().first()
     if not course:
         course = Course(
             id=uuid.uuid4(),
-            course_code="CS401",
-            course_name="Distributed Systems & BLE Mesh",
+            course_code="CST-003",
+            course_name="Data Structures and Algorithms",
             teacher_id=teacher.id,
         )
         db.add(course)
@@ -262,41 +262,22 @@ async def list_courses(
 ):
     await _get_or_create_mock_context(db)
 
-    # Return teacher's courses if authenticated
+    # Return teacher's courses if authenticated (including available syllabus courses)
     if current_user and current_user.role == "TEACHER":
-        query = select(Course).where(Course.teacher_id == current_user.id)
+        query = select(Course).where(
+            or_(
+                Course.teacher_id == current_user.id,
+                Course.teacher_id.is_(None),
+            )
+        )
         if semester is not None:
             query = query.where(Course.semester == semester)
         if department is not None:
             query = query.where(Course.department.ilike(f"%{department.strip()}%"))
         if program is not None:
             query = query.where(Course.program.ilike(f"%{program.strip()}%"))
-        result = await db.execute(query.order_by(Course.course_code.asc()))
-        courses = list(result.scalars().all())
-        if not courses and semester is None and department is None:
-            default_subjects = [
-                ("CS401", "Distributed Systems & BLE Mesh"),
-                ("CS302", "Computer Networks & Protocols"),
-                ("CS205", "Operating Systems Architecture"),
-            ]
-            for code, name in default_subjects:
-                existing_c = (await db.execute(select(Course).where(Course.course_code == code))).scalars().first()
-                if existing_c:
-                    existing_c.teacher_id = current_user.id
-                    courses.append(existing_c)
-                else:
-                    new_c = Course(
-                        id=uuid.uuid4(),
-                        course_code=code,
-                        course_name=name,
-                        teacher_id=current_user.id,
-                    )
-                    db.add(new_c)
-                    courses.append(new_c)
-            await db.commit()
-            for c in courses:
-                await db.refresh(c)
-        return courses
+        result = await db.execute(query.order_by(Course.semester.asc(), Course.course_code.asc()))
+        return list(result.scalars().all())
 
     # Return all courses when unauthenticated or student
     query = select(Course)
