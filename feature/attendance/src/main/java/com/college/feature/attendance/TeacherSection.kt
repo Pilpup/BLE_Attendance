@@ -629,34 +629,6 @@ internal fun TeacherSection(
     }
 }
 
-private val syllabusTopicsFallback = mapOf(
-    "Unit 1" to listOf(
-        "Foundations & System Architecture",
-        "BLE Protocol Stack Overview",
-        "Physical & Link Layer Specs"
-    ),
-    "Unit 2" to listOf(
-        "BLE Advertising & Proximity Packets",
-        "RSSI Path Loss & Distance Estimation",
-        "Scan Interval & Beacon Scheduling"
-    ),
-    "Unit 3" to listOf(
-        "Peer Witnessing & Mesh Consensus",
-        "Mutual Directed In-Degree Verification",
-        "Quorum Witness Consensus"
-    ),
-    "Unit 4" to listOf(
-        "Cryptographic Nonce & Ephemeral Auth",
-        "Anti-Spoofing & Replay Attack Defense",
-        "Zero-Knowledge Proofs & Privacy"
-    ),
-    "Unit 5" to listOf(
-        "Scalability & Distributed Mesh Sync",
-        "Cloud Reconciliation & Audit Trails",
-        "Practical Lab Simulation & Verification"
-    )
-)
-
 // Granular curriculum topics mapped by official UTU subject and unit module
 private val subjectUnitTopics: Map<String, Map<String, List<String>>> = mapOf(
     "Digital Electronics" to mapOf(
@@ -916,7 +888,24 @@ private val subjectUnitTopics: Map<String, Map<String, List<String>>> = mapOf(
     )
 )
 
+// Official UTU 3rd Semester curriculum subjects
+internal val sem3Subjects = listOf(
+    "Data Structures and Algorithms",
+    "Discrete Structure",
+    "Object Oriented Programming",
+    "Digital Electronics",
+    "Python Programming",
+    "Universal Human Values",
+    "Data Structures and Algorithms Lab",
+    "Object Oriented Programming Lab",
+    "Python Programming Lab",
+    "Internship-I / Mini Project-I"
+)
+
 private fun getSyllabusTopics(subject: String, unit: String): List<String> {
+    if (subject.equals("NONE", ignoreCase = true) || unit.equals("NONE", ignoreCase = true)) {
+        return listOf("NONE")
+    }
     val clean = subject.trim()
     val match = subjectUnitTopics.entries.firstOrNull { entry ->
         entry.key.equals(clean, ignoreCase = true) ||
@@ -925,8 +914,7 @@ private fun getSyllabusTopics(subject: String, unit: String): List<String> {
     }?.value
     return match?.get(unit)
         ?: match?.values?.firstOrNull()
-        ?: syllabusTopicsFallback[unit]
-        ?: listOf("General Syllabus Topic")
+        ?: listOf("NONE")
 }
 
 private val engineeringBranches = listOf(
@@ -938,170 +926,13 @@ private val engineeringBranches = listOf(
     "EE"
 )
 
-// Academic subjects mapped by engineering branch and degree program
-private val branchSubjects = mapOf(
-    "CSE" to listOf(
-        "Computer Networks",
-        "Operating Systems",
-        "Data Structures & Algorithms",
-        "Database Management Systems",
-        "Software Engineering",
-        "Theory of Computation",
-        "Compiler Design",
-        "Machine Learning",
-        "Computer Architecture",
-        "Cyber Security"
-    ),
-    "IT" to listOf(
-        "Web Technologies",
-        "Information Security",
-        "Cloud Computing",
-        "Data Mining & Warehousing",
-        "Software Project Management",
-        "Computer Networks",
-        "Mobile App Development",
-        "Database Systems"
-    ),
-    "ECE" to listOf(
-        "Digital Signal Processing",
-        "Signals & Systems",
-        "Analog Circuits",
-        "Digital Electronics",
-        "Microprocessors & Microcontrollers",
-        "VLSI Design",
-        "Communication Systems",
-        "Electromagnetic Theory"
-    ),
-    "ME" to listOf(
-        "Thermodynamics",
-        "Fluid Mechanics",
-        "Mechanics of Materials",
-        "Manufacturing Processes",
-        "Theory of Machines",
-        "Heat & Mass Transfer",
-        "Machine Design",
-        "CAD/CAM"
-    ),
-    "CE" to listOf(
-        "Structural Analysis",
-        "Geotechnical Engineering",
-        "Fluid Mechanics",
-        "Surveying",
-        "Concrete Technology",
-        "Transportation Engineering",
-        "Environmental Engineering"
-    ),
-    "EE" to listOf(
-        "Power Systems",
-        "Electrical Machines",
-        "Control Systems",
-        "Power Electronics",
-        "Circuit Theory",
-        "Electromagnetic Fields",
-        "Renewable Energy Systems"
-    ),
-    "BCA" to listOf(
-        "Programming in C/C++",
-        "Data Structures",
-        "Database Management (SQL)",
-        "Web Development",
-        "Java Programming",
-        "Python Programming",
-        "Computer Networks",
-        "Operating Systems",
-        "Software Engineering"
-    )
-)
-
-// Retrieves recommended subjects based on academic program, branch, and semester
+// Retrieves syllabus subjects for Semester 3; returns listOf("NONE") if no data is available
 private fun getSemesterSubjects(program: String, branch: String, semester: String): List<String> {
-    val semNum = semester.filter { it.isDigit() }.toIntOrNull() ?: 1
-    if (program.equals("BCA", ignoreCase = true)) {
-        return when (semNum) {
-            1 -> listOf("Programming in C", "Fundamentals of Computers & IT", "Mathematical Foundation", "Communication Skills")
-            2 -> listOf("Data Structures using C", "Object Oriented Programming in C++", "Digital Electronics", "Database Management Systems")
-            3 -> listOf("Java Programming", "Database Management (SQL)", "Computer Networks", "Operating Systems")
-            4 -> listOf("Python Programming", "Web Development", "Software Engineering", "Computer Architecture")
-            5 -> listOf("Web Technologies", "Mobile App Development", "Cloud Computing", "Information Security")
-            6 -> listOf("Machine Learning", "Artificial Intelligence", "Cyber Security", "Data Mining & Warehousing")
-            else -> branchSubjects["BCA"] ?: listOf("Programming in C")
-        }
+    val semNum = semester.filter { it.isDigit() }.toIntOrNull() ?: 3
+    if (program.equals("B-Tech", ignoreCase = true) && branch.equals("CSE", ignoreCase = true) && semNum == 3) {
+        return sem3Subjects
     }
-
-    return when (semNum) {
-        1 -> listOf(
-            "Programming for Problem Solving (C)",
-            "Engineering Mathematics - I",
-            "Engineering Physics",
-            "Basic Electrical Engineering",
-            "Engineering Graphics & Design",
-            "Communication Skills",
-            "Programming in C Lab",
-            "Engineering Physics Lab",
-            "Basic Electrical Lab",
-            "Engineering Graphics Lab"
-        )
-        2 -> listOf(
-            "Engineering Mathematics - II",
-            "Engineering Chemistry",
-            "Basic Electronics",
-            "Environmental Science",
-            "English for Communication",
-            "Engineering Chemistry Lab",
-            "Basic Electronics Lab",
-            "Workshop Practices Lab"
-        )
-        3 -> listOf(
-            "Digital Electronics",
-            "Universal Human Values",
-            "Discrete Structure",
-            "Data Structures and Algorithms",
-            "Object Oriented Programming",
-            "Python Programming",
-            "Data Structures and Algorithms Lab",
-            "Object Oriented Programming Lab",
-            "Python Programming Lab",
-            "Internship-I / Mini Project-I"
-        )
-        4 -> listOf(
-            "Operating Systems",
-            "Theory of Computation",
-            "Computer Organization & Architecture",
-            "Operating Systems Lab",
-            "JAVA Programming Lab",
-            "UNIX/LINUX Lab"
-        )
-        5 -> listOf(
-            "Computer Networks",
-            "Database Management Systems",
-            "Information Security & Cryptography",
-            "Computer Networks Lab",
-            "Database Management Systems Lab",
-            "Information Security Lab"
-        )
-        6 -> listOf(
-            "Ethical Hacking and Penetration Testing",
-            "Malware Analysis & Reverse Engineering",
-            "Cloud Computing & Security",
-            "Ethical Hacking & Penetration Testing Lab",
-            "Digital Forensics Lab"
-        )
-        7 -> listOf(
-            "Open Source Intelligence & Threat Hunting",
-            "Cyber Laws, Ethics & Compliance",
-            "Project Management & Entrepreneurship",
-            "Open Source Intelligence Lab",
-            "Project Seminar",
-            "Design Project",
-            "Mini Project-III / Internship-III"
-        )
-        8 -> listOf(
-            "Cyber Incident Response & Crisis Management",
-            "Blockchain & Decentralized Security",
-            "Major Project"
-        )
-        else -> listOf("Programming for Problem Solving (C)")
-    }
+    return listOf("NONE")
 }
 
 // Reusable dropdown selector supporting scrollable and non-scrollable modes
@@ -1273,41 +1104,74 @@ private fun TakeAttendanceSelectionView(
     var classType by remember { mutableStateOf("Regular") }
     var courseProgram by remember { mutableStateOf("B-Tech") }
     var branch by remember { mutableStateOf("CSE") }
-    var semester by remember { mutableStateOf("Semester 1") }
+    var semester by remember { mutableStateOf("Semester 3") }
     var batchType by remember { mutableStateOf("Lecture") }
-    var subjectName by remember { mutableStateOf("Programming in C") }
+    var subjectName by remember { mutableStateOf("Data Structures and Algorithms") }
     var selectedUnit by remember { mutableStateOf("Unit 1") }
-    var topicCovered by remember { mutableStateOf("Foundations & System Architecture") }
-
-    var showCustomSubjectDialog by remember { mutableStateOf(false) }
-    var customSubjectInput by remember { mutableStateOf("") }
-    var showCustomTopicDialog by remember { mutableStateOf(false) }
-    var customTopicInput by remember { mutableStateOf("") }
+    var topicCovered by remember {
+        mutableStateOf(
+            getSyllabusTopics("Data Structures and Algorithms", "Unit 1").firstOrNull() ?: "NONE"
+        )
+    }
 
     val currentSubjects = remember(courseProgram, branch, semester) {
         getSemesterSubjects(courseProgram, branch, semester)
     }
-    val subjectOptions = remember(currentSubjects) {
-        currentSubjects + listOf("+ Enter Custom Subject...")
-    }
 
-    // Keep subject aligned with branch when switching courses or branches
+    // Keep subject aligned with branch/semester when switching
     LaunchedEffect(currentSubjects) {
-        if (subjectName !in currentSubjects && customSubjectInput.isBlank()) {
-            val first = currentSubjects.firstOrNull() ?: "Programming in C"
+        if (subjectName !in currentSubjects) {
+            val first = currentSubjects.firstOrNull() ?: "NONE"
             subjectName = first
-            if (first.contains("Lab", ignoreCase = true) || first.contains("Project", ignoreCase = true)) {
-                batchType = "Lab"
+            if (first == "NONE") {
+                selectedUnit = "NONE"
+                topicCovered = "NONE"
+            } else {
+                if (first.contains("Lab", ignoreCase = true) || first.contains("Project", ignoreCase = true)) {
+                    batchType = "Lab"
+                } else if (batchType == "Lab") {
+                    batchType = "Lecture"
+                }
+                selectedUnit = "Unit 1"
+                topicCovered = getSyllabusTopics(first, "Unit 1").firstOrNull() ?: "NONE"
             }
-            topicCovered = getSyllabusTopics(first, selectedUnit).firstOrNull() ?: topicCovered
         }
     }
 
-    // Keep topic aligned with subject and unit
-    LaunchedEffect(subjectName, selectedUnit) {
-        val available = getSyllabusTopics(subjectName, selectedUnit)
-        if (topicCovered !in available && customTopicInput.isBlank()) {
-            topicCovered = available.firstOrNull() ?: "General Syllabus Topic"
+    // Unit options depending on subject
+    val unitOptions = remember(subjectName, batchType) {
+        if (subjectName == "NONE") {
+            listOf("NONE")
+        } else if (subjectName.contains("Lab", ignoreCase = true) ||
+            subjectName.contains("Project", ignoreCase = true) ||
+            batchType == "Lab"
+        ) {
+            listOf("Unit 1", "List of Experiments")
+        } else {
+            listOf("Unit 1", "Unit 2", "Unit 3", "Unit 4", "Unit 5")
+        }
+    }
+
+    LaunchedEffect(unitOptions) {
+        if (selectedUnit !in unitOptions) {
+            selectedUnit = unitOptions.firstOrNull() ?: "NONE"
+        }
+    }
+
+    // Topic options depending on subject and unit
+    val availableTopics = remember(subjectName, selectedUnit) {
+        if (subjectName == "NONE" || selectedUnit == "NONE") {
+            listOf("NONE")
+        } else {
+            getSyllabusTopics(subjectName, selectedUnit)
+        }
+    }
+
+    LaunchedEffect(subjectName, selectedUnit, availableTopics) {
+        if (subjectName == "NONE" || selectedUnit == "NONE") {
+            topicCovered = "NONE"
+        } else if (topicCovered !in availableTopics) {
+            topicCovered = availableTopics.firstOrNull() ?: "NONE"
         }
     }
 
@@ -1322,8 +1186,9 @@ private fun TakeAttendanceSelectionView(
 
     // Synchronize course response metadata with selected academic fields
     LaunchedEffect(classType, courseProgram, branch, semester, batchType, subjectName, selectedUnit, topicCovered) {
+        if (subjectName == "NONE") return@LaunchedEffect
         val branchSuffix = if (courseProgram != "BCA" && branch.isNotBlank()) " • $branch" else ""
-        val topicSuffix = if (topicCovered.isNotBlank()) " • $topicCovered" else ""
+        val topicSuffix = if (topicCovered.isNotBlank() && topicCovered != "NONE") " • $topicCovered" else ""
         val code = "$courseProgram$branchSuffix $semester"
         val name = "$subjectName • $classType $batchType ($selectedUnit$topicSuffix)"
         val stableCourseId = java.util.UUID.nameUUIDFromBytes("academic-${courseProgram.lowercase()}-${branch.lowercase()}-${semester.replace(" ", "").lowercase()}".toByteArray()).toString()
@@ -1429,17 +1294,21 @@ private fun TakeAttendanceSelectionView(
             AppDropdownField(
                 label = "Subject Name",
                 selectedValue = subjectName,
-                options = subjectOptions,
+                options = currentSubjects,
                 onSelect = { selected ->
-                    if (selected == "+ Enter Custom Subject...") {
-                        customSubjectInput = ""
-                        showCustomSubjectDialog = true
+                    subjectName = selected
+                    if (selected == "NONE") {
+                        selectedUnit = "NONE"
+                        topicCovered = "NONE"
                     } else {
-                        subjectName = selected
                         if (selected.contains("Lab", ignoreCase = true) || selected.contains("Project", ignoreCase = true)) {
                             batchType = "Lab"
+                        } else if (batchType == "Lab") {
+                            batchType = "Lecture"
                         }
-                        topicCovered = getSyllabusTopics(selected, selectedUnit).firstOrNull() ?: topicCovered
+                        val u = if (selectedUnit != "NONE") selectedUnit else "Unit 1"
+                        selectedUnit = u
+                        topicCovered = getSyllabusTopics(selected, u).firstOrNull() ?: "NONE"
                     }
                 },
                 placeholder = "Select Subject",
@@ -1447,23 +1316,13 @@ private fun TakeAttendanceSelectionView(
                 scrollable = true
             )
 
-            val unitOptions = remember(subjectName, batchType) {
-                if (subjectName.contains("Lab", ignoreCase = true) ||
-                    subjectName.contains("Project", ignoreCase = true) ||
-                    batchType == "Lab"
-                ) {
-                    listOf("Unit 1", "List of Experiments")
-                } else {
-                    listOf("Unit 1", "Unit 2", "Unit 3", "Unit 4", "Unit 5")
-                }
-            }
             AppDropdownField(
                 label = "Unit",
                 selectedValue = selectedUnit,
                 options = unitOptions,
                 onSelect = { u ->
                     selectedUnit = u
-                    topicCovered = getSyllabusTopics(subjectName, u).firstOrNull() ?: topicCovered
+                    topicCovered = getSyllabusTopics(subjectName, u).firstOrNull() ?: "NONE"
                 },
                 placeholder = "Select Unit",
                 modifier = Modifier.weight(1.0f),
@@ -1472,23 +1331,12 @@ private fun TakeAttendanceSelectionView(
         }
 
         // 5. Full horizontal length topic name
-        val availableTopics = remember(subjectName, selectedUnit) {
-            getSyllabusTopics(subjectName, selectedUnit)
-        }
-        val topicOptions = remember(availableTopics) {
-            availableTopics + listOf("+ Enter Custom Topic...")
-        }
         AppDropdownField(
             label = "Topic Covered",
             selectedValue = topicCovered,
-            options = topicOptions,
+            options = availableTopics,
             onSelect = { selected ->
-                if (selected == "+ Enter Custom Topic...") {
-                    customTopicInput = ""
-                    showCustomTopicDialog = true
-                } else {
-                    topicCovered = selected
-                }
+                topicCovered = selected
             },
             placeholder = "Select Topic Covered",
             modifier = Modifier.fillMaxWidth(),
@@ -1524,124 +1372,30 @@ private fun TakeAttendanceSelectionView(
         Spacer(modifier = Modifier.height(6.dp))
 
         // Start Attendance Button in Electric Purple
+        val canStart = subjectName != "NONE" && topicCovered != "NONE"
         Button(
             onClick = onStartSession,
+            enabled = canStart,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(52.dp),
             shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = AppTheme.colors.primaryPurple,
-                contentColor = Color.White
+                contentColor = Color.White,
+                disabledContainerColor = AppTheme.colors.surfaceBorder,
+                disabledContentColor = AppTheme.colors.textMuted
             )
         ) {
             Text(
-                text = "Start Attendance",
+                text = if (canStart) "Start Attendance" else "No Syllabus Available",
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Bold,
-                color = Color.White
+                color = if (canStart) Color.White else AppTheme.colors.textMuted
             )
         }
 
         Spacer(modifier = Modifier.height(16.dp))
-    }
-
-    if (showCustomSubjectDialog) {
-        AlertDialog(
-            onDismissRequest = { showCustomSubjectDialog = false },
-            title = {
-                Text(
-                    text = "Custom Subject Name",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 17.sp,
-                    color = AppTheme.colors.textPrimary
-                )
-            },
-            text = {
-                OutlinedTextField(
-                    value = customSubjectInput,
-                    onValueChange = { customSubjectInput = it },
-                    placeholder = { Text("e.g. Distributed Systems", color = AppTheme.colors.textMuted, fontSize = 14.sp) },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = AppTheme.colors.primaryPurple,
-                        unfocusedBorderColor = AppTheme.colors.surfaceBorder,
-                        focusedTextColor = AppTheme.colors.textPrimary,
-                        unfocusedTextColor = AppTheme.colors.textPrimary
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (customSubjectInput.isNotBlank()) {
-                            subjectName = customSubjectInput.trim()
-                        }
-                        showCustomSubjectDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.primaryPurple)
-                ) {
-                    Text("Save", color = Color.White, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCustomSubjectDialog = false }) {
-                    Text("Cancel", color = AppTheme.colors.textSecondary)
-                }
-            },
-            containerColor = AppTheme.colors.surface,
-            shape = RoundedCornerShape(16.dp)
-        )
-    }
-
-    if (showCustomTopicDialog) {
-        AlertDialog(
-            onDismissRequest = { showCustomTopicDialog = false },
-            title = {
-                Text(
-                    text = "Custom Topic Name",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 17.sp,
-                    color = AppTheme.colors.textPrimary
-                )
-            },
-            text = {
-                OutlinedTextField(
-                    value = customTopicInput,
-                    onValueChange = { customTopicInput = it },
-                    placeholder = { Text("e.g. Paxos & Raft Consensus", color = AppTheme.colors.textMuted, fontSize = 14.sp) },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = AppTheme.colors.primaryPurple,
-                        unfocusedBorderColor = AppTheme.colors.surfaceBorder,
-                        focusedTextColor = AppTheme.colors.textPrimary,
-                        unfocusedTextColor = AppTheme.colors.textPrimary
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (customTopicInput.isNotBlank()) {
-                            topicCovered = customTopicInput.trim()
-                        }
-                        showCustomTopicDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.primaryPurple)
-                ) {
-                    Text("Save", color = Color.White, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCustomTopicDialog = false }) {
-                    Text("Cancel", color = AppTheme.colors.textSecondary)
-                }
-            },
-            containerColor = AppTheme.colors.surface,
-            shape = RoundedCornerShape(16.dp)
-        )
     }
 }
 
@@ -2372,6 +2126,13 @@ private val UNIT_REGEX = Regex("Unit\\s*\\d", RegexOption.IGNORE_CASE)
 // Extracts a clean subject name from course name metadata or course code
 internal fun extractSubjectName(rawCourseName: String?, courseCode: String?): String {
     val raw = rawCourseName?.trim().orEmpty()
+
+    // 1. Direct match against official Semester 3 subjects
+    val sem3Match = sem3Subjects.firstOrNull {
+        raw.startsWith(it, ignoreCase = true) || raw.contains(it, ignoreCase = true)
+    }
+    if (sem3Match != null) return sem3Match
+
     if (raw.isNotBlank()) {
         if (raw.contains("•")) {
             val prefix = raw.substringBefore("•").trim()
@@ -2396,17 +2157,18 @@ internal fun extractSubjectName(rawCourseName: String?, courseCode: String?): St
 
     val combined = "$raw ${courseCode.orEmpty()}"
     return when {
-        combined.contains("Network", ignoreCase = true) || combined.contains("BLE", ignoreCase = true) || combined.contains("Packet", ignoreCase = true) -> "Computer Networks"
-        combined.contains("Operating System", ignoreCase = true) || combined.contains("Deadlock", ignoreCase = true) || combined.contains("Process", ignoreCase = true) -> "Operating Systems"
-        combined.contains("Database", ignoreCase = true) || combined.contains("Relational", ignoreCase = true) || combined.contains("SQL", ignoreCase = true) -> "Database Management Systems"
-        combined.contains("Structure", ignoreCase = true) || combined.contains("Algorithm", ignoreCase = true) -> "Data Structures & Algorithms"
-        combined.contains("Software", ignoreCase = true) -> "Software Engineering"
-        combined.contains("Web", ignoreCase = true) -> "Web Technologies"
+        combined.contains("Digital Electronics", ignoreCase = true) -> "Digital Electronics"
+        combined.contains("Universal Human Values", ignoreCase = true) || combined.contains("UHV", ignoreCase = true) -> "Universal Human Values"
+        combined.contains("Discrete Structure", ignoreCase = true) || combined.contains("Discrete", ignoreCase = true) -> "Discrete Structure"
+        combined.contains("Data Structures and Algorithms Lab", ignoreCase = true) || combined.contains("DSA Lab", ignoreCase = true) -> "Data Structures and Algorithms Lab"
+        combined.contains("Data Structures", ignoreCase = true) || combined.contains("DSA", ignoreCase = true) -> "Data Structures and Algorithms"
+        combined.contains("Object Oriented Programming Lab", ignoreCase = true) || combined.contains("OOP Lab", ignoreCase = true) -> "Object Oriented Programming Lab"
+        combined.contains("Object Oriented", ignoreCase = true) || combined.contains("OOP", ignoreCase = true) -> "Object Oriented Programming"
+        combined.contains("Python Programming Lab", ignoreCase = true) || combined.contains("Python Lab", ignoreCase = true) -> "Python Programming Lab"
         combined.contains("Python", ignoreCase = true) -> "Python Programming"
-        combined.contains("Java", ignoreCase = true) -> "Java Programming"
-        combined.contains("C++", ignoreCase = true) || combined.contains("Programming in C", ignoreCase = true) -> "Programming in C"
-        courseCode?.contains("Semester 1", ignoreCase = true) == true || courseCode?.contains("Sem 1", ignoreCase = true) == true -> "Programming in C"
-        else -> "Computer Networks"
+        combined.contains("Internship", ignoreCase = true) || combined.contains("Mini Project", ignoreCase = true) -> "Internship-I / Mini Project-I"
+        raw.isNotBlank() -> raw
+        else -> "NONE"
     }
 }
 
@@ -2428,7 +2190,7 @@ private fun getSessionAcademicDetails(session: AttendanceSessionResponse): Sessi
     val sem = session.semester
         ?: SEMESTER_REGEX_1.find(session.courseCode ?: "")?.value
         ?: SEMESTER_REGEX_2.find(session.courseCode ?: "")?.value
-        ?: if (session.courseCode?.isNotBlank() == true) session.courseCode else "Semester 1"
+        ?: if (session.courseCode?.isNotBlank() == true) session.courseCode else "Semester 3"
 
     val rawName = session.courseName ?: ""
     val subject = session.subjectName?.takeIf { it.isNotBlank() }

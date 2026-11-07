@@ -575,8 +575,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     // Format attendance records and session details as CSV for export
     fun generateCsvReport(): String {
         val activeSession = selectedSessionForDetails
-        val code = activeSession?.courseCode ?: selectedCourse?.courseCode ?: "B-Tech • CSE Semester 1"
-        val name = activeSession?.courseName ?: selectedCourse?.courseName ?: "Computer Networks • Regular Lecture (Unit 1 • Foundations & System Architecture)"
+        val code = activeSession?.courseCode ?: selectedCourse?.courseCode ?: "B-Tech • CSE Semester 3"
+        val name = activeSession?.courseName ?: selectedCourse?.courseName ?: "Data Structures and Algorithms • Regular Lecture (Unit 1 • Data Structure Operations and Asymptotic Notations)"
         val sid = activeSession?.sessionToken ?: sessionId
         val recordsToExport = activeSession?.records ?: finalizedRecords
 
@@ -601,7 +601,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
         val sem = Regex("Semester\\s*\\d", RegexOption.IGNORE_CASE).find(code)?.value
             ?: Regex("Sem\\s*\\d", RegexOption.IGNORE_CASE).find(code)?.value
-            ?: "Semester 1"
+            ?: "Semester 3"
         val subject = com.college.feature.attendance.extractSubjectName(name, code)
         val remainder = if (name.contains("•")) name.substringAfter("•").trim() else name
         val clsType = when {
@@ -619,7 +619,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             val inside = remainder.substringAfter("(").substringBefore(")")
             if (inside.contains("•")) inside.substringAfter("•").trim() else inside.trim()
         } else {
-            "Foundations & System Architecture"
+            "NONE"
         }
 
         sb.append("Course,$courseProg\n")
