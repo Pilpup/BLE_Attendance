@@ -36,6 +36,39 @@ BEGIN
     ALTER TABLE courses ADD COLUMN IF NOT EXISTS course_code VARCHAR(30);
     ALTER TABLE courses ADD COLUMN IF NOT EXISTS course_name VARCHAR(200);
     ALTER TABLE courses ADD COLUMN IF NOT EXISTS teacher_id UUID;
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS program VARCHAR(30) DEFAULT 'B.Tech';
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS department VARCHAR(100) DEFAULT 'Computer Science & Engineering';
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS semester INTEGER DEFAULT 1;
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS category VARCHAR(20) DEFAULT 'DC';
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS course_type VARCHAR(20) DEFAULT 'THEORY';
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS credits INTEGER DEFAULT 4;
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS periods_l INTEGER DEFAULT 3;
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS periods_t INTEGER DEFAULT 1;
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS periods_p INTEGER DEFAULT 0;
+    CREATE INDEX IF NOT EXISTS ix_courses_dept_sem ON courses(department, semester);
+
+    -- course_units (academic syllabus hierarchy)
+    CREATE TABLE IF NOT EXISTS course_units (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        course_id UUID NOT NULL REFERENCES courses(id) ON DELETE CASCADE,
+        unit_number INTEGER NOT NULL,
+        unit_title VARCHAR(255) NOT NULL,
+        teaching_hours INTEGER,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        CONSTRAINT uq_course_unit UNIQUE (course_id, unit_number)
+    );
+    CREATE INDEX IF NOT EXISTS ix_course_units_course_id ON course_units(course_id);
+
+    -- unit_topics (individual syllabus topics / lab experiments)
+    CREATE TABLE IF NOT EXISTS unit_topics (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        unit_id UUID NOT NULL REFERENCES course_units(id) ON DELETE CASCADE,
+        topic_order INTEGER NOT NULL,
+        topic_name TEXT NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        CONSTRAINT uq_unit_topic UNIQUE (unit_id, topic_order)
+    );
+    CREATE INDEX IF NOT EXISTS ix_unit_topics_unit_id ON unit_topics(unit_id);
 
     -- attendance_sessions
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS course_id UUID;

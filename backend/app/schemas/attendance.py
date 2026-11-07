@@ -5,10 +5,55 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+# Unit topic schemas
+class UnitTopicCreate(BaseModel):
+    topic_order: int = Field(..., ge=1, description="Order index of the topic within the unit")
+    topic_name: str = Field(..., min_length=1, description="Detailed topic description / experiment title")
+
+
+class UnitTopicResponse(BaseModel):
+    id: UUID
+    unit_id: UUID
+    topic_order: int
+    topic_name: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Course unit schemas
+class CourseUnitCreate(BaseModel):
+    unit_number: int = Field(..., ge=1, description="Unit number (1, 2, 3, etc.)")
+    unit_title: str = Field(..., min_length=1, max_length=255, description="Title of the unit")
+    teaching_hours: Optional[int] = Field(None, ge=0, description="Allocated lecture/lab hours")
+    topics: Optional[list[UnitTopicCreate]] = Field(default_factory=list, description="Initial list of topics")
+
+
+class CourseUnitResponse(BaseModel):
+    id: UUID
+    course_id: UUID
+    unit_number: int
+    unit_title: str
+    teaching_hours: Optional[int] = None
+    created_at: datetime
+    topics: list[UnitTopicResponse] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 # Course creation payload
 class CourseCreateRequest(BaseModel):
-    course_code: str = Field(..., min_length=2, max_length=20, description="e.g. CS401")
-    course_name: str = Field(..., min_length=2, max_length=100, description="e.g. Distributed Systems")
+    course_code: str = Field(..., min_length=2, max_length=30, description="e.g. CST 301")
+    course_name: str = Field(..., min_length=2, max_length=200, description="e.g. Cryptography & Network Security")
+    program: Optional[str] = Field("B.Tech", description="Academic program e.g. B.Tech")
+    department: Optional[str] = Field("Computer Science & Engineering", description="Department name")
+    semester: Optional[int] = Field(1, ge=1, le=10, description="Semester number")
+    category: Optional[str] = Field("DC", description="DC, DLC, DE, OE, MC, etc.")
+    course_type: Optional[str] = Field("THEORY", description="THEORY, LAB, PROJECT, AUDIT")
+    credits: Optional[int] = Field(4, ge=0, le=30, description="Course credits")
+    periods_l: Optional[int] = Field(3, ge=0, description="Lecture hours/week")
+    periods_t: Optional[int] = Field(1, ge=0, description="Tutorial hours/week")
+    periods_p: Optional[int] = Field(0, ge=0, description="Practical hours/week")
 
 
 # Public course response
@@ -16,7 +61,18 @@ class CourseResponse(BaseModel):
     id: UUID
     course_code: str
     course_name: str
-    teacher_id: UUID
+    teacher_id: Optional[UUID] = None
+    program: Optional[str] = "B.Tech"
+    department: Optional[str] = "Computer Science & Engineering"
+    semester: Optional[int] = 1
+    category: Optional[str] = "DC"
+    course_type: Optional[str] = "THEORY"
+    credits: Optional[int] = 4
+    periods_l: Optional[int] = 3
+    periods_t: Optional[int] = 1
+    periods_p: Optional[int] = 0
+    created_at: Optional[datetime] = None
+    units: list[CourseUnitResponse] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 

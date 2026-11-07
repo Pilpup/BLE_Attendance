@@ -39,7 +39,73 @@ class Course(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     course_code: Mapped[str] = mapped_column(String(30), unique=True, nullable=False)
     course_name: Mapped[str] = mapped_column(String(200), nullable=False)
-    teacher_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
+    teacher_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    program: Mapped[Optional[str]] = mapped_column(String(30), default="B.Tech", nullable=True)
+    department: Mapped[Optional[str]] = mapped_column(String(100), default="Computer Science & Engineering", nullable=True)
+    semester: Mapped[Optional[int]] = mapped_column(Integer, default=1, nullable=True)
+    category: Mapped[Optional[str]] = mapped_column(String(20), default="DC", nullable=True)
+    course_type: Mapped[Optional[str]] = mapped_column(String(20), default="THEORY", nullable=True)
+    credits: Mapped[Optional[int]] = mapped_column(Integer, default=4, nullable=True)
+    periods_l: Mapped[Optional[int]] = mapped_column(Integer, default=3, nullable=True)
+    periods_t: Mapped[Optional[int]] = mapped_column(Integer, default=1, nullable=True)
+    periods_p: Mapped[Optional[int]] = mapped_column(Integer, default=0, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+    __table_args__ = (
+        Index("ix_courses_dept_sem", "department", "semester"),
+    )
+
+    units: Mapped[list["CourseUnit"]] = relationship(
+        back_populates="course", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+# Syllabus unit or module for an academic course
+class CourseUnit(Base):
+    __tablename__ = "course_units"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    course_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("courses.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    unit_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit_title: Mapped[str] = mapped_column(String(255), nullable=False)
+    teaching_hours: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+    __table_args__ = (
+        UniqueConstraint("course_id", "unit_number", name="uq_course_unit"),
+    )
+
+    course: Mapped["Course"] = relationship(back_populates="units")
+    topics: Mapped[list["UnitTopic"]] = relationship(
+        back_populates="unit", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+# Individual syllabus topic or experiment inside a course unit
+class UnitTopic(Base):
+    __tablename__ = "unit_topics"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    unit_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("course_units.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    topic_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    topic_name: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+    __table_args__ = (
+        UniqueConstraint("unit_id", "topic_order", name="uq_unit_topic"),
+    )
+
+    unit: Mapped["CourseUnit"] = relationship(back_populates="topics")
 
 
 # Attendance session initiated by instructor for class verification

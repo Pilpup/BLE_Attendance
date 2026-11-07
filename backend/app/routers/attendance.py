@@ -34,17 +34,29 @@ from app.core.security import (
 )
 from app.database import get_db
 from app.services.rate_limiter import submit_rate_limiter
-from app.models.attendance import AttendanceRecord, AttendanceSession, Course, SessionSubmission, User
+from app.models.attendance import (
+    AttendanceRecord,
+    AttendanceSession,
+    Course,
+    CourseUnit,
+    SessionSubmission,
+    UnitTopic,
+    User,
+)
 from app.schemas.attendance import (
     AttendanceRecordResponse,
     AttendanceSessionResponse,
     CourseCreateRequest,
     CourseResponse,
+    CourseUnitCreate,
+    CourseUnitResponse,
     MeshAuditRunRequest,
     RecordOverrideRequest,
     SessionCreateRequest,
     SessionFinalizeRequest,
     SubmitNeighborsRequest,
+    UnitTopicCreate,
+    UnitTopicResponse,
     FaceLabCheckRequest,
     FaceLabCheckResponse,
     FaceLabCompareRequest,
@@ -242,6 +254,9 @@ async def _lock_session_for_finalize(db: AsyncSession, session_obj: AttendanceSe
 # List available courses
 @router.get("/courses", response_model=List[CourseResponse])
 async def list_courses(
+    semester: Optional[int] = None,
+    department: Optional[str] = None,
+    program: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     current_user: Optional[User] = Depends(get_optional_user),
 ):
@@ -249,9 +264,16 @@ async def list_courses(
 
     # Return teacher's courses if authenticated
     if current_user and current_user.role == "TEACHER":
-        result = await db.execute(select(Course).where(Course.teacher_id == current_user.id))
+        query = select(Course).where(Course.teacher_id == current_user.id)
+        if semester is not None:
+            query = query.where(Course.semester == semester)
+        if department is not None:
+            query = query.where(Course.department.ilike(f"%{department.strip()}%"))
+        if program is not None:
+            query = query.where(Course.program.ilike(f"%{program.strip()}%"))
+        result = await db.execute(query.order_by(Course.course_code.asc()))
         courses = list(result.scalars().all())
-        if not courses:
+        if not courses and semester is None and department is None:
             default_subjects = [
                 ("CS401", "Distributed Systems & BLE Mesh"),
                 ("CS302", "Computer Networks & Protocols"),
@@ -277,7 +299,14 @@ async def list_courses(
         return courses
 
     # Return all courses when unauthenticated or student
-    result = await db.execute(select(Course))
+    query = select(Course)
+    if semester is not None:
+        query = query.where(Course.semester == semester)
+    if department is not None:
+        query = query.where(Course.department.ilike(f"%{department.strip()}%"))
+    if program is not None:
+        query = query.where(Course.program.ilike(f"%{program.strip()}%"))
+    result = await db.execute(query.order_by(Course.semester.asc(), Course.course_code.asc()))
     return result.scalars().all()
 
 
@@ -293,11 +322,145 @@ async def create_course(
         course_code=payload.course_code.strip().upper(),
         course_name=payload.course_name.strip(),
         teacher_id=current_user.id,
+        program=payload.program,
+        department=payload.department,
+        semester=payload.semester,
+        category=payload.category,
+        course_type=payload.course_type,
+        credits=payload.credits,
+        periods_l=payload.periods_l,
+        periods_t=payload.periods_t,
+        periods_p=payload.periods_p,
     )
     db.add(course)
     await db.commit()
     await db.refresh(course)
     return course
+
+
+# Get full syllabus for a specific course
+@router.get("/courses/{course_id}/syllabus", response_model=List[CourseUnitResponse])
+async def get_course_syllabus(
+    course_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    course_res = await db.execute(select(Course).where(Course.id == course_id))
+    course = course_res.scalars().first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    res = await db.execute(
+        select(CourseUnit)
+        .where(CourseUnit.course_id == course_id)
+        .order_by(CourseUnit.unit_number.asc())
+    )
+    return res.scalars().all()
+
+
+# Add a syllabus unit to a course
+@router.post(
+    "/courses/{course_id}/units",
+    response_model=CourseUnitResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_course_unit(
+    course_id: uuid.UUID,
+    payload: CourseUnitCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_teacher),
+):
+    course_res = await db.execute(select(Course).where(Course.id == course_id))
+    course = course_res.scalars().first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    if course.teacher_id != current_user.id and current_user.role != "ADMIN":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to modify this course syllabus",
+        )
+
+    existing = await db.execute(
+        select(CourseUnit).where(
+            CourseUnit.course_id == course_id,
+            CourseUnit.unit_number == payload.unit_number,
+        )
+    )
+    if existing.scalars().first():
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unit {payload.unit_number} already exists for this course",
+        )
+
+    unit = CourseUnit(
+        id=uuid.uuid4(),
+        course_id=course_id,
+        unit_number=payload.unit_number,
+        unit_title=payload.unit_title.strip(),
+        teaching_hours=payload.teaching_hours,
+    )
+    db.add(unit)
+    await db.flush()
+
+    if payload.topics:
+        for t in payload.topics:
+            topic = UnitTopic(
+                id=uuid.uuid4(),
+                unit_id=unit.id,
+                topic_order=t.topic_order,
+                topic_name=t.topic_name.strip(),
+            )
+            db.add(topic)
+
+    await db.commit()
+    await db.refresh(unit)
+    return unit
+
+
+# Add a topic to an existing syllabus unit
+@router.post(
+    "/courses/{course_id}/units/{unit_id}/topics",
+    response_model=UnitTopicResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_unit_topic(
+    course_id: uuid.UUID,
+    unit_id: uuid.UUID,
+    payload: UnitTopicCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_teacher),
+):
+    unit_res = await db.execute(
+        select(CourseUnit).where(CourseUnit.id == unit_id, CourseUnit.course_id == course_id)
+    )
+    unit = unit_res.scalars().first()
+    if not unit:
+        raise HTTPException(status_code=404, detail="Unit not found for this course")
+
+    course_res = await db.execute(select(Course).where(Course.id == course_id))
+    course = course_res.scalars().first()
+    if course.teacher_id != current_user.id and current_user.role != "ADMIN":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to modify this course syllabus",
+        )
+
+    topic = UnitTopic(
+        id=uuid.uuid4(),
+        unit_id=unit_id,
+        topic_order=payload.topic_order,
+        topic_name=payload.topic_name.strip(),
+    )
+    db.add(topic)
+    try:
+        await db.commit()
+        await db.refresh(topic)
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"Topic with order {payload.topic_order} already exists in this unit",
+        )
+    return topic
 
 
 # List all past attendance sessions for a specific course

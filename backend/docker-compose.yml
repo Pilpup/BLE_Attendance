@@ -1,0 +1,44 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: college_attendance_db
+    restart: always
+    environment:
+      POSTGRES_USER: college_admin
+      POSTGRES_PASSWORD: change_this_secure_password
+      POSTGRES_DB: college_attendance
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U college_admin -d college_attendance"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: college_attendance_backend
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://college_admin:change_this_secure_password@db:5432/college_attendance
+      - APP_ENV=production
+      - API_V1_STR=/api/v1
+      - JWT_SECRET_KEY=change_this_to_a_random_hex_key_32_bytes
+      - JWT_ALGORITHM=HS256
+      - ACCESS_TOKEN_EXPIRE_MINUTES=1440
+      - FACULTY_SIGNUP_SECRET=college_faculty_passcode_2026
+    volumes:
+      - ./app/models/weights:/app/app/models/weights:ro
+
+volumes:
+  postgres_data:
+    driver: local
