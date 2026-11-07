@@ -36,6 +36,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -196,12 +197,41 @@ fun AppProfileCard(
     }
 }
 
+// Formats department short forms (e.g. CSE, ME) to full names
+fun formatDepartmentName(raw: String?): String {
+    if (raw.isNullOrBlank()) return ""
+    val trimmed = raw.trim()
+    return when (trimmed.uppercase()) {
+        "CSE", "CS", "C.S.E.", "C.S.E", "C.S." -> "Computer Science"
+        "ME", "M.E.", "M.E" -> "Mechanical Engineering"
+        "IT", "I.T.", "I.T" -> "Information Technology"
+        "ECE", "E.C.E.", "E.C.E" -> "Electronics & Communication"
+        "CE", "C.E.", "C.E", "CIVIL" -> "Civil Engineering"
+        "EE", "E.E.", "E.E", "ELECTRICAL" -> "Electrical Engineering"
+        "EEE", "E.E.E.", "E.E.E" -> "Electrical & Electronics"
+        "BCA" -> "Computer Applications"
+        "MCA" -> "Computer Applications"
+        else -> {
+            when {
+                trimmed.equals("B-Tech CSE", ignoreCase = true) || trimmed.equals("B.Tech CSE", ignoreCase = true) -> "Computer Science"
+                trimmed.equals("B-Tech ME", ignoreCase = true) || trimmed.equals("B.Tech ME", ignoreCase = true) -> "Mechanical Engineering"
+                trimmed.equals("B-Tech IT", ignoreCase = true) || trimmed.equals("B.Tech IT", ignoreCase = true) -> "Information Technology"
+                trimmed.equals("B-Tech ECE", ignoreCase = true) || trimmed.equals("B.Tech ECE", ignoreCase = true) -> "Electronics & Communication"
+                trimmed.equals("B-Tech CE", ignoreCase = true) || trimmed.equals("B.Tech CE", ignoreCase = true) -> "Civil Engineering"
+                trimmed.equals("B-Tech EE", ignoreCase = true) || trimmed.equals("B.Tech EE", ignoreCase = true) -> "Electrical Engineering"
+                else -> trimmed
+            }
+        }
+    }
+}
+
 // Pokemon 2D Game inspired Trainer Card profile component
 @Composable
 fun PokemonTrainerCard(
     user: User?,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onRoleClick: (() -> Unit)? = null
 ) {
     val gymBadgeColors = listOf(
         Color(0xFF64748B), // 1: Boulder / Slate
@@ -241,34 +271,62 @@ fun PokemonTrainerCard(
             modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // Header: TRAINER CARD + ROLE pill (never show GUEST)
+            // Header: PROFILE CARD + ROLE pill
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "TRAINER CARD",
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 12.sp,
-                    letterSpacing = 1.8.sp,
-                    color = AppTheme.colors.primaryPurple
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(AppTheme.colors.primaryPurple)
+                    )
+                    Text(
+                        text = "PROFILE CARD",
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 14.sp,
+                        letterSpacing = 2.2.sp,
+                        color = AppTheme.colors.textPrimary
+                    )
+                }
                 if (!roleTitle.isNullOrBlank() && roleTitle != "GUEST") {
                     Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = avatarColor.copy(alpha = 0.15f),
-                        border = BorderStroke(1.dp, avatarColor.copy(alpha = 0.35f))
+                        shape = RoundedCornerShape(6.dp),
+                        color = AppTheme.colors.accentOrange,
+                        modifier = if (onRoleClick != null) {
+                            Modifier.clickable(onClick = onRoleClick)
+                        } else {
+                            Modifier
+                        }
                     ) {
-                        Text(
-                            text = roleTitle,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace,
-                            color = avatarColor,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.5.dp)
+                        ) {
+                            Text(
+                                text = roleTitle,
+                                fontSize = 9.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                color = Color.White
+                            )
+                            if (onRoleClick != null) {
+                                Icon(
+                                    imageVector = Icons.Default.SwapHoriz,
+                                    contentDescription = "Change Role",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -276,21 +334,24 @@ fun PokemonTrainerCard(
             // Middle: Sprite color box + Name, Roll, Dept
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp)
+                horizontalArrangement = Arrangement.spacedBy(18.dp)
             ) {
-                // Sprite color block
+                // Sprite color block sized to equal the height of the 3 text lines
                 Box(
                     modifier = Modifier
-                        .size(54.dp)
-                        .clip(RoundedCornerShape(12.dp))
+                        .size(70.dp)
+                        .clip(RoundedCornerShape(16.dp))
                         .background(avatarColor)
                 )
 
                 // Info lines (no labels/prefixes)
-                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
                     Text(
                         text = user?.name ?: "Student",
-                        fontSize = 16.5.sp,
+                        fontSize = 17.sp,
                         fontWeight = FontWeight.Bold,
                         color = AppTheme.colors.textPrimary
                     )
@@ -303,8 +364,8 @@ fun PokemonTrainerCard(
                             color = AppTheme.colors.textSecondary
                         )
                     }
-                    val dept = user?.department ?: user?.program
-                    if (!dept.isNullOrBlank()) {
+                    val dept = formatDepartmentName(user?.department ?: user?.program)
+                    if (dept.isNotBlank()) {
                         Text(
                             text = dept,
                             fontSize = 12.sp,

@@ -28,7 +28,6 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -96,13 +95,6 @@ fun HomeScreen(
                     if (user != null) onNavigate(LibraryDashboardCard.NAV_ROUTE) else onNavigate("auth")
                 }
             )
-            if (SessionManager.default.realUser?.isDeveloper() == true) {
-                add(
-                    FeatureItem("Switch Role", Icons.Default.SwapHoriz, colors.successGreen) {
-                        showDevActingDialog = true
-                    }
-                )
-            }
             add(
                 FeatureItem("Account", Icons.Default.Person, colors.warningAmber) {
                     if (user != null) {
@@ -252,7 +244,10 @@ fun HomeScreen(
             onSignOut = {
                 SessionManager.default.endSession()
                 showAccountDialog = false
-            }
+            },
+            onRoleClick = if (SessionManager.default.realUser?.isDeveloper() == true) {
+                { showDevActingDialog = true }
+            } else null
         )
     }
 
@@ -275,7 +270,8 @@ private fun PokemonTrainerCardDialog(
     user: User?,
     onDismiss: () -> Unit,
     onNavigateAuth: () -> Unit,
-    onSignOut: () -> Unit
+    onSignOut: () -> Unit,
+    onRoleClick: (() -> Unit)? = null
 ) {
     Dialog(onDismissRequest = onDismiss) {
         Column(
@@ -287,7 +283,8 @@ private fun PokemonTrainerCardDialog(
         ) {
             PokemonTrainerCard(
                 user = user,
-                onClick = onDismiss
+                onClick = onDismiss,
+                onRoleClick = onRoleClick
             )
 
             if (user != null) {

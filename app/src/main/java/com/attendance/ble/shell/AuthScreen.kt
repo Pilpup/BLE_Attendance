@@ -351,7 +351,14 @@ fun AuthScreen(
                                     AppDropdownField(
                                         label = "Branch",
                                         selectedValue = branchInput,
-                                        options = listOf("CSE", "IT", "ECE", "ME", "CE", "EE"),
+                                        options = listOf(
+                                            "Computer Science",
+                                            "Information Technology",
+                                            "Electronics & Communication",
+                                            "Mechanical Engineering",
+                                            "Civil Engineering",
+                                            "Electrical Engineering"
+                                        ),
                                         onSelect = { selectedBranch ->
                                             branchInput = selectedBranch
                                         },
