@@ -1264,6 +1264,93 @@ async def test_finalize_counts_frozen_proxy_priors():
         assert fin_data["total_verified"] == 0
 
 
+# Verifies the plain-finalize leniency seal: staged students only earn
+# VERIFIED_PRESENT when at least one reported neighbor reports back; a claimed
+# neighbor list alone gets ISOLATED_FLAGGED with no blanket 1.00 affinity.
+@pytest.mark.anyio
+async def test_finalize_staged_drain_requires_reciprocal_peers():
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    seal_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with seal_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_teacher = await _register_test_teacher(client, seal_db, "Prof. Reciprocity", "reciprocity@univ.edu")
+        tok_stud1 = await _register_roll_student(client, seal_db, "Mutual One", "mutual.one@univ.edu", "22B6611")
+        tok_stud2 = await _register_roll_student(client, seal_db, "Mutual Two", "mutual.two@univ.edu", "22B6612")
+        tok_stud3 = await _register_roll_student(client, seal_db, "Fake Claimer", "fake.claimer@univ.edu", "22B6613")
+
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"session_token": "M6X1", "session_salt": "X6M0", "total_enrolled": 3},
+        )
+        assert s_res.status_code == 201
+        session_id = s_res.json()["id"]
+        session_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
+
+        r1 = await client.post(
+            session_url,
+            headers={"Authorization": f"Bearer {tok_stud1}"},
+            json={"student_id": "6611", "neighbors": ["6612"], "session_salt": "X6M0"},
+        )
+        assert r1.status_code == 200, r1.text
+
+        r2 = await client.post(
+            session_url,
+            headers={"Authorization": f"Bearer {tok_stud2}"},
+            json={"student_id": "6612", "neighbors": ["6611"], "session_salt": "X6M0"},
+        )
+        assert r2.status_code == 200, r2.text
+
+        # Claims a neighbor nobody ever reports back — must NOT be verified
+        r3 = await client.post(
+            session_url,
+            headers={"Authorization": f"Bearer {tok_stud3}"},
+            json={"student_id": "6613", "neighbors": ["GHOST"], "session_salt": "X6M0"},
+        )
+        assert r3.status_code == 200, r3.text
+
+        fin = await client.post(
+            f"/api/v1/attendance/sessions/{session_id}/finalize",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"records": []},
+        )
+        assert fin.status_code == 200, fin.text
+        fin_data = fin.json()
+
+        assert fin_data["total_verified"] == 2  # the mutual pair (both parties) confirms
+        assert fin_data["total_spoofers"] == 0
+        record_map = {r["ble_device_id"]: r for r in fin_data["records"]}
+
+        assert record_map["6611"]["status"] == "VERIFIED_PRESENT"
+        assert record_map["6611"]["verification_method"] == "BLE_MESH"
+        assert record_map["6611"]["affinity_score"] == 1.00
+        assert "mutual desk neighbor [6612]" in record_map["6611"]["remarks"]
+
+        assert record_map["6612"]["status"] == "VERIFIED_PRESENT"
+        assert "mutual desk neighbor [6611]" in record_map["6612"]["remarks"]
+
+        assert record_map["6613"]["status"] == "ISOLATED_FLAGGED"
+        assert record_map["6613"]["verification_method"] == "NONE"
+        assert record_map["6613"]["affinity_score"] == 0.50
+        assert "without confirmed desk neighbor" in record_map["6613"]["remarks"]
+        assert "HOST" in record_map["6613"]["remarks"]  # 'GHOST' -> last-4 key
+
+
 # Verifies hygiene guards: strict status whitelists on the TEACHER-OVERWRITE
 # request models (lowercase aliases normalize; unknown statuses 422 before any
 # write), while BLEAuditRecordItem stays permissive — it is the from_attributes

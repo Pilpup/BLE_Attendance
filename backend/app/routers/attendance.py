@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import logging
 import os
 import uuid
@@ -657,6 +658,19 @@ async def finalize_attendance_session(
         else:
             logger.warning(f"[Layer 4] Unreciprocated ultrasonic claim ignored: {claim_key} -> {claim_peer}")
 
+    # Leniency seal: a staged student earns VERIFIED_PRESENT only with at least
+    # one RECIPROCATED BLE neighbor (mirrors the audit engine's direct-mutual
+    # rule). A self-reported neighbor list alone can never verify anyone.
+    drain_reports: dict[str, set[str]] = {}
+    for rec_item in payload.records:
+        drain_reports.setdefault(rec_item.ble_device_id.upper(), set()).update(
+            n.strip().upper() for n in (rec_item.reported_neighbors or [])
+        )
+    for staged_key_extra, staged_sub_extra in staged.items():
+        drain_reports.setdefault(staged_key_extra.upper(), set()).update(
+            n.strip().upper() for n in staged_sub_extra.reported_neighbors
+        )
+
     for staged_key, staged_sub in staged.items():
         dev_upper = staged_key.upper()
         if dev_upper in seen_devices or (staged_sub.student_id and staged_sub.student_id in seen_students):
@@ -686,20 +700,39 @@ async def finalize_attendance_session(
             )
             continue
 
-        is_ver = bool(staged_sub.reported_neighbors)
+        confirmed_peers = [
+            peer.strip().upper()
+            for peer in staged_sub.reported_neighbors
+            if dev_upper in drain_reports.get(peer.strip().upper(), set())
+        ]
+        is_ver = bool(confirmed_peers)
         if is_ver:
             verified_count += 1
+            rec_status = "VERIFIED_PRESENT"
+            verif_method = "BLE_MESH"
+            rec_affinity = 1.00
+            rec_remarks = f"Cloud staged check-in confirmed via mutual desk neighbor [{', '.join(confirmed_peers)}]"
+        elif staged_sub.reported_neighbors:
+            rec_status = "ISOLATED_FLAGGED"
+            verif_method = "NONE"
+            rec_affinity = 0.50
+            rec_remarks = f"Cloud staged check-in without confirmed desk neighbor (Reported: [{', '.join(staged_sub.reported_neighbors)}]) - manual review recommended"
+        else:
+            rec_status = "ISOLATED_FLAGGED"
+            verif_method = "NONE"
+            rec_affinity = 0.00
+            rec_remarks = "Zero desk neighbors detected (isolated seat)"
         records_to_create.append(
             AttendanceRecord(
                 id=uuid.uuid4(),
                 session_id=session_obj.id,
                 student_id=staged_sub.student_id,
                 ble_device_id=dev_upper,
-                status="VERIFIED_PRESENT" if is_ver else "ISOLATED_FLAGGED",
-                verification_method="BLE_MESH" if is_ver else "NONE",
-                affinity_score=1.00 if is_ver else 0.00,
+                status=rec_status,
+                verification_method=verif_method,
+                affinity_score=rec_affinity,
                 reported_neighbors=staged_sub.reported_neighbors,
-                remarks="Cloud staged check-in merged at finalization",
+                remarks=rec_remarks,
                 recorded_at=datetime.now(timezone.utc),
             )
         )
@@ -841,6 +874,23 @@ async def submit_student_neighbors(
 
     normalized_neighbors = [n[-4:].upper() if len(n) >= 4 else n.upper() for n in payload.neighbors]
     normalized_close = [n[-4:].upper() if len(n) >= 4 else n.upper() for n in (payload.close_neighbors or [])]
+
+    # Observability-only: payload fingerprint, logged BEFORE the face/ultrasonic
+    # gates so even rejected attempts are tracked. If the same fingerprint ever
+    # appears twice near-simultaneously (seen once from 10.26.34.133), that is a
+    # network-stack retry duplicating one check-in — not two real students.
+    fingerprint_material = "|".join([
+        student_key,
+        hashlib.sha256((payload.session_salt or "").encode()).hexdigest()[:8],
+        ",".join(sorted(normalized_neighbors)),
+        f"ultra:{1 if payload.ultrasonic_proximity_detected else 0}:{(payload.co_located_peer_id or '-').upper()}",
+        f"facebytes:{len(payload.face_image_base64) if payload.face_image_base64 else 0}",
+    ])
+    logger.info(
+        f"[Check-In Fingerprint] Session: {target_session_id} Key: {student_key} "
+        f"IP: {request.client.host if request.client else 'unknown'} "
+        f"FP: {hashlib.sha256(fingerprint_material.encode()).hexdigest()[:12]}"
+    )
 
     # Face deduplication check (Layer 3: Camera Face Biometric Deduplication)
     face_check_result = None
