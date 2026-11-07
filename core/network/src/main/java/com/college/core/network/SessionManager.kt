@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.college.core.model.Role
 import com.college.core.model.SessionState
 import com.college.core.model.User
 import com.google.gson.Gson
@@ -27,6 +28,43 @@ class SessionManager {
 
     val currentUser: User?
         get() = (_state.value as? SessionState.Authenticated)?.user
+
+    // DEVELOPER-ONLY acting-role preview. When set, `currentUser` reports the
+    // real account wearing the acting role; server authorization is untouched
+    // (the token's account keeps its own server-side checks). Purely a local
+    // lens for previewing student/teacher/staff app flows end to end.
+    private var actingRoleValue: Role? = null
+
+    val actingRole: Role? get() = actingRoleValue
+
+    // The signed-in account as the backend returned it, unmasked by any acting role
+    val realUser: User?
+        get() {
+            val json = prefs?.getString(KEY_USER, null) ?: return null
+            return try {
+                gson.fromJson(json, User::class.java)
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+    // Applies the acting-role lens: masks only the roles, keeping identity fields
+    private fun applyActingLens(real: User): User {
+        val acting = actingRoleValue
+        if (acting == null || real.roles.contains(acting)) return real
+        return real.copy(roles = setOf(acting))
+    }
+
+    fun setActingRole(role: Role?) {
+        actingRoleValue = role
+        prefs?.edit()?.putString(KEY_ACTING_ROLE, role?.name)?.apply()
+        val authenticated = _state.value as? SessionState.Authenticated ?: return
+        val real = realUser ?: return
+        _state.value = SessionState.Authenticated(
+            user = applyActingLens(real),
+            token = authenticated.token
+        )
+    }
 
     fun init(context: Context) {
         if (prefs == null) {
@@ -64,8 +102,12 @@ class SessionManager {
         if (!token.isNullOrBlank() && !userJson.isNullOrBlank()) {
             try {
                 val user = gson.fromJson(userJson, User::class.java)
+                // Acting-role lens survives process death for continuity; a fresh
+                // login always starts unmasked (startSession clears it)
+                actingRoleValue = sp.getString(KEY_ACTING_ROLE, null)
+                    ?.let { name -> Role.entries.firstOrNull { it.name == name } }
                 if (user != null && user.id.isNotBlank()) {
-                    _state.value = SessionState.Authenticated(user = user, token = token)
+                    _state.value = SessionState.Authenticated(user = applyActingLens(user), token = token)
                 }
             } catch (_: Exception) {
                 sp.edit().clear().apply()
@@ -74,10 +116,13 @@ class SessionManager {
     }
 
     fun startSession(user: User, token: String) {
+        // Fresh login always presents the real role; clear any leftover acting mask
+        actingRoleValue = null
         _state.value = SessionState.Authenticated(user = user, token = token)
         prefs?.edit()
             ?.putString(KEY_TOKEN, token)
             ?.putString(KEY_USER, gson.toJson(user))
+            ?.putString(KEY_ACTING_ROLE, null)
             ?.apply()
     }
 
@@ -95,6 +140,7 @@ class SessionManager {
         private const val FALLBACK_PREFS_NAME = "college_auth_fallback_prefs"
         private const val KEY_TOKEN = "auth_session_token"
         private const val KEY_USER = "auth_session_user_json"
+        private const val KEY_ACTING_ROLE = "auth_session_acting_role"
 
         val default: SessionManager by lazy { SessionManager() }
     }

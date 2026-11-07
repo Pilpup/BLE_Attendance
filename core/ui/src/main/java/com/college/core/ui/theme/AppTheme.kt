@@ -1,6 +1,7 @@
 package com.college.core.ui.theme
 
 import android.app.Activity
+import android.graphics.drawable.ColorDrawable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
@@ -121,6 +122,11 @@ fun CollegeAppTheme(
             val window = (view.context as? Activity)?.window ?: return@SideEffect
             window.statusBarColor = colors.background.toArgb()
             window.navigationBarColor = colors.background.toArgb()
+            // Match the window background to the app theme so IME
+            // adjustResize transitions (keyboard open/close) never reveal a background color flash.
+            val backgroundDrawable = ColorDrawable(colors.background.toArgb())
+            window.setBackgroundDrawable(backgroundDrawable)
+            window.decorView.setBackgroundColor(colors.background.toArgb())
             WindowCompat.getInsetsController(window, view).apply {
                 isAppearanceLightStatusBars = !darkTheme
                 isAppearanceLightNavigationBars = !darkTheme

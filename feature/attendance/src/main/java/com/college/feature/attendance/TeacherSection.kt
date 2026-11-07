@@ -578,9 +578,9 @@ internal fun TeacherSection(
 
             Spacer(modifier = Modifier.weight(1f))
 
-            // Stop session button in solar orange with white text
+            // Cancel session button in solar orange
             Button(
-                onClick = onStopSession,
+                onClick = onResetSession,
                 enabled = !isCancelling,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -592,26 +592,10 @@ internal fun TeacherSection(
                 )
             ) {
                 Text(
-                    text = "Stop",
+                    text = if (isCancelling) "Cancelling…" else "Cancel",
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color.White
-                )
-            }
-
-            // Cancel session button — aborts without finalizing; student records retained server-side
-            TextButton(
-                onClick = onResetSession,
-                enabled = !isCancelling,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(40.dp)
-            ) {
-                Text(
-                    text = if (isCancelling) "Cancelling…" else "Cancel Session",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (isCancelling) AppTheme.colors.textMuted else AppTheme.colors.dangerRed
                 )
             }
         }
@@ -1532,117 +1516,6 @@ private fun OlderSessionsFilterDialog(
     )
 }
 
-// Search dialog for past attendance sessions matching home screen dialog design
-@Composable
-private fun OlderSessionsSearchDialog(
-    pastSessions: List<AttendanceSessionResponse>,
-    initialQuery: String,
-    onSelectSession: (AttendanceSessionResponse) -> Unit,
-    onApplySearch: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var searchQuery by remember { mutableStateOf(initialQuery) }
-
-    val filteredSessions = remember(searchQuery, pastSessions) {
-        if (searchQuery.isBlank()) pastSessions
-        else pastSessions.filter { session ->
-            val formattedDate = formatSessionDateTime(session.startedAt)
-            val details = getSessionAcademicDetails(session)
-            formattedDate.contains(searchQuery, ignoreCase = true) ||
-                (session.startedAt?.contains(searchQuery, ignoreCase = true) == true) ||
-                details.subjectName.contains(searchQuery, ignoreCase = true) ||
-                details.courseProgram.contains(searchQuery, ignoreCase = true) ||
-                details.branch.contains(searchQuery, ignoreCase = true) ||
-                details.topicCovered.contains(searchQuery, ignoreCase = true)
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = AppTheme.colors.surface,
-        titleContentColor = AppTheme.colors.textPrimary,
-        textContentColor = AppTheme.colors.textPrimary,
-        shape = RoundedCornerShape(24.dp),
-        title = {
-            AppTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                placeholder = { Text("Search by date, subject...") },
-                leadingIcon = {
-                    Icon(imageVector = Icons.Default.Search, contentDescription = "Search", tint = AppTheme.colors.textSecondary)
-                },
-                singleLine = true,
-                colors = appTextFieldColors(),
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier.fillMaxWidth()
-            )
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 280.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                if (filteredSessions.isEmpty()) {
-                    Text(
-                        text = "No matching sessions found",
-                        fontSize = 13.sp,
-                        color = AppTheme.colors.textSecondary,
-                        modifier = Modifier.padding(vertical = 12.dp)
-                    )
-                } else {
-                    filteredSessions.forEach { session ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable {
-                                    onSelectSession(session)
-                                }
-                                .padding(horizontal = 8.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = formatSessionDateTime(session.startedAt),
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = AppTheme.colors.textPrimary
-                            )
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                contentDescription = null,
-                                tint = AppTheme.colors.textMuted.copy(alpha = 0.6f),
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    }
-                }
-            }
-        },
-        dismissButton = {
-            if (searchQuery.isNotBlank()) {
-                TextButton(onClick = {
-                    searchQuery = ""
-                    onApplySearch("")
-                }) {
-                    Text("Clear", color = AppTheme.colors.textSecondary)
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                onApplySearch(searchQuery)
-                onDismiss()
-            }) {
-                Text(if (searchQuery.isNotBlank()) "Filter List" else "Close", color = AppTheme.colors.primaryPurple)
-            }
-        }
-    )
-}
-
 // Past attendance session list sorted by latest first with top filters and bottom search
 @Composable
 private fun OlderSessionsView(
@@ -1659,7 +1532,6 @@ private fun OlderSessionsView(
     var filterClassType by remember { mutableStateOf<String?>(null) }
     var filterSemester by remember { mutableStateOf<String?>(null) }
     var searchQuery by remember { mutableStateOf("") }
-    var showSearchDialog by remember { mutableStateOf(false) }
 
     val activeFilterCount = (if (filterCourse != null) 1 else 0) +
         (if (filterClassType != null) 1 else 0) +
@@ -1876,11 +1748,12 @@ private fun OlderSessionsView(
 
             // Floating search pill pinned at bottom
             AppSearchPill(
-                placeholder = if (searchQuery.isBlank()) "Search" else searchQuery,
-                onSearchClick = { showSearchDialog = true },
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                placeholder = "Search sessions...",
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(bottom = 12.dp)
+                    .padding(horizontal = 16.dp)
             )
         }
     }
@@ -1896,22 +1769,6 @@ private fun OlderSessionsView(
                 filterSemester = sem
             },
             onDismiss = { showFilterDialog = false }
-        )
-    }
-
-    if (showSearchDialog) {
-        OlderSessionsSearchDialog(
-            pastSessions = sortedSessions,
-            initialQuery = searchQuery,
-            onSelectSession = { session ->
-                showSearchDialog = false
-                onSelectSession(session)
-            },
-            onApplySearch = { query ->
-                searchQuery = query
-                showSearchDialog = false
-            },
-            onDismiss = { showSearchDialog = false }
         )
     }
 }

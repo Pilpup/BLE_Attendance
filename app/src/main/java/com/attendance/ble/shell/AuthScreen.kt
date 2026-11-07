@@ -2,6 +2,7 @@ package com.attendance.ble.shell
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -24,8 +26,10 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -39,11 +43,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -68,6 +74,7 @@ private enum class AuthStep {
 }
 
 // Dedicated full-screen authentication interface
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AuthScreen(
     onBack: () -> Unit,
@@ -620,25 +627,17 @@ fun AuthScreen(
                         verticalArrangement = Arrangement.spacedBy(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        AppTextField(
+                        // Centered 6-digit verification code input
+                        val otpInteractionSource = remember { MutableInteractionSource() }
+                        BasicTextField(
                             value = otpInput,
                             onValueChange = {
                                 if (it.length <= 6 && it.all { ch -> ch.isDigit() }) {
                                     otpInput = it
                                 }
                             },
-                            placeholder = {
-                                Text(
-                                    "• • • • • •",
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    fontSize = 22.sp,
-                                    letterSpacing = 6.sp,
-                                    color = AppTheme.colors.textSecondary.copy(alpha = 0.5f)
-                                )
-                            },
-                            singleLine = true,
-                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                            interactionSource = otpInteractionSource,
                             textStyle = TextStyle(
                                 fontSize = 24.sp,
                                 fontWeight = FontWeight.Bold,
@@ -648,8 +647,46 @@ fun AuthScreen(
                                 color = AppTheme.colors.textPrimary
                             ),
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                            colors = fieldColors,
-                            modifier = Modifier.fillMaxWidth()
+                            singleLine = true,
+                            cursorBrush = SolidColor(AppTheme.colors.primaryPurple),
+                            decorationBox = { innerTextField ->
+                                OutlinedTextFieldDefaults.DecorationBox(
+                                    value = otpInput,
+                                    innerTextField = {
+                                        Box(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            innerTextField()
+                                        }
+                                    },
+                                    placeholder = {
+                                        Text(
+                                            "• • • • • •",
+                                            textAlign = TextAlign.Center,
+                                            modifier = Modifier.fillMaxWidth(),
+                                            fontSize = 22.sp,
+                                            letterSpacing = 6.sp,
+                                            color = AppTheme.colors.textSecondary.copy(alpha = 0.5f)
+                                        )
+                                    },
+                                    visualTransformation = VisualTransformation.None,
+                                    singleLine = true,
+                                    enabled = true,
+                                    isError = false,
+                                    interactionSource = otpInteractionSource,
+                                    colors = fieldColors,
+                                    container = {
+                                        OutlinedTextFieldDefaults.ContainerBox(
+                                            enabled = true,
+                                            isError = false,
+                                            interactionSource = otpInteractionSource,
+                                            colors = fieldColors,
+                                            shape = RoundedCornerShape(12.dp)
+                                        )
+                                    }
+                                )
+                            }
                         )
 
                         // Resend timer or action

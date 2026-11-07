@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.CollegeApp" parent="@android:style/Theme.Material.NoActionBar">
+        <!-- Matches DarkColors.background (0xFF0F172A) -->
+        <item name="android:windowBackground">#0F172A</item>
+    </style>
+</resources>

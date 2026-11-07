@@ -83,6 +83,7 @@ import com.college.core.model.User
 import com.college.core.ui.components.AppCardGroup
 import com.college.core.ui.components.AppDivider
 import com.college.core.ui.components.AppHeader
+import com.college.core.ui.components.AppSearchPill
 import com.college.core.ui.components.AppTextField
 import com.college.core.ui.components.appTextFieldColors
 import com.college.core.ui.theme.AppTheme
@@ -355,94 +356,14 @@ fun LibraryScreen(
 
         // Floating search bar pinned at bottom center in Catalogue (types directly, aligns with keyboard)
         if (activeTab == LibraryTab.CATALOGUE) {
-            val keyboardController = LocalSoftwareKeyboardController.current
-            val focusRequester = remember { FocusRequester() }
-            val screenWidth = LocalConfiguration.current.screenWidthDp.dp
-            val minPillWidth = (screenWidth / 3f).coerceIn(125.dp, 200.dp)
-            val maxPillWidth = (screenWidth - 32.dp).coerceAtLeast(minPillWidth)
-
-            Surface(
-                shape = RoundedCornerShape(26.dp),
-                color = AppTheme.colors.surface,
-                border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
-                shadowElevation = if (AppTheme.colors.isDark) 0.dp else 4.dp,
+            AppSearchPill(
+                value = viewModel.searchQuery,
+                onValueChange = { viewModel.searchQuery = it },
+                placeholder = "Search",
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .padding(horizontal = 16.dp)
-                    .imePadding()
-                    .padding(bottom = 16.dp)
-                    .animateContentSize()
-                    .widthIn(min = minPillWidth, max = maxPillWidth)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) {
-                        focusRequester.requestFocus()
-                    }
-            ) {
-                Box(
-                    modifier = Modifier
-                        .height(52.dp)
-                        .padding(horizontal = 16.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = "Search",
-                            tint = AppTheme.colors.textSecondary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        BasicTextField(
-                            value = viewModel.searchQuery,
-                            onValueChange = { viewModel.searchQuery = it },
-                            modifier = Modifier
-                                .weight(1f, fill = false)
-                                .focusRequester(focusRequester),
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                            keyboardActions = KeyboardActions(onSearch = { keyboardController?.hide() }),
-                            textStyle = TextStyle(
-                                color = AppTheme.colors.textPrimary,
-                                fontSize = 15.sp,
-                                fontWeight = FontWeight.Normal
-                            ),
-                            cursorBrush = SolidColor(AppTheme.colors.primaryPurple),
-                            decorationBox = { innerTextField ->
-                                Box(contentAlignment = Alignment.CenterStart) {
-                                    if (viewModel.searchQuery.isEmpty()) {
-                                        Text(
-                                            text = "Search",
-                                            color = AppTheme.colors.textSecondary,
-                                            fontSize = 15.sp,
-                                            fontWeight = FontWeight.Normal
-                                        )
-                                    }
-                                    innerTextField()
-                                }
-                            }
-                        )
-                        if (viewModel.searchQuery.isNotEmpty()) {
-                            Spacer(modifier = Modifier.width(6.dp))
-                            IconButton(
-                                onClick = { viewModel.searchQuery = "" },
-                                modifier = Modifier.size(22.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "Clear",
-                                    tint = AppTheme.colors.textSecondary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
+            )
         }
 
         // Floating "Add Book" Pill pinned at bottom center in Staff Inventory

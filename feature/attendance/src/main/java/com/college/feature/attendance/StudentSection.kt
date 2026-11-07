@@ -49,7 +49,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableDoubleStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -108,16 +107,13 @@ internal fun StudentSection(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val faceCaptureManager = remember { PassiveFaceCaptureManager(context, lifecycleOwner) }
-    var liveFaceSharpness by remember { mutableDoubleStateOf(0.0) }
     var lastCapturedFaceBase64 by remember { mutableStateOf<String?>(null) }
 
     val permissionsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { perms ->
         if (perms[Manifest.permission.CAMERA] == true && studentPhase == StudentPhase.PROBING_NEIGHBORS) {
-            faceCaptureManager.startCapture { sharpness ->
-                liveFaceSharpness = sharpness
-            }
+            faceCaptureManager.startCapture(null)
         }
     }
 
@@ -139,14 +135,11 @@ internal fun StudentSection(
             if (missing.isNotEmpty()) {
                 permissionsLauncher.launch(missing.toTypedArray())
             } else {
-                faceCaptureManager.startCapture { sharpness ->
-                    liveFaceSharpness = sharpness
-                }
+                faceCaptureManager.startCapture(null)
             }
         }
         onDispose {
             faceCaptureManager.release()
-            liveFaceSharpness = 0.0
         }
     }
 
@@ -229,26 +222,9 @@ internal fun StudentSection(
                 letterSpacing = (-0.5).sp
             )
 
-            // Clean minimal hit counter + face readiness badge (HUD from the old capture flow)
+            // Hit counter during gameplay
             if (studentPhase == StudentPhase.PROBING_NEIGHBORS && !isGameOver) {
                 Spacer(modifier = Modifier.weight(1f))
-                Surface(
-                    shape = CircleShape,
-                    color = if (liveFaceSharpness > 40.0) AppTheme.colors.successGreenBg else AppTheme.colors.warningAmberBg,
-                    border = BorderStroke(
-                        1.dp,
-                        if (liveFaceSharpness > 40.0) AppTheme.colors.successGreen else AppTheme.colors.warningAmber
-                    ),
-                    modifier = Modifier.padding(end = 12.dp)
-                ) {
-                    Text(
-                        text = if (liveFaceSharpness > 40.0) "Face: Ready" else "Face: Position",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = if (liveFaceSharpness > 40.0) AppTheme.colors.successGreen else AppTheme.colors.warningAmber,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                    )
-                }
                 Text(
                     text = "$targetsHit / $orbTotalTargets",
                     fontSize = 15.sp,

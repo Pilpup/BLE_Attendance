@@ -111,6 +111,9 @@ fun AppNavigation(
         }
 
         Destination.LIBRARY -> if (user != null) {
+            BackHandler(enabled = true) {
+                destination = Destination.HOME
+            }
             LibraryScreen(
                 user = user,
                 onBack = { destination = Destination.HOME }

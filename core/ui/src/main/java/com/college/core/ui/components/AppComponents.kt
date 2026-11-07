@@ -1,8 +1,10 @@
 package com.college.core.ui.components
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
@@ -16,9 +18,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,6 +33,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -53,6 +58,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -61,12 +68,16 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.Dp
@@ -79,6 +90,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
+import com.college.core.model.Role
+import com.college.core.model.User
 import com.college.core.ui.theme.AppTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -177,6 +190,164 @@ fun AppProfileCard(
                         tint = Color.White,
                         modifier = Modifier.size(24.dp)
                     )
+                }
+            }
+        }
+    }
+}
+
+// Pokemon 2D Game inspired Trainer Card profile component
+@Composable
+fun PokemonTrainerCard(
+    user: User?,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val gymBadgeColors = listOf(
+        Color(0xFF64748B), // 1: Boulder / Slate
+        Color(0xFF0284C7), // 2: Cascade / Blue
+        Color(0xFFF59E0B), // 3: Thunder / Amber
+        Color(0xFF10B981), // 4: Rainbow / Green
+        Color(0xFFEC4899), // 5: Soul / Pink
+        Color(0xFFF97316), // 6: Marsh / Orange
+        Color(0xFFEF4444), // 7: Volcano / Red
+        Color(0xFF8B5CF6)  // 8: Earth / Violet
+    )
+
+    val currentSem = user?.semester ?: if (user != null) 4 else 0
+    val primaryRole = user?.primaryRole
+    val roleTitle = when {
+        user == null -> null
+        primaryRole != null -> primaryRole.name.uppercase()
+        user.roles.isNotEmpty() -> user.roles.first().name.uppercase()
+        else -> "STUDENT"
+    }
+    val avatarColor = when (primaryRole) {
+        Role.TEACHER -> AppTheme.colors.primaryPurple
+        Role.DEVELOPER -> AppTheme.colors.warningAmber
+        Role.STAFF -> AppTheme.colors.infoBlue
+        else -> AppTheme.colors.accentOrange
+    }
+
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(20.dp),
+        color = AppTheme.colors.surface,
+        border = BorderStroke(1.5.dp, AppTheme.colors.surfaceBorder),
+        shadowElevation = if (AppTheme.colors.isDark) 0.dp else 3.dp,
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // Header: TRAINER CARD + ROLE pill (never show GUEST)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "TRAINER CARD",
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 12.sp,
+                    letterSpacing = 1.8.sp,
+                    color = AppTheme.colors.primaryPurple
+                )
+                if (!roleTitle.isNullOrBlank() && roleTitle != "GUEST") {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = avatarColor.copy(alpha = 0.15f),
+                        border = BorderStroke(1.dp, avatarColor.copy(alpha = 0.35f))
+                    ) {
+                        Text(
+                            text = roleTitle,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            color = avatarColor,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+            }
+
+            // Middle: Sprite color box + Name, Roll, Dept
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                // Sprite color block
+                Box(
+                    modifier = Modifier
+                        .size(54.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(avatarColor)
+                )
+
+                // Info lines (no labels/prefixes)
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        text = user?.name ?: "Student",
+                        fontSize = 16.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = AppTheme.colors.textPrimary
+                    )
+                    val roll = user?.rollNumber ?: user?.email
+                    if (!roll.isNullOrBlank()) {
+                        Text(
+                            text = roll,
+                            fontSize = 13.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = AppTheme.colors.textSecondary
+                        )
+                    }
+                    val dept = user?.department ?: user?.program
+                    if (!dept.isNullOrBlank()) {
+                        Text(
+                            text = dept,
+                            fontSize = 12.sp,
+                            color = AppTheme.colors.textSecondary.copy(alpha = 0.75f)
+                        )
+                    }
+                }
+            }
+
+            HorizontalDivider(color = AppTheme.colors.surfaceBorder, thickness = 1.dp)
+
+            // Gym badge dots (semesters 1 to 8 with number inside)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                (1..8).forEach { sem ->
+                    val isEarned = sem <= currentSem
+                    val badgeColor = gymBadgeColors[sem - 1]
+
+                    Box(
+                        modifier = Modifier
+                            .size(26.dp)
+                            .background(
+                                color = if (isEarned) badgeColor else AppTheme.colors.surface,
+                                shape = CircleShape
+                            )
+                            .border(
+                                width = 1.5.dp,
+                                color = if (isEarned) badgeColor else AppTheme.colors.surfaceBorder,
+                                shape = CircleShape
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "$sem",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            color = if (isEarned) Color.White else AppTheme.colors.textSecondary.copy(alpha = 0.4f)
+                        )
+                    }
                 }
             }
         }
@@ -283,40 +454,103 @@ fun AppDivider(
     )
 }
 
-// Floating search pill centered for quick actions
+// Floating interactive search pill pinned at bottom (types directly, expands, aligns with keyboard)
 @Composable
 fun AppSearchPill(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
     placeholder: String = "Search",
-    onSearchClick: () -> Unit = {},
-    modifier: Modifier = Modifier
+    focusRequester: FocusRequester = remember { FocusRequester() },
+    keyboardOptions: KeyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+    onSearch: (() -> Unit)? = null
 ) {
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
+    val minPillWidth = (screenWidth / 3f).coerceIn(125.dp, 200.dp)
+    val maxPillWidth = (screenWidth - 32.dp).coerceAtLeast(minPillWidth)
+
     Surface(
-        onClick = onSearchClick,
-        shape = RoundedCornerShape(22.dp),
-        color = AppTheme.colors.searchPillBg,
-        border = BorderStroke(1.dp, AppTheme.colors.searchPillBorder),
-        shadowElevation = if (AppTheme.colors.isDark) 0.dp else 3.dp,
+        shape = RoundedCornerShape(26.dp),
+        color = AppTheme.colors.surface,
+        border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+        shadowElevation = if (AppTheme.colors.isDark) 0.dp else 4.dp,
         modifier = modifier
+            .imePadding()
+            .padding(bottom = 16.dp)
+            .animateContentSize()
+            .widthIn(min = minPillWidth, max = maxPillWidth)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) {
+                focusRequester.requestFocus()
+            }
     ) {
-        Row(
+        Box(
             modifier = Modifier
-                .padding(horizontal = 22.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.Center
+                .height(52.dp)
+                .padding(horizontal = 16.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Icon(
-                imageVector = Icons.Default.Search,
-                contentDescription = "Search",
-                tint = AppTheme.colors.textSecondary,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = placeholder,
-                color = AppTheme.colors.textSecondary,
-                fontSize = 14.5.sp,
-                fontWeight = FontWeight.Medium
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = "Search",
+                    tint = AppTheme.colors.textSecondary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .focusRequester(focusRequester),
+                    singleLine = true,
+                    keyboardOptions = keyboardOptions,
+                    keyboardActions = KeyboardActions(onSearch = {
+                        onSearch?.invoke()
+                        keyboardController?.hide()
+                    }),
+                    textStyle = TextStyle(
+                        color = AppTheme.colors.textPrimary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Normal
+                    ),
+                    cursorBrush = SolidColor(AppTheme.colors.primaryPurple),
+                    decorationBox = { innerTextField ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (value.isEmpty()) {
+                                Text(
+                                    text = placeholder,
+                                    color = AppTheme.colors.textSecondary,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Normal
+                                )
+                            }
+                            innerTextField()
+                        }
+                    }
+                )
+                if (value.isNotEmpty()) {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    IconButton(
+                        onClick = { onValueChange("") },
+                        modifier = Modifier.size(22.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Clear",
+                            tint = AppTheme.colors.textSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
         }
     }
 }

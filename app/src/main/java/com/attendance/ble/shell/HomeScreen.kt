@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -50,6 +51,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import com.college.core.model.Role
 import com.college.core.model.User
 import com.college.core.network.SessionManager
@@ -58,8 +60,7 @@ import com.college.core.ui.components.AppCardItem
 import com.college.core.ui.components.AppDivider
 import com.college.core.ui.components.AppProfileCard
 import com.college.core.ui.components.AppSearchPill
-import com.college.core.ui.components.AppTextField
-import com.college.core.ui.components.appTextFieldColors
+import com.college.core.ui.components.PokemonTrainerCard
 import com.college.core.ui.theme.AppTheme
 import com.college.feature.attendance.AttendanceDashboardCard
 import com.college.feature.library.LibraryDashboardCard
@@ -72,14 +73,56 @@ fun HomeScreen(
 ) {
     var showAccountDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
-    var showSearchDialog by remember { mutableStateOf(false) }
+    var showDevActingDialog by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
 
-    val activeRole = user?.primaryRole ?: user?.roles?.firstOrNull() ?: Role.STUDENT
-    val activeRoleLabel = when (activeRole) {
-        Role.TEACHER -> "Teacher"
-        Role.STUDENT -> "Student"
-        Role.STAFF -> "Staff"
-        Role.DEVELOPER -> "Developer"
+    val colors = AppTheme.colors
+    val featureItems = remember(user, colors) {
+        buildList {
+            add(
+                FeatureItem("Attendance", Icons.AutoMirrored.Filled.FactCheck, colors.accentOrange) {
+                    if (user != null) onNavigate(AttendanceDashboardCard.NAV_ROUTE) else onNavigate("auth")
+                }
+            )
+            if (user?.canTakeAttendance() == true) {
+                add(
+                    FeatureItem("Older Sessions", Icons.Default.History, colors.primaryPurple) {
+                        onNavigate("${AttendanceDashboardCard.NAV_ROUTE}/older")
+                    }
+                )
+            }
+            add(
+                FeatureItem("Library", Icons.AutoMirrored.Filled.MenuBook, colors.primaryPurple) {
+                    if (user != null) onNavigate(LibraryDashboardCard.NAV_ROUTE) else onNavigate("auth")
+                }
+            )
+            if (SessionManager.default.realUser?.isDeveloper() == true) {
+                add(
+                    FeatureItem("Switch Role", Icons.Default.SwapHoriz, colors.successGreen) {
+                        showDevActingDialog = true
+                    }
+                )
+            }
+            add(
+                FeatureItem("Account", Icons.Default.Person, colors.warningAmber) {
+                    if (user != null) {
+                        showAccountDialog = true
+                    } else {
+                        onNavigate("auth")
+                    }
+                }
+            )
+        }
+    }
+
+    val visibleFeatures = remember(searchQuery, featureItems) {
+        if (searchQuery.isBlank()) {
+            featureItems.filter { it.title != "Account" }
+        } else {
+            featureItems.filter {
+                it.title.contains(searchQuery, ignoreCase = true)
+            }
+        }
     }
 
     BoxWithConstraints(
@@ -95,7 +138,8 @@ fun HomeScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 16.dp),
+                .padding(horizontal = 16.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             // Viewing area displaying College Hub title
@@ -114,7 +158,15 @@ fun HomeScreen(
                 )
             }
 
-            // User account profile card opening auth screen or details modal
+            val activeRole = user?.primaryRole ?: user?.roles?.firstOrNull() ?: Role.STUDENT
+            val activeRoleLabel = when (activeRole) {
+                Role.TEACHER -> "Teacher"
+                Role.STUDENT -> "Student"
+                Role.STAFF -> "Staff"
+                Role.DEVELOPER -> "Developer"
+            }
+
+            // User account profile card opening account modal when authenticated or auth screen when logged out
             AppProfileCard(
                 name = user?.name ?: "Account",
                 subtitle = if (user != null) {
@@ -133,51 +185,33 @@ fun HomeScreen(
                 }
             )
 
-            // Campus features card group
+            // Campus features card group (filters directly inside this island)
             AppCardGroup {
-                AppCardItem(
-                    icon = Icons.AutoMirrored.Filled.FactCheck,
-                    iconTint = Color.White,
-                    iconBg = AppTheme.colors.accentOrange,
-                    title = "Attendance",
-                    onClick = {
-                        if (user != null) {
-                            onNavigate(AttendanceDashboardCard.NAV_ROUTE)
-                        } else {
-                            onNavigate("auth")
-                        }
+                if (visibleFeatures.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 14.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "No matching features",
+                            fontSize = 14.sp,
+                            color = AppTheme.colors.textSecondary
+                        )
                     }
-                )
-
-                if (user?.canTakeAttendance() == true) {
-                    AppDivider()
-
-                    AppCardItem(
-                        icon = Icons.Default.History,
-                        iconTint = Color.White,
-                        iconBg = AppTheme.colors.primaryPurple,
-                        title = "Older Sessions",
-                        onClick = {
-                            onNavigate("${AttendanceDashboardCard.NAV_ROUTE}/older")
-                        }
-                    )
+                } else {
+                    visibleFeatures.forEachIndexed { index, item ->
+                        if (index > 0) AppDivider()
+                        AppCardItem(
+                            icon = item.icon,
+                            iconTint = Color.White,
+                            iconBg = item.iconBg,
+                            title = item.title,
+                            onClick = item.onClick
+                        )
+                    }
                 }
-
-                AppDivider()
-
-                AppCardItem(
-                    icon = Icons.AutoMirrored.Filled.MenuBook,
-                    iconTint = Color.White,
-                    iconBg = AppTheme.colors.primaryPurple,
-                    title = "Library",
-                    onClick = {
-                        if (user != null) {
-                            onNavigate(LibraryDashboardCard.NAV_ROUTE)
-                        } else {
-                            onNavigate("auth")
-                        }
-                    }
-                )
             }
 
             // Application information group
@@ -187,7 +221,6 @@ fun HomeScreen(
                     iconTint = Color.White,
                     iconBg = Color(0xFF64748B),
                     title = "About",
-                    subtitle = "Version 2.0",
                     onClick = { showAboutDialog = true }
                 )
             }
@@ -198,19 +231,28 @@ fun HomeScreen(
 
         // Floating search pill pinned at bottom
         AppSearchPill(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
             placeholder = "Search",
-            onSearchClick = { showSearchDialog = true },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 12.dp)
+                .padding(horizontal = 16.dp)
         )
     }
 
     // Modal dialogs
-    if (showAccountDialog && user != null) {
-        UserDetailsDialog(
+    if (showAccountDialog) {
+        PokemonTrainerCardDialog(
             user = user,
-            onDismiss = { showAccountDialog = false }
+            onDismiss = { showAccountDialog = false },
+            onNavigateAuth = {
+                showAccountDialog = false
+                onNavigate("auth")
+            },
+            onSignOut = {
+                SessionManager.default.endSession()
+                showAccountDialog = false
+            }
         )
     }
 
@@ -220,152 +262,55 @@ fun HomeScreen(
         )
     }
 
-    if (showSearchDialog) {
-        SearchDialog(
-            user = user,
-            onNavigate = { route ->
-                showSearchDialog = false
-                onNavigate(route)
-            },
-            onOpenAccount = {
-                showSearchDialog = false
-                if (user != null) {
-                    showAccountDialog = true
-                } else {
-                    onNavigate("auth")
-                }
-            },
-            onOpenAbout = {
-                showSearchDialog = false
-                showAboutDialog = true
-            },
-            onDismiss = { showSearchDialog = false }
+    if (showDevActingDialog) {
+        DevActingDialog(
+            onDismiss = { showDevActingDialog = false }
         )
     }
 }
 
-// User details dialog showing profile data and sign out button
+// Pokemon 2D Game inspired Trainer Card modal popup
 @Composable
-private fun UserDetailsDialog(
-    user: User,
-    onDismiss: () -> Unit
+private fun PokemonTrainerCardDialog(
+    user: User?,
+    onDismiss: () -> Unit,
+    onNavigateAuth: () -> Unit,
+    onSignOut: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = AppTheme.colors.surface,
-        titleContentColor = AppTheme.colors.textPrimary,
-        textContentColor = AppTheme.colors.textPrimary,
-        shape = RoundedCornerShape(24.dp),
-        title = {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .background(AppTheme.colors.accentOrange, CircleShape),
-                    contentAlignment = Alignment.Center
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            PokemonTrainerCard(
+                user = user,
+                onClick = onDismiss
+            )
+
+            if (user != null) {
+                Button(
+                    onClick = onSignOut,
+                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.dangerRed),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = user.name.take(1).uppercase(),
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 20.sp
-                    )
+                    Text("Sign Out", color = Color.White, fontWeight = FontWeight.SemiBold)
                 }
-                Column {
-                    Text(
-                        text = user.name,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 17.sp,
-                        color = AppTheme.colors.textPrimary
-                    )
-                    Text(
-                        text = user.email,
-                        fontSize = 12.sp,
-                        color = AppTheme.colors.textSecondary
-                    )
+            } else {
+                Button(
+                    onClick = onNavigateAuth,
+                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.primaryPurple),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Sign In", color = Color.White, fontWeight = FontWeight.SemiBold)
                 }
-            }
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                HorizontalDivider(color = AppTheme.colors.divider)
-
-                Text(
-                    text = "ACTIVE ROLES",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = AppTheme.colors.textSecondary
-                )
-
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    user.roles.forEach { role ->
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = roleBadgeBg(role)
-                        ) {
-                            Text(
-                                text = role.name,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = roleBadgeColor(role),
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-                }
-
-                // Academic details
-                if (!user.rollNumber.isNullOrBlank() || !user.department.isNullOrBlank() || !user.year.isNullOrBlank()) {
-                    HorizontalDivider(color = AppTheme.colors.divider)
-
-                    Text(
-                        text = "ACADEMIC DETAILS",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = AppTheme.colors.textSecondary
-                    )
-
-                    user.program?.let {
-                        Text(text = "Course: $it", fontSize = 13.sp, color = AppTheme.colors.textPrimary)
-                    }
-                    user.rollNumber?.let {
-                        Text(text = "ID / Roll No: $it", fontSize = 13.sp, color = AppTheme.colors.textPrimary)
-                    }
-                    user.department?.let {
-                        Text(text = "Branch: $it", fontSize = 13.sp, color = AppTheme.colors.textPrimary)
-                    }
-                    user.semester?.let {
-                        Text(text = "Semester: $it", fontSize = 13.sp, color = AppTheme.colors.textPrimary)
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    SessionManager.default.endSession()
-                    onDismiss()
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.dangerRed),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text("Sign Out", color = Color.White, fontWeight = FontWeight.SemiBold)
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Close", color = AppTheme.colors.textSecondary)
             }
         }
-    )
+    }
 }
 
 // Application information modal
@@ -425,167 +370,81 @@ private fun AboutDialog(
     )
 }
 
-// Search dialog for quick navigation across features
+// DEVELOPER-only acting-role selector: wears a role on the client lens so
+// developer accounts can preview student, teacher and staff flows end to end.
+// Server-side sees the real account (DEVELOPER clears require_* everywhere),
+// so no student data holes open — this is purely a UI lens.
 @Composable
-private fun SearchDialog(
-    user: User?,
-    onNavigate: (String) -> Unit,
-    onOpenAccount: () -> Unit,
-    onOpenAbout: () -> Unit,
-    onDismiss: () -> Unit
-) {
-    var searchQuery by remember { mutableStateOf("") }
-
+private fun DevActingDialog(onDismiss: () -> Unit) {
     val colors = AppTheme.colors
-    val allActions = remember(user, colors) {
-        buildList {
-            add(
-                SearchAction("Attendance", "Mark attendance and view session records", Icons.AutoMirrored.Filled.FactCheck, colors.accentOrange) {
-                    if (user != null) onNavigate(AttendanceDashboardCard.NAV_ROUTE) else onOpenAccount()
-                }
-            )
-            if (user?.canTakeAttendance() == true) {
-                add(
-                    SearchAction("Older Sessions", "View past attendance records", Icons.Default.History, colors.primaryPurple) {
-                        onNavigate("${AttendanceDashboardCard.NAV_ROUTE}/older")
-                    }
-                )
-            }
-            add(
-                SearchAction("Library", "Book loans and library catalog", Icons.AutoMirrored.Filled.MenuBook, colors.primaryPurple) {
-                    if (user != null) onNavigate(LibraryDashboardCard.NAV_ROUTE) else onOpenAccount()
-                }
-            )
-            add(
-                SearchAction("Account Profile", if (user != null) "View account details and roles" else "Sign in or create profile", Icons.Default.Person, colors.warningAmber) {
-                    onOpenAccount()
-                }
-            )
-            add(
-                SearchAction("About", "Application version and details", Icons.Default.Info, colors.primaryPurple) {
-                    onOpenAbout()
-                }
-            )
-        }
-    }
-
-    val filteredActions = remember(searchQuery, allActions) {
-        if (searchQuery.isBlank()) allActions
-        else allActions.filter {
-            it.title.contains(searchQuery, ignoreCase = true) || it.subtitle.contains(searchQuery, ignoreCase = true)
-        }
-    }
-
+    val acting = SessionManager.default.actingRole
+    val real = SessionManager.default.realUser
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = AppTheme.colors.surface,
-        titleContentColor = AppTheme.colors.textPrimary,
-        textContentColor = AppTheme.colors.textPrimary,
+        containerColor = colors.surface,
+        titleContentColor = colors.textPrimary,
+        textContentColor = colors.textPrimary,
         shape = RoundedCornerShape(24.dp),
-        title = {
-            AppTextField(
-                value = searchQuery,
-                onValueChange = { searchQuery = it },
-                placeholder = { Text("Search...") },
-                leadingIcon = {
-                    Icon(imageVector = Icons.Default.Search, contentDescription = "Search", tint = AppTheme.colors.textSecondary)
-                },
-                singleLine = true,
-                colors = appTextFieldColors(),
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier.fillMaxWidth()
-            )
-        },
+        title = { Text("Dev: act as role") },
         text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 280.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                if (filteredActions.isEmpty()) {
-                    Text(
-                        text = "No matching features found",
-                        fontSize = 13.sp,
-                        color = AppTheme.colors.textSecondary,
-                        modifier = Modifier.padding(vertical = 12.dp)
-                    )
-                } else {
-                    filteredActions.forEach { action ->
+            Column {
+                Text(
+                    "Local preview only — the server continues to authorize your real DEVELOPER account. A fresh login always presents the real role.",
+                    fontSize = 11.sp,
+                    color = colors.textSecondary
+                )
+                Spacer(Modifier.height(10.dp))
+                listOf(Role.STUDENT, Role.TEACHER, Role.STAFF, Role.DEVELOPER).forEach { role ->
+                    val isActive = acting == role
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 3.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable {
+                                SessionManager.default.setActingRole(role)
+                                onDismiss()
+                            },
+                        color = if (isActive) colors.primaryPurpleBg else colors.surface,
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable { action.onClick() }
-                                .padding(horizontal = 8.dp, vertical = 10.dp),
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .background(action.color.copy(alpha = 0.15f), CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = action.icon,
-                                    contentDescription = action.title,
-                                    tint = action.color,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = action.title,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = AppTheme.colors.textPrimary
-                                )
-                                Text(
-                                    text = action.subtitle,
-                                    fontSize = 11.sp,
-                                    color = AppTheme.colors.textSecondary
-                                )
-                            }
+                            val label = role.name.lowercase().replaceFirstChar { it.uppercase() }
+                            Text(
+                                if (isActive) "Acting: $label ✓" else "Act as $label",
+                                fontSize = 14.sp,
+                                color = if (isActive) colors.primaryPurple else colors.textPrimary
+                            )
                         }
                     }
                 }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Real account: ${real?.primaryRole?.name?.lowercase()?.replaceFirstChar { it.uppercase() } ?: "unknown"}",
+                    fontSize = 11.sp,
+                    color = colors.textSecondary
+                )
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Close", color = AppTheme.colors.textSecondary)
-            }
+            TextButton(onClick = {
+                SessionManager.default.setActingRole(null)
+                onDismiss()
+            }) { Text("Back to real role") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
         }
     )
 }
 
-// Data holder for searchable app action items
-private data class SearchAction(
+// Feature item for the campus features island
+private data class FeatureItem(
     val title: String,
-    val subtitle: String,
     val icon: ImageVector,
-    val color: Color,
+    val iconBg: Color,
     val onClick: () -> Unit
 )
-
-// Active role badge text color
-@Composable
-@ReadOnlyComposable
-private fun roleBadgeColor(role: Role): Color = when (role) {
-    Role.TEACHER -> AppTheme.colors.primaryPurple
-    Role.STUDENT -> AppTheme.colors.accentOrange
-    Role.STAFF -> AppTheme.colors.infoBlue
-    Role.DEVELOPER -> AppTheme.colors.warningAmber
-}
-
-// Active role badge background container color
-@Composable
-@ReadOnlyComposable
-private fun roleBadgeBg(role: Role): Color = when (role) {
-    Role.TEACHER -> AppTheme.colors.primaryPurpleBg
-    Role.STUDENT -> AppTheme.colors.accentOrangeBg
-    Role.STAFF -> AppTheme.colors.infoBlueBg
-    Role.DEVELOPER -> AppTheme.colors.warningAmberBg
-}
