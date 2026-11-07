@@ -862,6 +862,76 @@ async def _register_battery_student(client, session_factory) -> str:
     return verify_res.json()["access_token"]
 
 
+# Registers a TEACHER account (faculty code gated) and returns an access token
+async def _register_test_teacher(client, session_factory, name: str, email: str) -> str:
+    import uuid as _uuid
+    from sqlalchemy import select
+
+    from app.models.attendance import EmailOTP
+
+    res = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "name": name,
+            "email": email,
+            "password": "Password123!",
+            "role": "TEACHER",
+            "roll_number": f"EMP{_uuid.uuid4().hex[:5].upper()}",
+            "department": "CSE",
+            "faculty_code": settings.FACULTY_SIGNUP_SECRET,
+        },
+    )
+    assert res.status_code == 200, res.text
+    async with session_factory() as s:
+        otp_rec = (
+            await s.execute(
+                select(EmailOTP).where(EmailOTP.email == email, EmailOTP.purpose == "REGISTER")
+            )
+        ).scalars().first()
+    verify_res = await client.post(
+        "/api/v1/auth/register/verify-otp",
+        json={"email": email, "otp_code": otp_rec.otp_code},
+    )
+    assert verify_res.status_code == 201, verify_res.text
+    return verify_res.json()["access_token"]
+
+
+# Registers a STUDENT account with a DETERMINISTIC roll so the audit's
+# last-4 device keys are stable and pairable across submissions
+async def _register_roll_student(client, session_factory, name: str, email: str, roll: str) -> str:
+    from sqlalchemy import select
+
+    from app.models.attendance import EmailOTP
+
+    res = await client.post(
+        "/api/v1/auth/register",
+        json={
+            "name": name,
+            "email": email,
+            "password": "Password123!",
+            "role": "STUDENT",
+            "roll_number": roll,
+            "department": "CSE",
+            "program": "B.Tech",
+            "semester": 6,
+            "section": "A",
+        },
+    )
+    assert res.status_code == 200, res.text
+    async with session_factory() as s:
+        otp_rec = (
+            await s.execute(
+                select(EmailOTP).where(EmailOTP.email == email, EmailOTP.purpose == "REGISTER")
+            )
+        ).scalars().first()
+    verify_res = await client.post(
+        "/api/v1/auth/register/verify-otp",
+        json={"email": email, "otp_code": otp_rec.otp_code},
+    )
+    assert verify_res.status_code == 201, verify_res.text
+    return verify_res.json()["access_token"]
+
+
 # Verifies debug session auto-provisioning and duplicate face detection via API endpoint
 @pytest.mark.anyio
 async def test_debug_session_auto_provision_and_duplicate_rejection():
@@ -926,9 +996,162 @@ async def test_debug_session_auto_provision_and_duplicate_rejection():
         assert "Biometric proxy rejected" in res2.json()["detail"]
 
 
-# Verifies Layer 4: Ultrasonic Proximity Handshake proxy rejection
+# Verifies Layer 4 M3-lite: ultrasonic desk claims are DEFERRED, not vandalized.
+# A RECIPROCATED pair (both students claim each other) is materialized into
+# CO_LOCATED_SAME_DESK_PROXY rows for BOTH parties at finalize; an unreciprocated
+# claim is ignored; a post-finalize (grace) claim can no longer be evaluated and
+# never harms the straggler's record.
 @pytest.mark.anyio
-async def test_ultrasonic_proximity_rejection():
+async def test_ultrasonic_proximity_mutual_pair_materialization():
+    import uuid
+
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import AttendanceRecord, Base
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    pair_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with pair_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_teacher = await _register_test_teacher(client, pair_db, "Prof. Desk Pair", "desk.pair@univ.edu")
+        teacher_headers = {"Authorization": f"Bearer {tok_teacher}"}
+        tok_stud1 = await _register_roll_student(client, pair_db, "Pair Alpha", "pair.alpha1@univ.edu", "22B4451")
+        tok_stud2 = await _register_roll_student(client, pair_db, "Pair Beta", "pair.beta2@univ.edu", "22B4452")
+        tok_stud3 = await _register_roll_student(client, pair_db, "Pair Gamma", "pair.gamma3@univ.edu", "22B4453")
+        tok_stud4 = await _register_roll_student(client, pair_db, "Pair Delta", "pair.delta4@univ.edu", "22B4454")
+
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers=teacher_headers,
+            json={"session_token": "M3P1", "session_salt": "P3M0", "total_enrolled": 5},
+        )
+        assert s_res.status_code == 201
+        session_id = s_res.json()["id"]
+        session_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
+
+        # Reciprocated desk mates: both claim the < 20 cm ultrasonic handshake
+        res1 = await client.post(
+            session_url,
+            headers={"Authorization": f"Bearer {tok_stud1}"},
+            json={
+                "student_id": "4451",
+                "neighbors": ["4452"],
+                "session_salt": "P3M0",
+                "ultrasonic_proximity_detected": True,
+                "co_located_peer_id": "4452",
+            },
+        )
+        assert res1.status_code == 200, res1.text  # staged normally — no instant 403
+
+        res2 = await client.post(
+            session_url,
+            headers={"Authorization": f"Bearer {tok_stud2}"},
+            json={
+                "student_id": "4452",
+                "neighbors": ["4451", "4453"],
+                "session_salt": "P3M0",
+                "ultrasonic_proximity_detected": True,
+                "co_located_peer_id": "4451",
+            },
+        )
+        assert res2.status_code == 200, res2.text
+
+        # Mutual BLE chain 4451-4452-4453-4454 so the clean pair verifies; but
+        # ONLY 4453 claims an ultrasonic desk handshake (unreciprocated claim)
+        res3 = await client.post(
+            session_url,
+            headers={"Authorization": f"Bearer {tok_stud3}"},
+            json={
+                "student_id": "4453",
+                "neighbors": ["4452", "4454"],
+                "session_salt": "P3M0",
+                "ultrasonic_proximity_detected": True,
+                "co_located_peer_id": "4454",
+            },
+        )
+        assert res3.status_code == 200, res3.text
+
+        res4 = await client.post(
+            session_url,
+            headers={"Authorization": f"Bearer {tok_stud4}"},
+            json={"student_id": "4454", "neighbors": ["4453"], "session_salt": "P3M0"},
+        )
+        assert res4.status_code == 200, res4.text
+
+        audit_res = await client.post(
+            f"/api/v1/attendance/sessions/{session_id}/audit-and-finalize",
+            headers=teacher_headers,
+            json={"reports": {}},
+        )
+        assert audit_res.status_code == 200
+        audit_data = audit_res.json()
+
+        assert audit_data["status"] == "COMPLETED"
+        assert len(audit_data["records"]) == 4  # one row per student is preserved
+        record_map = {r["ble_device_id"]: r for r in audit_data["records"]}
+
+        # Reciprocated pair: both verdict rows transformed into the proxy violation
+        assert record_map["4451"]["status"] == "CO_LOCATED_SAME_DESK_PROXY"
+        assert record_map["4451"]["verification_method"] == "ULTRASONIC_ACOUSTIC_MATCH"
+        assert "with 4452" in record_map["4451"]["remarks"]
+        assert record_map["4452"]["status"] == "CO_LOCATED_SAME_DESK_PROXY"
+        assert record_map["4452"]["verification_method"] == "ULTRASONIC_ACOUSTIC_MATCH"
+        assert "with 4451" in record_map["4452"]["remarks"]
+
+        # Unreciprocated claim: the benign BLE mesh verdict stands untouched
+        assert record_map["4453"]["status"] == "VERIFIED_PRESENT"
+        assert record_map["4454"]["status"] == "VERIFIED_PRESENT"
+
+        assert audit_data["total_verified"] == 2
+        assert audit_data["total_spoofers"] == 2  # ignored claim is not counted
+
+        # Post-finalize grace claim: mutuality is unevaluable (buffer already
+        # popped) — the straggler gets a normal grace record, NOT a proxy row.
+        tok_stud5 = await _register_roll_student(client, pair_db, "Pair Epsilon", "pair.epsilon5@univ.edu", "22B4455")
+        grace = await client.post(
+            session_url,
+            headers={"Authorization": f"Bearer {tok_stud5}"},
+            json={
+                "student_id": "4455",
+                "neighbors": [],
+                "session_salt": "P3M0",
+                "ultrasonic_proximity_detected": True,
+                "co_located_peer_id": "4451",
+            },
+        )
+        assert grace.status_code == 200, grace.text
+
+        async with pair_db() as s:
+            grace_rows = (
+                await s.execute(
+                    select(AttendanceRecord).where(
+                        AttendanceRecord.session_id == uuid.UUID(session_id),
+                        AttendanceRecord.ble_device_id == "4455",
+                    )
+                )
+            ).scalars().all()
+            assert len(grace_rows) == 1
+            assert grace_rows[0].status == "ISOLATED_FLAGGED"
+
+
+# Verifies M2 hygiene: a live session's token cannot be re-issued by ANOTHER
+# teacher (student submits resolve newest-wins, so a colliding broadcast would
+# cross-route submissions). Same-teacher re-create still supersedes cleanly
+# because the stale-expiry step runs BEFORE the conflict check.
+@pytest.mark.anyio
+async def test_session_token_conflict_cross_teacher():
     from httpx import AsyncClient, ASGITransport
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
@@ -938,32 +1161,179 @@ async def test_ultrasonic_proximity_rejection():
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    battery_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+    conflict_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
 
     async def override_get_db():
-        async with battery_db() as s:
+        async with conflict_db() as s:
             yield s
 
     app.dependency_overrides[get_db] = override_get_db
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        tok_us = await _register_battery_student(client, battery_db)
-        # Student submits with ultrasonic proximity detected to another peer on same desk
-        res = await client.post(
-            "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
-            headers={"Authorization": f"Bearer {tok_us}"},
-            json={
-                "student_id": "STUD3",
-                "neighbors": ["STUD4"],
-                "session_salt": "DEMO1",
-                "ultrasonic_proximity_detected": True,
-                "co_located_peer_id": "STUD4",
-            },
+        tok_a = await _register_test_teacher(client, conflict_db, "Prof. Tok A", "tok.a@univ.edu")
+        tok_b = await _register_test_teacher(client, conflict_db, "Prof. Tok B", "tok.b@univ.edu")
+
+        first = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_a}"},
+            json={"session_token": "T0K1", "session_salt": "AAAA", "total_enrolled": 4},
         )
-        assert res.status_code == 403
-        assert "Ultrasonic proximity rejected" in res.json()["detail"]
-        assert "STUD4" in res.json()["detail"]
+        assert first.status_code == 201
+
+        # Another teacher reusing the live token -> 409
+        clash = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_b}"},
+            json={"session_token": "T0K1", "session_salt": "BBBB", "total_enrolled": 4},
+        )
+        assert clash.status_code == 409
+        assert "already in use" in clash.json()["detail"]
+
+        # Same teacher re-creating their own token still supersedes cleanly (no 409)
+        rec = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_a}"},
+            json={"session_token": "T0K1", "session_salt": "AAAA", "total_enrolled": 4},
+        )
+        assert rec.status_code == 201, rec.text
+
+        # A fresh token for the other teacher is unaffected
+        fresh = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_b}"},
+            json={"session_token": "T0K2", "session_salt": "BBBB", "total_enrolled": 4},
+        )
+        assert fresh.status_code == 201
+
+
+# Verifies M5: frozen security verdicts (e.g. the salt gate's SPOOFER_REJECTED
+# row) must still surface in total_spoofers on the plain finalize route even
+# though finalize preserves them in place instead of rewriting them.
+@pytest.mark.anyio
+async def test_finalize_counts_frozen_proxy_priors():
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    frozen_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with frozen_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_teacher = await _register_test_teacher(client, frozen_db, "Prof. Frozen Counter", "frozen.counter@univ.edu")
+        tok_stud = await _register_roll_student(client, frozen_db, "Frozen Student", "frozen.stud@univ.edu", "22B9876")
+
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"session_token": "M5F1", "session_salt": "F5M0", "total_enrolled": 2},
+        )
+        assert s_res.status_code == 201
+        session_id = s_res.json()["id"]
+
+        # Salt-gate rejection writes a SPOOFER_REJECTED row out-of-band
+        spoof = await client.post(
+            f"/api/v1/attendance/sessions/{session_id}/submit-neighbors",
+            headers={"Authorization": f"Bearer {tok_stud}"},
+            json={"student_id": "9876", "neighbors": [], "session_salt": "WRNG"},
+        )
+        assert spoof.status_code == 403
+        assert "Nice try" in spoof.json()["detail"]
+
+        # Plain finalize with no teacher records must NOT lose the frozen prior
+        fin = await client.post(
+            f"/api/v1/attendance/sessions/{session_id}/finalize",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"records": []},
+        )
+        assert fin.status_code == 200, fin.text
+        fin_data = fin.json()
+        assert fin_data["status"] == "COMPLETED"
+        assert fin_data["total_spoofers"] == 1
+        assert fin_data["total_verified"] == 0
+
+
+# Verifies hygiene guards: strict status whitelists on the TEACHER-OVERWRITE
+# request models (lowercase aliases normalize; unknown statuses 422 before any
+# write), while BLEAuditRecordItem stays permissive — it is the from_attributes
+# base of the session response and would 500 on defense-layer violation rows.
+@pytest.mark.anyio
+async def test_status_enum_validation_hygiene():
+    from pydantic import ValidationError
+
+    from app.schemas.attendance import BLEAuditRecordItem, RecordOverrideRequest, SessionFinalizeRequest
+
+    # Lowercase aliases normalize to canonical statuses
+    req = SessionFinalizeRequest(records=[{"ble_device_id": "33F1", "status": "verified_present"}])
+    assert req.records[0].status == "VERIFIED_PRESENT"
+    assert RecordOverrideRequest(status="absent").status == "ABSENT"
+
+    # Unknown statuses rejected at validation time (-> HTTP 422)
+    with pytest.raises(ValidationError):
+        SessionFinalizeRequest(records=[{"ble_device_id": "33F1", "status": "SPECTRAL_GHOST"}])
+    with pytest.raises(ValidationError):
+        RecordOverrideRequest(status="PRESENT")
+
+    # Response base stays permissive for defense-layer verdicts (no 500s)
+    artifact = BLEAuditRecordItem.model_validate(
+        {"ble_device_id": "01AB", "status": "DUPLICATE_FACE_PROXY", "affinity_score": 0.0}
+    )
+    assert artifact.status == "DUPLICATE_FACE_PROXY"
+
+    # HTTP: garbage status is rejected at body-validation, normalized status
+    # passes through to the (unknown-session) 404 instead.
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    enum_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with enum_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok = await _register_test_teacher(client, enum_db, "Prof. Enum Guard", "enum.guard@univ.edu")
+
+        bad = await client.post(
+            "/api/v1/attendance/sessions/NOT-A-UUID/finalize",
+            headers={"Authorization": f"Bearer {tok}"},
+            json={"records": [{"ble_device_id": "33F1", "status": "GARBAGE_STATUS"}]},
+        )
+        assert bad.status_code == 422
+
+        normalized = await client.post(
+            "/api/v1/attendance/sessions/NOT-A-UUID/finalize",
+            headers={"Authorization": f"Bearer {tok}"},
+            json={"records": [{"ble_device_id": "33F1", "status": "verified_present"}]},
+        )
+        assert normalized.status_code == 404
+
+        override_bad = await client.patch(
+            "/api/v1/attendance/records/00000000-0000-0000-0000-000000000000/override",
+            headers={"Authorization": f"Bearer {tok}"},
+            json={"status": "PRESENT"},
+        )
+        assert override_bad.status_code == 422
 
 
 # Verifies raw binary image check-in submission with headers bypasses base64

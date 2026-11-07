@@ -795,9 +795,18 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
                         }
                         is NetworkResult.Error -> {
-                            cloudStatusMessage = "Cloud sync warning (HTTP ${result.code}): running locally ($sessionId)"
-                            android.util.Log.e("AttendanceViewModel", "Session create failed: HTTP ${result.code} - ${result.message}")
-                            onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
+                            if (result.code == 409) {
+                                // M2: token collision with an ACTIVE session of another
+                                // teacher/class. Broadcasting now would cross-route student
+                                // submissions into that other session (resolves newest-wins),
+                                // so stay silent until the teacher picks a new ID.
+                                cloudStatusMessage = "Session ID $sessionId is already in use by an active session — pick a new ID before broadcasting"
+                                android.util.Log.e("AttendanceViewModel", "Session create rejected: HTTP 409 - ${result.message}")
+                            } else {
+                                cloudStatusMessage = "Cloud sync warning (HTTP ${result.code}): running locally ($sessionId)"
+                                android.util.Log.e("AttendanceViewModel", "Session create failed: HTTP ${result.code} - ${result.message}")
+                                onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
+                            }
                         }
                         is NetworkResult.Exception -> {
                             cloudStatusMessage = "Cloud sync error: ${result.throwable.localizedMessage ?: "Offline"}"
@@ -1601,6 +1610,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                 handleSessionCancelled()
                             }
                             break
+                        } else if (session?.status == "EXPIRED") {
+                            withContext(Dispatchers.Main) {
+                                handleSessionExpired()
+                            }
+                            break
                         }
                     }
                 } catch (_: Exception) { }
@@ -1627,6 +1641,30 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         detectedSessionSalt = "------"
         studentPhase = StudentPhase.LISTENING_FOR_TEACHER
         studentStatusMessage = "Session cancelled by instructor — waiting for a new session"
+        onStartScanning?.invoke()
+    }
+
+    // Reset student state and resume scanning when the session expired before the audit
+    // completed (H3: teacher re-created the session or it lapsed mid-audit — students should
+    // not hang on a session that will never reach COMPLETED).
+    private fun handleSessionExpired() {
+        studentTimer?.cancel()
+        studentTimer = null
+        studentDiscoverySecondsRemaining = 0
+        stopPeerBatchUpdates()
+        onStopBroadcasting?.invoke()
+        rawDiscoveredPeers.clear()
+        topDeskNeighbours = emptyList()
+        capturedFaceBase64 = null
+        capturedFaceBytes = null
+        testedUltrasonicPeers.clear()
+        ultrasonicProximityDetected = false
+        coLocatedPeerId = null
+        auditedRecord = null
+        detectedSessionId = "----"
+        detectedSessionSalt = "------"
+        studentPhase = StudentPhase.LISTENING_FOR_TEACHER
+        studentStatusMessage = "Session expired before the audit completed — please ask your instructor"
         onStartScanning?.invoke()
     }
 
@@ -1668,6 +1706,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     } else if (session?.status == "CANCELLED") {
                         withContext(Dispatchers.Main) {
                             handleSessionCancelled()
+                        }
+                    } else if (session?.status == "EXPIRED") {
+                        withContext(Dispatchers.Main) {
+                            handleSessionExpired()
                         }
                     }
                 }

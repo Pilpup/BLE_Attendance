@@ -8,17 +8,22 @@ from typing import Dict, List, Optional
 
 # Staged check-in submission record
 class StagedSubmission:
-    __slots__ = ("device_key", "student_id", "reported_neighbors")
+    __slots__ = ("device_key", "student_id", "reported_neighbors", "claimed_ultrasonic")
 
     def __init__(
         self,
         device_key: str,
         student_id: Optional[uuid.UUID],
         reported_neighbors: list[str],
+        claimed_ultrasonic: Optional[str] = None,
     ) -> None:
         self.device_key = device_key
         self.student_id = student_id
         self.reported_neighbors = reported_neighbors
+        # M3-lite: ultrasonic desk claim (partner device key). Buffered ONLY here —
+        # never persisted — so aborted/restarted claims leave no DB footprint and a
+        # one-sided claim can never vandalize a record on its own.
+        self.claimed_ultrasonic = claimed_ultrasonic
 
 
 # In-memory staging buffer for active session student check-ins
@@ -46,6 +51,7 @@ class SubmissionBuffer:
         device_key: str,
         student_id: Optional[uuid.UUID],
         reported_neighbors: list[str],
+        claimed_ultrasonic: Optional[str] = None,
     ) -> None:
         now = time.time()
         async with self._lock:
@@ -64,11 +70,13 @@ class SubmissionBuffer:
                 ))
                 existing.reported_neighbors = merged_claims
                 existing.student_id = existing.student_id or student_id
+                existing.claimed_ultrasonic = existing.claimed_ultrasonic or claimed_ultrasonic
             else:
                 session_buf[device_key] = StagedSubmission(
                     device_key=device_key,
                     student_id=student_id,
                     reported_neighbors=reported_neighbors,
+                    claimed_ultrasonic=claimed_ultrasonic,
                 )
 
     # Extracts and removes all staged submissions for a session upon final audit

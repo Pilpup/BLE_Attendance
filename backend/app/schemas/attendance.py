@@ -58,6 +58,11 @@ class AttendanceRecordResponse(BLEAuditRecordItem):
     model_config = ConfigDict(from_attributes=True)
 
 
+# Canonical status enums for request validation (docs of record: BLEAuditRecordItem / RecordOverrideRequest docstrings)
+_ALLOWED_OVERRIDE_STATUSES = {"VERIFIED_PRESENT", "ABSENT", "ISOLATED_FLAGGED"}
+_ALLOWED_FINALIZE_STATUSES = {"VERIFIED_PRESENT", "ABSENT", "ISOLATED_FLAGGED", "SPOOFER_REJECTED"}
+
+
 # Manual attendance status override request by instructor
 class RecordOverrideRequest(BaseModel):
     status: str = Field(
@@ -68,6 +73,15 @@ class RecordOverrideRequest(BaseModel):
         default="Manual override by instructor",
         description="Reason for manual override",
     )
+
+    @field_validator("status", mode="before")
+    def normalize_status(cls, v):
+        # Strict whitelist: an unknown status on the override route would write
+        # an unclassifiable row the teacher dashboard cannot render.
+        normalized = str(v if v is not None else "").strip().upper()
+        if normalized not in _ALLOWED_OVERRIDE_STATUSES:
+            raise ValueError("status must be one of: VERIFIED_PRESENT | ABSENT | ISOLATED_FLAGGED")
+        return normalized
 
 
 # Session creation request payload
@@ -92,6 +106,25 @@ class SessionFinalizeRequest(BaseModel):
     records: list[BLEAuditRecordItem] = Field(
         ..., description="Full mesh audit results from performMeshAudit() on the teacher's phone"
     )
+
+    @field_validator("records", mode="before")
+    def validate_record_statuses(cls, records):
+        # Strict whitelist on the OVERWRITE route so the teacher's finalize
+        # payload can never stamp an unclassifiable status onto records.
+        # (Kept off BLEAuditRecordItem: it is the from_attributes base of
+        # AttendanceSessionResponse and would 500 sessions containing
+        # violation rows produced by other defense layers.)
+        if not isinstance(records, list):
+            return records
+        cleaned: list = []
+        for item in records:
+            if isinstance(item, dict) and "status" in item:
+                normalized = str(item.get("status") or "").strip().upper()
+                if normalized not in _ALLOWED_FINALIZE_STATUSES:
+                    raise ValueError("record status must be one of: VERIFIED_PRESENT | ABSENT | ISOLATED_FLAGGED | SPOOFER_REJECTED")
+                item = {**item, "status": normalized}
+            cleaned.append(item)
+        return cleaned
 
 
 # Teacher trigger payload to run server-side mesh audit
