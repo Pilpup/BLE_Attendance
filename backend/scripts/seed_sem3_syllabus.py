@@ -580,6 +580,12 @@ SEMESTER_3_DATA: List[Dict[str, Any]] = [
     }
 ]
 
+# Prune unselected optional courses (retaining Digital Electronics, UHV, Python Programming)
+SEMESTER_3_DATA = [
+    c for c in SEMESTER_3_DATA
+    if c["code"] not in ("AHT-006", "AHT-007", "CST-006")
+]
+
 
 async def seed_semester_3(db_url: str):
     clean_url = clean_asyncpg_url(db_url)
