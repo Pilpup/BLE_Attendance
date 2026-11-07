@@ -1029,25 +1029,78 @@ private fun getSemesterSubjects(program: String, branch: String, semester: Strin
     }
 
     return when (semNum) {
-        1 -> listOf("Programming in C", "Engineering Mathematics - I", "Engineering Physics", "Basic Electrical Engineering", "Engineering Graphics & Design", "Communication Skills")
-        2 -> listOf("Data Structures", "Engineering Mathematics - II", "Engineering Chemistry", "Basic Electronics", "Object Oriented Programming (C++)")
+        1 -> listOf(
+            "Programming for Problem Solving (C)",
+            "Engineering Mathematics - I",
+            "Engineering Physics",
+            "Basic Electrical Engineering",
+            "Engineering Graphics & Design",
+            "Communication Skills",
+            "Programming in C Lab",
+            "Engineering Physics Lab",
+            "Basic Electrical Lab",
+            "Engineering Graphics Lab"
+        )
+        2 -> listOf(
+            "Engineering Mathematics - II",
+            "Engineering Chemistry",
+            "Basic Electronics",
+            "Environmental Science",
+            "English for Communication",
+            "Engineering Chemistry Lab",
+            "Basic Electronics Lab",
+            "Workshop Practices Lab"
+        )
         3 -> listOf(
-            "Data Structures and Algorithms",
             "Digital Electronics",
-            "Discrete Structure",
-            "Object Oriented Programming",
             "Universal Human Values",
+            "Discrete Structure",
+            "Data Structures and Algorithms",
+            "Object Oriented Programming",
             "Python Programming",
             "Data Structures and Algorithms Lab",
             "Object Oriented Programming Lab",
             "Python Programming Lab",
             "Internship-I / Mini Project-I"
         )
-        4 -> listOf("Operating Systems", "Database Management Systems", "Theory of Computation", "Design & Analysis of Algorithms", "Computer Networks")
-        5 -> listOf("Computer Networks", "Operating Systems", "Database Management Systems", "Software Engineering", "Theory of Computation", "Compiler Design")
-        6 -> listOf("Machine Learning", "Compiler Design", "Cloud Computing", "Information & Cyber Security", "Web Technologies")
-        7, 8 -> listOf("Artificial Intelligence", "Internet of Things", "Big Data Analytics", "Distributed Systems", "Cyber Security")
-        else -> branchSubjects[branch] ?: branchSubjects["CSE"] ?: listOf("Programming in C")
+        4 -> listOf(
+            "Operating Systems",
+            "Theory of Computation",
+            "Computer Organization & Architecture",
+            "Operating Systems Lab",
+            "JAVA Programming Lab",
+            "UNIX/LINUX Lab"
+        )
+        5 -> listOf(
+            "Computer Networks",
+            "Database Management Systems",
+            "Information Security & Cryptography",
+            "Computer Networks Lab",
+            "Database Management Systems Lab",
+            "Information Security Lab"
+        )
+        6 -> listOf(
+            "Ethical Hacking and Penetration Testing",
+            "Malware Analysis & Reverse Engineering",
+            "Cloud Computing & Security",
+            "Ethical Hacking & Penetration Testing Lab",
+            "Digital Forensics Lab"
+        )
+        7 -> listOf(
+            "Open Source Intelligence & Threat Hunting",
+            "Cyber Laws, Ethics & Compliance",
+            "Project Management & Entrepreneurship",
+            "Open Source Intelligence Lab",
+            "Project Seminar",
+            "Design Project",
+            "Mini Project-III / Internship-III"
+        )
+        8 -> listOf(
+            "Cyber Incident Response & Crisis Management",
+            "Blockchain & Decentralized Security",
+            "Major Project"
+        )
+        else -> listOf("Programming for Problem Solving (C)")
     }
 }
 
@@ -1232,13 +1285,7 @@ private fun TakeAttendanceSelectionView(
     var customTopicInput by remember { mutableStateOf("") }
 
     val currentSubjects = remember(courseProgram, branch, semester) {
-        val semSpecific = getSemesterSubjects(courseProgram, branch, semester)
-        val generalBranch = if (courseProgram == "BCA") {
-            branchSubjects["BCA"] ?: emptyList()
-        } else {
-            branchSubjects[branch] ?: branchSubjects["CSE"] ?: emptyList()
-        }
-        (semSpecific + generalBranch).distinct()
+        getSemesterSubjects(courseProgram, branch, semester)
     }
     val subjectOptions = remember(currentSubjects) {
         currentSubjects + listOf("+ Enter Custom Subject...")
