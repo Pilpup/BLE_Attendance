@@ -629,7 +629,7 @@ internal fun TeacherSection(
     }
 }
 
-private val syllabusTopics = mapOf(
+private val syllabusTopicsFallback = mapOf(
     "Unit 1" to listOf(
         "Foundations & System Architecture",
         "BLE Protocol Stack Overview",
@@ -656,6 +656,278 @@ private val syllabusTopics = mapOf(
         "Practical Lab Simulation & Verification"
     )
 )
+
+// Granular curriculum topics mapped by official UTU subject and unit module
+private val subjectUnitTopics: Map<String, Map<String, List<String>>> = mapOf(
+    "Digital Electronics" to mapOf(
+        "Unit 1" to listOf(
+            "Logic Gates and Boolean Algebra Review",
+            "SOP, POS, and Canonical Forms",
+            "K-Maps and Quine-McCluskey Minimization",
+            "Binary Codes and Code Conversion"
+        ),
+        "Unit 2" to listOf(
+            "Adders, Subtractors, and ALU Design",
+            "Code Converters and Comparators",
+            "Decoders, Encoders, Multiplexers, and Demultiplexers",
+            "Parity Checkers and Display Drivers"
+        ),
+        "Unit 3" to listOf(
+            "Latches and Flip-Flops (SR, JK, Master-Slave)",
+            "Counters (Ripple and Synchronous)",
+            "Shift Registers and Universal Shift Registers",
+            "Finite State Machines and Synchronous Sequential Design"
+        ),
+        "Unit 4" to listOf(
+            "Logic Families (TTL, ECL, CMOS) and Interfacing",
+            "Memory Elements and Semiconductor Memories",
+            "Programmable Logic Devices (PLDs and FPGAs)"
+        ),
+        "Unit 5" to listOf(
+            "VLSI Design Entry: Schematic, FSM, and HDL",
+            "VHDL Modeling Styles (Dataflow, Behavioral, Structural)",
+            "VHDL Synthesis and Simulation for Digital Circuits"
+        )
+    ),
+    "Data Structures and Algorithms" to mapOf(
+        "Unit 1" to listOf(
+            "Data Structure Operations and Asymptotic Notations",
+            "Time-Space Trade-off Analysis",
+            "Linear Search and Binary Search Analysis"
+        ),
+        "Unit 2" to listOf(
+            "Stack ADT and Stack Operations",
+            "Expression Conversion and Evaluation",
+            "Queue ADT: Simple, Circular, and Priority Queues"
+        ),
+        "Unit 3" to listOf(
+            "Singly Linked List Operations and Complexity",
+            "Doubly Linked List and Circular Linked List",
+            "Linked Representation of Stacks and Queues"
+        ),
+        "Unit 4" to listOf(
+            "Binary Trees and Binary Search Trees (BST)",
+            "Balanced Trees: AVL Trees, B-Trees, and B+ Trees",
+            "Graph Representations and Traversals (BFS and DFS)"
+        ),
+        "Unit 5" to listOf(
+            "Comparison Sorts: Selection, Bubble, and Insertion Sort",
+            "Divide & Conquer Sorts: Quick Sort, Merge Sort, and Heap Sort",
+            "Hashing, Hash Functions, and Collision Resolution Techniques"
+        )
+    ),
+    "Data Structures & Algorithms" to mapOf(
+        "Unit 1" to listOf(
+            "Data Structure Operations and Asymptotic Notations",
+            "Time-Space Trade-off Analysis",
+            "Linear Search and Binary Search Analysis"
+        ),
+        "Unit 2" to listOf(
+            "Stack ADT and Stack Operations",
+            "Expression Conversion and Evaluation",
+            "Queue ADT: Simple, Circular, and Priority Queues"
+        ),
+        "Unit 3" to listOf(
+            "Singly Linked List Operations and Complexity",
+            "Doubly Linked List and Circular Linked List",
+            "Linked Representation of Stacks and Queues"
+        ),
+        "Unit 4" to listOf(
+            "Binary Trees and Binary Search Trees (BST)",
+            "Balanced Trees: AVL Trees, B-Trees, and B+ Trees",
+            "Graph Representations and Traversals (BFS and DFS)"
+        ),
+        "Unit 5" to listOf(
+            "Comparison Sorts: Selection, Bubble, and Insertion Sort",
+            "Divide & Conquer Sorts: Quick Sort, Merge Sort, and Heap Sort",
+            "Hashing, Hash Functions, and Collision Resolution Techniques"
+        )
+    ),
+    "Object Oriented Programming" to mapOf(
+        "Unit 1" to listOf(
+            "Classes, Objects, Abstraction, and Encapsulation",
+            "Constructors, Destructors, and Static Class Members",
+            "Friend Functions, Friend Classes, and Inline Functions",
+            "Pointers, References, and Dynamic Memory Allocation"
+        ),
+        "Unit 2" to listOf(
+            "Function Overloading and Default Arguments",
+            "Copy Constructors and Overloading Constructors",
+            "Operator Overloading Using Member and Friend Functions",
+            "Overloading new and delete Operators"
+        ),
+        "Unit 3" to listOf(
+            "Types of Inheritance and Base-Class Access Control",
+            "Virtual Base Classes and Multiple Inheritance",
+            "Virtual Functions and Runtime Polymorphism",
+            "RTTI and Type Casting Operators"
+        ),
+        "Unit 4" to listOf(
+            "Generic Functions and Class Templates",
+            "Exception Handling Fundamentals: try, catch, and throw",
+            "Standard Exception Classes and Custom Handlers"
+        ),
+        "Unit 5" to listOf(
+            "C++ Stream Classes and Formatted I/O",
+            "File Streams and File I/O Operations",
+            "Standard Template Library: Containers, Iterators, and Algorithms"
+        )
+    ),
+    "Discrete Structure" to mapOf(
+        "Unit 1" to listOf(
+            "Sets, Set Operations, Power Sets, and Cartesian Products",
+            "Relations, Equivalence Relations, and Partitions",
+            "Mathematical Induction",
+            "Functions: Injective, Surjective, Bijective, and Inverses"
+        ),
+        "Unit 2" to listOf(
+            "Propositions, Truth Tables, Tautologies, and Contradictions",
+            "Formal Logic and Inference Rules",
+            "Partial Orderings and Posets",
+            "Lattice Theory and Special Lattices"
+        ),
+        "Unit 3" to listOf(
+            "Counting Principles, Permutations, and Combinations",
+            "Pigeonhole Principle and Inclusion-Exclusion",
+            "Linear Recurrence Relations with Constant Coefficients",
+            "Generating Functions for Recurrence Solutions"
+        ),
+        "Unit 4" to listOf(
+            "Semigroups, Monoids, and Groups",
+            "Subgroups, Normal Subgroups, and Cyclic Groups",
+            "Homomorphism, Isomorphism, and Automorphism",
+            "Rings, Integral Domains, and Fields"
+        ),
+        "Unit 5" to listOf(
+            "Graph Terminology, Directed and Undirected Graphs",
+            "Paths, Circuits, Eulerian and Hamiltonian Graphs",
+            "Planar Graphs and Euler Formula",
+            "Trees, Spanning Trees, and Binary Tree Traversals"
+        )
+    ),
+    "Universal Human Values" to mapOf(
+        "Unit 1" to listOf(
+            "Universal Human Values and Self-Exploration",
+            "Continuous Happiness and Prosperity as Human Aspirations",
+            "Right Understanding, Relationships, and Physical Facilities"
+        ),
+        "Unit 2" to listOf(
+            "Understanding Self (I) and Body Distinction",
+            "Characteristics, Activities, and Harmony within I",
+            "Harmony with the Body: Sanyam and Health"
+        ),
+        "Unit 3" to listOf(
+            "Values in Relationships: Trust and Respect",
+            "Intention vs. Competence in Human Interactions",
+            "Universal Harmonious Order and Society Coexistence"
+        ),
+        "Unit 4" to listOf(
+            "Four Orders in Nature and Interconnectedness",
+            "Existence as Coexistence at All Levels"
+        ),
+        "Unit 5" to listOf(
+            "Natural Acceptance of Human Values and Ethical Conduct",
+            "Competence in Professional Ethics and Case Studies",
+            "Transition to Universal Human Order"
+        )
+    ),
+    "Python Programming" to mapOf(
+        "Unit 1" to listOf(
+            "Features of Python, Building Blocks, and Environment Setup",
+            "Identifiers, Keywords, Indentation, and Variables",
+            "Python Data Types: Numbers, Strings, Tuples, Lists, Dictionaries"
+        ),
+        "Unit 2" to listOf(
+            "Arithmetic, Relational, Logical, and Bitwise Operators",
+            "Conditional Statements: if, if-else, nested if",
+            "Looping in Python: while loop, for loop, nested loops",
+            "Loop Manipulation: break, continue, pass"
+        ),
+        "Unit 3" to listOf(
+            "String Operations, Escape Characters, and Formatting",
+            "List Operations, Slicing, and Built-in List Methods",
+            "Tuple Operations and Set Operations",
+            "Dictionary Operations and Built-in Dictionary Methods"
+        ),
+        "Unit 4" to listOf(
+            "Built-in Functions and Type Conversion",
+            "User-Defined Functions and Parameter Passing",
+            "Scope of Variables: Global and Local Variables",
+            "Creating and Importing Python Modules and Packages"
+        ),
+        "Unit 5" to listOf(
+            "Opening Files in Different Modes (Read, Write, Append)",
+            "Reading and Writing Files using Standard Library",
+            "Closing, Renaming, and Deleting Files"
+        )
+    ),
+    "Data Structures and Algorithms Lab" to mapOf(
+        "Unit 1" to listOf(
+            "Stack and Queue ADT Implementation using Array",
+            "Stack and Queue Implementation using Singly Linked List",
+            "Double-Ended Queue (Deque) using Doubly Linked List",
+            "Binary Search Tree Operations (Insert, Delete, Search)",
+            "Circular Queue ADT Implementation",
+            "Dictionary ADT Implementation using Hashing",
+            "AVL Tree and B-Tree Operations",
+            "Graph Traversals: Breadth First Search (BFS) and Depth First Search (DFS)",
+            "Minimum Spanning Tree (Prims and Kruskals Algorithms)",
+            "Single Source Shortest Path (Dijkstras Algorithm)",
+            "Binary Tree Non-Recursive Traversals",
+            "Sorting Algorithms Implementation (Quick Sort and Merge Sort)"
+        )
+    ),
+    "Object Oriented Programming Lab" to mapOf(
+        "Unit 1" to listOf(
+            "Classes with Static Members and Friend Functions",
+            "Matrix Class with Dynamic Memory Allocation and Assignment Overloading",
+            "Complex Number Class with Operator Overloading and Type Conversions",
+            "Custom Dynamic Memory Allocation Overloading new and delete",
+            "Class Hierarchy for Multiple and Multilevel Inheritances",
+            "Dynamic Polymorphism and RTTI Demonstration",
+            "Linked List Class Template and Generic Algorithms",
+            "Sorting Algorithm Templates (Bubble, Insertion, Quick Sort)",
+            "Stack and Queue Classes with Exception Handling",
+            "File I/O for Persistent Object Data Processing"
+        )
+    ),
+    "Python Programming Lab" to mapOf(
+        "Unit 1" to listOf(
+            "Interactive Interpreter and Python Script Execution",
+            "Operators, Distance Calculation, and Command-Line Arguments",
+            "Conditional Statements and Loop Constructs",
+            "Prime Numbers, Fibonacci Series, and Basic Searching/Sorting",
+            "String Manipulation and Dictionary Operations",
+            "List and Dictionary Aggregation",
+            "File Reading, Writing, and Word Counting",
+            "Functions, Geometric Collisions, and Statistical Measures",
+            "String Distance, List Deduplication, and Uniqueness",
+            "Recursive Functions, Inversions, and GCD/LCM Computations",
+            "Scientific Packages: NumPy, Pandas, Matplotlib, and Requests"
+        )
+    ),
+    "Internship-I / Mini Project-I" to mapOf(
+        "Unit 1" to listOf(
+            "Problem Identification and Industrial Requirement Gathering",
+            "System Architecture, Design, and Technology Stack Selection",
+            "Module Implementation, Integration, and Verification",
+            "Technical Documentation, Presentation, and Viva Voce"
+        )
+    )
+)
+
+private fun getSyllabusTopics(subject: String, unit: String): List<String> {
+    val clean = subject.trim()
+    val match = subjectUnitTopics.entries.firstOrNull { entry ->
+        entry.key.equals(clean, ignoreCase = true) ||
+            clean.contains(entry.key, ignoreCase = true) ||
+            entry.key.contains(clean, ignoreCase = true)
+    }?.value
+    return match?.get(unit)
+        ?: match?.values?.firstOrNull()
+        ?: syllabusTopicsFallback[unit]
+        ?: listOf("General Syllabus Topic")
+}
 
 private val engineeringBranches = listOf(
     "CSE",
@@ -759,7 +1031,18 @@ private fun getSemesterSubjects(program: String, branch: String, semester: Strin
     return when (semNum) {
         1 -> listOf("Programming in C", "Engineering Mathematics - I", "Engineering Physics", "Basic Electrical Engineering", "Engineering Graphics & Design", "Communication Skills")
         2 -> listOf("Data Structures", "Engineering Mathematics - II", "Engineering Chemistry", "Basic Electronics", "Object Oriented Programming (C++)")
-        3 -> listOf("Data Structures & Algorithms", "Digital Logic & Computer Design", "Discrete Mathematics", "Computer Organization", "Object Oriented Programming in Java")
+        3 -> listOf(
+            "Data Structures and Algorithms",
+            "Digital Electronics",
+            "Discrete Structure",
+            "Object Oriented Programming",
+            "Universal Human Values",
+            "Python Programming",
+            "Data Structures and Algorithms Lab",
+            "Object Oriented Programming Lab",
+            "Python Programming Lab",
+            "Internship-I / Mini Project-I"
+        )
         4 -> listOf("Operating Systems", "Database Management Systems", "Theory of Computation", "Design & Analysis of Algorithms", "Computer Networks")
         5 -> listOf("Computer Networks", "Operating Systems", "Database Management Systems", "Software Engineering", "Theory of Computation", "Compiler Design")
         6 -> listOf("Machine Learning", "Compiler Design", "Cloud Computing", "Information & Cyber Security", "Web Technologies")
@@ -964,7 +1247,20 @@ private fun TakeAttendanceSelectionView(
     // Keep subject aligned with branch when switching courses or branches
     LaunchedEffect(currentSubjects) {
         if (subjectName !in currentSubjects && customSubjectInput.isBlank()) {
-            subjectName = currentSubjects.firstOrNull() ?: "Programming in C"
+            val first = currentSubjects.firstOrNull() ?: "Programming in C"
+            subjectName = first
+            if (first.contains("Lab", ignoreCase = true) || first.contains("Project", ignoreCase = true)) {
+                batchType = "Lab"
+            }
+            topicCovered = getSyllabusTopics(first, selectedUnit).firstOrNull() ?: topicCovered
+        }
+    }
+
+    // Keep topic aligned with subject and unit
+    LaunchedEffect(subjectName, selectedUnit) {
+        val available = getSyllabusTopics(subjectName, selectedUnit)
+        if (topicCovered !in available && customTopicInput.isBlank()) {
+            topicCovered = available.firstOrNull() ?: "General Syllabus Topic"
         }
     }
 
@@ -1093,6 +1389,10 @@ private fun TakeAttendanceSelectionView(
                         showCustomSubjectDialog = true
                     } else {
                         subjectName = selected
+                        if (selected.contains("Lab", ignoreCase = true) || selected.contains("Project", ignoreCase = true)) {
+                            batchType = "Lab"
+                        }
+                        topicCovered = getSyllabusTopics(selected, selectedUnit).firstOrNull() ?: topicCovered
                     }
                 },
                 placeholder = "Select Subject",
@@ -1100,13 +1400,23 @@ private fun TakeAttendanceSelectionView(
                 scrollable = true
             )
 
+            val unitOptions = remember(subjectName, batchType) {
+                if (subjectName.contains("Lab", ignoreCase = true) ||
+                    subjectName.contains("Project", ignoreCase = true) ||
+                    batchType == "Lab"
+                ) {
+                    listOf("Unit 1", "List of Experiments")
+                } else {
+                    listOf("Unit 1", "Unit 2", "Unit 3", "Unit 4", "Unit 5")
+                }
+            }
             AppDropdownField(
                 label = "Unit",
                 selectedValue = selectedUnit,
-                options = listOf("Unit 1", "Unit 2", "Unit 3", "Unit 4", "Unit 5"),
+                options = unitOptions,
                 onSelect = { u ->
                     selectedUnit = u
-                    topicCovered = syllabusTopics[u]?.firstOrNull() ?: topicCovered
+                    topicCovered = getSyllabusTopics(subjectName, u).firstOrNull() ?: topicCovered
                 },
                 placeholder = "Select Unit",
                 modifier = Modifier.weight(1.0f),
@@ -1115,7 +1425,9 @@ private fun TakeAttendanceSelectionView(
         }
 
         // 5. Full horizontal length topic name
-        val availableTopics = syllabusTopics[selectedUnit] ?: listOf("General Syllabus Topic")
+        val availableTopics = remember(subjectName, selectedUnit) {
+            getSyllabusTopics(subjectName, selectedUnit)
+        }
         val topicOptions = remember(availableTopics) {
             availableTopics + listOf("+ Enter Custom Topic...")
         }
@@ -2074,8 +2386,8 @@ private fun getSessionAcademicDetails(session: AttendanceSessionResponse): Sessi
     val rawName = session.courseName ?: ""
     val subject = session.subjectName?.takeIf { it.isNotBlank() }
         ?: extractSubjectName(rawName, session.courseCode)
-    val remainder = if (rawName.startsWith(subject)) {
-        rawName.removePrefix(subject).removePrefix("•").trim()
+    val remainder = if (rawName.startsWith(subject, ignoreCase = true)) {
+        rawName.substring(subject.length).trim().removePrefix("•").trim()
     } else if (rawName.contains("•")) {
         rawName.substringAfter("•").trim()
     } else {
@@ -2087,17 +2399,30 @@ private fun getSessionAcademicDetails(session: AttendanceSessionResponse): Sessi
         remainder.contains("Adjustment", ignoreCase = true) -> "Adjustment"
         else -> "Regular"
     }
-    val batch = session.batchType ?: if (remainder.contains("Lab", ignoreCase = true) == true) "Lab" else "Lecture"
+    val batch = session.batchType ?: if (remainder.contains("Lab", ignoreCase = true) || rawName.contains("Lab", ignoreCase = true)) "Lab" else "Lecture"
     val unit = session.unit
         ?: UNIT_REGEX.find(remainder)?.value
+        ?: UNIT_REGEX.find(rawName)?.value
         ?: "Unit 1"
-    val topic = session.topicCovered ?: run {
-        if (remainder.contains("•")) {
-            remainder.substringAfter("•").substringBefore(")").trim()
+    val topic = session.topicCovered?.takeIf { it.isNotBlank() } ?: run {
+        if (rawName.contains("(") && rawName.contains(")")) {
+            val inside = rawName.substringAfter("(").substringBefore(")").trim()
+            if (inside.contains("•")) {
+                inside.substringAfter("•").trim()
+            } else if (!inside.startsWith("Unit", ignoreCase = true) && !inside.startsWith("Exp", ignoreCase = true)) {
+                inside
+            } else if (remainder.contains("•")) {
+                remainder.substringAfterLast("•").trim()
+            } else {
+                "General Lecture"
+            }
+        } else if (remainder.contains("•")) {
+            val last = remainder.substringAfterLast("•").trim()
+            if (!last.startsWith("Unit", ignoreCase = true)) last else remainder
         } else if (remainder.isNotBlank()) {
             remainder
         } else {
-            "Foundations & System Architecture"
+            "General Lecture"
         }
     }
     return SessionAcademicDetails(clsType, courseProg, branch, sem, batch, subject, unit, topic)
