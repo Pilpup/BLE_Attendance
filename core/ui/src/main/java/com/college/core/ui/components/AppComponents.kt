@@ -654,7 +654,8 @@ fun AppDropdownField(
     onSelect: (String) -> Unit,
     modifier: Modifier = Modifier,
     placeholder: String = "Select $label",
-    allowEmpty: Boolean = true
+    allowEmpty: Boolean = true,
+    colors: TextFieldColors = appTextFieldColors()
 ) {
     var expanded by remember { mutableStateOf(false) }
     var anchorWidthPx by remember { mutableStateOf(0) }
@@ -674,7 +675,7 @@ fun AppDropdownField(
             readOnly = true,
             label = { Text(label) },
             placeholder = { Text(placeholder, color = AppTheme.colors.textSecondary) },
-            colors = appTextFieldColors(),
+            colors = colors,
             shape = RoundedCornerShape(12.dp),
             trailingIcon = {
                 IconButton(onClick = { expanded = !expanded }) {
@@ -729,7 +730,7 @@ fun AppDropdownField(
                     shape = RoundedCornerShape(12.dp),
                     color = AppTheme.colors.surface,
                     shadowElevation = if (AppTheme.colors.isDark) 0.dp else 6.dp,
-                    border = null,
+                    border = BorderStroke(1.dp, AppTheme.colors.textSecondary),
                     modifier = Modifier.width(if (anchorWidthDp > 0.dp) anchorWidthDp else 280.dp)
                 ) {
                     Column(
@@ -795,6 +796,7 @@ fun AppTextField(
     leadingIcon: @Composable (() -> Unit)? = null,
     trailingIcon: @Composable (() -> Unit)? = null,
     isError: Boolean = false,
+    supportingText: @Composable (() -> Unit)? = null,
     visualTransformation: VisualTransformation = VisualTransformation.None,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
     keyboardActions: KeyboardActions = KeyboardActions.Default,
@@ -917,6 +919,7 @@ fun AppTextField(
                 isError = isError,
                 label = label,
                 placeholder = placeholder,
+                supportingText = supportingText,
                 leadingIcon = leadingIcon,
                 trailingIcon = trailingIcon,
                 colors = colors,

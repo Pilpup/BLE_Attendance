@@ -119,6 +119,14 @@ fun AuthScreen(
     val fieldColors = appTextFieldColors()
     val formScrollState = rememberScrollState()
 
+    // Live registration format validation (pure string checks, recomputed on input)
+    val studentRollError = if (selectedRole == Role.STUDENT) rollNumberFormatError(rollNumberInput.trim()) else null
+    val normalizedEmail = normalizeCollegeEmail(emailInput)
+    val emailError = if (emailInput.isNotBlank() && !isEmailValid(normalizedEmail))
+        "Invalid email" else null
+    val passwordError = if (passwordInput.isNotEmpty() && passwordInput.length < 6)
+        "Password must be at least 6 characters" else null
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -256,8 +264,9 @@ fun AuthScreen(
                                 value = emailInput,
                                 onValueChange = { emailInput = it },
                                 label = { Text("Email Address") },
-                                placeholder = { Text("name@college.edu") },
+                                placeholder = { Text("e.g. qwerty@gmail.com") },
                                 singleLine = true,
+                                isError = emailError != null,
                                 colors = fieldColors,
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier.fillMaxWidth()
@@ -290,8 +299,9 @@ fun AuthScreen(
                                 value = emailInput,
                                 onValueChange = { emailInput = it },
                                 label = { Text("Email Address") },
-                                placeholder = { Text("name@college.edu") },
+                                placeholder = { Text("e.g. qwerty@gmail.com") },
                                 singleLine = true,
+                                isError = emailError != null,
                                 colors = fieldColors,
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier.fillMaxWidth()
@@ -304,6 +314,7 @@ fun AuthScreen(
                                 placeholder = { Text("Min. 6 characters") },
                                 visualTransformation = PasswordVisualTransformation(),
                                 singleLine = true,
+                                isError = passwordError != null,
                                 colors = fieldColors,
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier.fillMaxWidth()
@@ -326,8 +337,9 @@ fun AuthScreen(
                                     value = rollNumberInput,
                                     onValueChange = { rollNumberInput = it },
                                     label = { Text("Roll Number") },
-                                    placeholder = { Text("e.g. 251430101019") },
+                                    placeholder = { Text("e.g. 251340101019") },
                                     singleLine = true,
+                                    isError = studentRollError != null,
                                     colors = fieldColors,
                                     shape = RoundedCornerShape(12.dp),
                                     modifier = Modifier.fillMaxWidth()
@@ -449,10 +461,12 @@ fun AuthScreen(
 
                 // Primary submit button
                 if (!isRegisterMode) {
-                    val canSubmit = !isAuthLoading && emailInput.isNotBlank() && passwordInput.isNotBlank()
+                    val canSubmit = !isAuthLoading &&
+                            emailInput.isNotBlank() && passwordInput.isNotBlank() &&
+                            emailError == null
                     Button(
                         onClick = {
-                            val email = emailInput.trim()
+                            val email = normalizedEmail // bare usernames auto-complete to @gmail.com
                             val password = passwordInput
                             if (email.isNotBlank() && password.isNotBlank()) {
                                 isAuthLoading = true
@@ -515,6 +529,9 @@ fun AuthScreen(
                             emailInput.isNotBlank() &&
                             passwordInput.isNotBlank() &&
                             rollNumberInput.isNotBlank() &&
+                            studentRollError == null &&
+                            emailError == null &&
+                            passwordError == null &&
                             isRoleValid &&
                             isAcademicValid &&
                             isSecretValid
@@ -524,12 +541,7 @@ fun AuthScreen(
                             val activeRole = selectedRole ?: Role.STUDENT
                             val isStudent = activeRole == Role.STUDENT
                             val semNumber = semesterInput.substringAfter("Semester ").trim().toIntOrNull()
-                            val rawEmail = emailInput.trim()
-                            val cleanEmail = if (rawEmail.endsWith("@mgail.com", ignoreCase = true)) {
-                                rawEmail.replace("@mgail.com", "@gmail.com", ignoreCase = true)
-                            } else if (rawEmail.endsWith("@gamil.com", ignoreCase = true)) {
-                                rawEmail.replace("@gamil.com", "@gmail.com", ignoreCase = true)
-                            } else rawEmail
+                            val cleanEmail = normalizedEmail // bare usernames auto-complete to @gmail.com
                             pendingEmail = cleanEmail
                             val req = RegisterRequest(
                                 email = cleanEmail,
@@ -814,3 +826,32 @@ fun AuthScreen(
         }
     }
 }
+
+// ---- Registration format validation helpers -------------------------------
+
+// College roll number: <admission-year xx><college code 13401010><roll xx> = 12
+// digits, e.g. 251340101019 = 25 (2025 admission) + 13401010 + roll 19
+private const val COLLEGE_ID_CODE = "13401010"
+
+private fun rollNumberFormatError(roll: String): String? {
+    return when {
+        roll.any { !it.isDigit() } -> "Roll number must contain digits only"
+        roll.length != 12 -> "Roll number must be exactly 12 digits"
+        roll.substring(2, 10) != COLLEGE_ID_CODE -> "Digits 3-10 must be the college code $COLLEGE_ID_CODE"
+        else -> null
+    }
+}
+
+// Auto-completes bare usernames to Gmail and repairs common typos:
+private fun normalizeCollegeEmail(raw: String): String {
+    val trimmed = raw.trim()
+    return when {
+        trimmed.endsWith("@mgail.com", ignoreCase = true) -> trimmed.replace("@mgail.com", "@gmail.com", ignoreCase = true)
+        trimmed.endsWith("@gamil.com", ignoreCase = true) -> trimmed.replace("@gamil.com", "@gmail.com", ignoreCase = true)
+        !trimmed.contains('@') -> "$trimmed@gmail.com"
+        else -> trimmed
+    }
+}
+
+private fun isEmailValid(email: String): Boolean =
+    android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()
