@@ -216,8 +216,7 @@ fun AttendanceScreen(
                 else -> Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(AppTheme.colors.surface, RoundedCornerShape(16.dp))
-                        .border(1.dp, AppTheme.colors.surfaceBorder, RoundedCornerShape(16.dp)),
+                        .background(AppTheme.colors.surface, RoundedCornerShape(16.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(

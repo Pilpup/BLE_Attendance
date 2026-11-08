@@ -217,7 +217,7 @@ fun LibraryScreen(
                         Surface(
                             shape = RoundedCornerShape(12.dp),
                             color = AppTheme.colors.surface,
-                            border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
+                            border = null
                         ) {
                             Text(
                                 text = "DEV",
@@ -296,7 +296,7 @@ fun LibraryScreen(
                Surface(
                    shape = RoundedCornerShape(22.dp),
                    color = AppTheme.colors.surface,
-                   border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+                   border = null,
                    modifier = Modifier.fillMaxWidth()
                ) {
                    Row(
@@ -359,10 +359,8 @@ fun LibraryScreen(
             AppSearchPill(
                 value = viewModel.searchQuery,
                 onValueChange = { viewModel.searchQuery = it },
-                placeholder = "Search",
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(horizontal = 16.dp)
+                placeholder = "Search library",
+                modifier = Modifier.align(Alignment.BottomCenter)
             )
         }
 
@@ -430,7 +428,7 @@ private fun CatalogueTabContent(
                     .padding(vertical = 24.dp),
                 shape = RoundedCornerShape(22.dp),
                 color = AppTheme.colors.surface,
-                border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
+                border = null
             ) {
                 Box(
                     modifier = Modifier.padding(32.dp),
@@ -528,7 +526,7 @@ private fun StaffInventoryTabContent(
                     .padding(vertical = 24.dp),
                 shape = RoundedCornerShape(22.dp),
                 color = AppTheme.colors.surface,
-                border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
+                border = null
             ) {
                 Box(
                     modifier = Modifier.padding(32.dp),
@@ -610,7 +608,7 @@ private fun DevMaintenanceTabContent(viewModel: LibraryViewModel) {
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = AppTheme.colors.surface,
-                    border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
+                    border = null
                 ) {
                     Text(
                         text = "DEV · CATALOGUE MAINTENANCE",
@@ -741,7 +739,7 @@ private fun DiagnosticItem(
 @Composable
 private fun BookRow(
     book: Book,
-    serialNo: Int,
+    @Suppress("UNUSED_PARAMETER") serialNo: Int = 0,
     staffControls: Boolean = false,
     isReserving: Boolean = false,
     onReserve: () -> Unit,
@@ -758,24 +756,24 @@ private fun BookRow(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        // Top Row: Avatar on left, Title & Author in middle, Availability & Chevron on right
+        // Top Row: Available copies badge on left, Title & Author in middle, Chevron on right
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Book Serial Badge: purple if available, orange if checked out
+            // Book copies badge: purple if available, orange if 0 copies
             Box(
                 modifier = Modifier
-                    .size(42.dp)
+                    .size(40.dp)
                     .background(
-                        color = if (book.isAvailable) AppTheme.colors.primaryPurple else AppTheme.colors.accentOrange,
+                        color = if (book.availableCopies > 0) AppTheme.colors.primaryPurple else AppTheme.colors.accentOrange,
                         shape = CircleShape
                     ),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = String.format("%02d", serialNo),
+                    text = "${book.availableCopies}",
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color.White
@@ -804,29 +802,13 @@ private fun BookRow(
                 )
             }
 
-            // Right Column: Availability & Chevron indicator
-            Column(
-                horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Text(
-                    text = if (book.isAvailable)
-                        "${book.availableCopies} of ${book.totalCopies} Available"
-                    else
-                        "Checked Out",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = if (book.isAvailable) AppTheme.colors.primaryPurple else AppTheme.colors.accentOrange,
-                    textAlign = TextAlign.End
-                )
-
-                Icon(
-                    imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
-                    contentDescription = if (expanded) "Collapse details" else "Expand details",
-                    tint = AppTheme.colors.textSecondary,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
+            // Expand/collapse chevron indicator
+            Icon(
+                imageVector = if (expanded) Icons.Filled.KeyboardArrowUp else Icons.Filled.KeyboardArrowDown,
+                contentDescription = if (expanded) "Collapse details" else "Expand details",
+                tint = AppTheme.colors.textSecondary,
+                modifier = Modifier.size(20.dp)
+            )
         }
 
         // Expanded Details Section ("collapse box")
@@ -944,7 +926,7 @@ private fun BookRow(
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = AppTheme.colors.background,
-                        border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+                        border = null,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(

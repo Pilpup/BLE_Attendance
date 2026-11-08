@@ -50,7 +50,7 @@ object LibraryDashboardCard : DashboardCard {
             onClick = { onNavigate(NAV_ROUTE) },
             shape = RoundedCornerShape(22.dp),
             color = AppTheme.colors.surface,
-            border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+            border = null,
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(

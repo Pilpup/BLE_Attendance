@@ -304,7 +304,7 @@ internal fun StudentSection(
                                 Surface(
                                     shape = RoundedCornerShape(22.dp),
                                     color = AppTheme.colors.surface,
-                                    border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+                                    border = null,
                                     modifier = Modifier.onGloballyPositioned { coords ->
                                         scoreCardHeightDp = with(density) { coords.size.height.toDp() }
                                     }
@@ -382,7 +382,7 @@ internal fun StudentSection(
                 Surface(
                     shape = RoundedCornerShape(22.dp),
                     color = AppTheme.colors.surface,
-                    border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+                    border = null,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp)

@@ -7,6 +7,9 @@ android {
     defaultConfig {
         minSdk = 24
         consumerProguardFiles("consumer-rules.pro")
+        // Classroom phones are ARM: keep 64-bit ARM (all phones since ~2017)
+        // plus the 32-bit fallback. Drops emulator-only x86/x86_64 ABIs.
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         externalNativeBuild {
             cmake {
                 cppFlags += "-std=c++17"

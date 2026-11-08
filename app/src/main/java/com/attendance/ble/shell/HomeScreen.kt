@@ -3,6 +3,7 @@ package com.attendance.ble.shell
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -188,7 +189,7 @@ fun HomeScreen(
             )
 
             // Campus features card group (filters directly inside this island)
-            AppCardGroup(border = null) {
+            AppCardGroup {
                 if (visibleFeatures.isEmpty()) {
                     Box(
                         modifier = Modifier
@@ -219,12 +220,12 @@ fun HomeScreen(
             // Expandable application information group
             val aboutChevronRotation by animateFloatAsState(
                 targetValue = if (isAboutExpanded) 180f else 0f,
+                animationSpec = tween(durationMillis = 150),
                 label = "about_chevron_rotation"
             )
 
             AppCardGroup(
-                modifier = Modifier.animateContentSize(),
-                border = null
+                modifier = Modifier.animateContentSize(animationSpec = tween(durationMillis = 150))
             ) {
                 AppCardItem(
                     icon = Icons.Default.Info,
@@ -247,8 +248,8 @@ fun HomeScreen(
 
                 AnimatedVisibility(
                     visible = isAboutExpanded,
-                    enter = expandVertically() + fadeIn(),
-                    exit = shrinkVertically() + fadeOut()
+                    enter = expandVertically(animationSpec = tween(durationMillis = 150)) + fadeIn(animationSpec = tween(durationMillis = 150)),
+                    exit = shrinkVertically(animationSpec = tween(durationMillis = 150)) + fadeOut(animationSpec = tween(durationMillis = 150))
                 ) {
                     Column(
                         modifier = Modifier
@@ -280,10 +281,8 @@ fun HomeScreen(
         AppSearchPill(
             value = searchQuery,
             onValueChange = { searchQuery = it },
-            placeholder = "Search",
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(horizontal = 16.dp)
+            placeholder = "Search feature",
+            modifier = Modifier.align(Alignment.BottomCenter)
         )
     }
 

@@ -112,7 +112,7 @@ fun BarcodeScannerModal(
                 .padding(16.dp),
             shape = RoundedCornerShape(26.dp),
             color = AppTheme.colors.surface,
-            border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
+            border = null
         ) {
             Column(
                 modifier = Modifier

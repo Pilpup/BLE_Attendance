@@ -56,7 +56,7 @@ object AttendanceDashboardCard : DashboardCard {
             onClick = { onNavigate(NAV_ROUTE) },
             shape = RoundedCornerShape(16.dp),
             color = cardBg,
-            border = BorderStroke(1.dp, cardBorder),
+            border = null,
             modifier = Modifier.fillMaxWidth()
         ) {
             Row(

@@ -184,7 +184,7 @@ fun AuthScreen(
                 Surface(
                     shape = RoundedCornerShape(16.dp),
                     color = AppTheme.colors.surface,
-                    border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+                    border = null,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
@@ -242,7 +242,7 @@ fun AuthScreen(
                 Surface(
                     shape = RoundedCornerShape(22.dp),
                     color = AppTheme.colors.surface,
-                    border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+                    border = null,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(
@@ -624,7 +624,7 @@ fun AuthScreen(
                 Surface(
                     shape = RoundedCornerShape(22.dp),
                     color = AppTheme.colors.surface,
-                    border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+                    border = null,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Column(

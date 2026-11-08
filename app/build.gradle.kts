@@ -2,7 +2,12 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 android {
     namespace = "com.attendance.ble"
     compileSdk = 34
-    defaultConfig { applicationId = "com.attendance.ble"; minSdk = 24; targetSdk = 34; versionCode = 1; versionName = "1.0" }
+    defaultConfig {
+        applicationId = "com.attendance.ble"; minSdk = 24; targetSdk = 34; versionCode = 1; versionName = "1.0"
+        // Must match :feature:attendance — filters AAR-provided JNI libs (e.g.
+        // CameraX) to phone ABIs; emulator-only x86/x86_64 are excluded.
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
+    }
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.1" }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }

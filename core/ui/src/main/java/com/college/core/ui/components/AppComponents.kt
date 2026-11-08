@@ -81,6 +81,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
@@ -420,7 +421,7 @@ fun PokemonTrainerCard(
 @Composable
 fun AppCardGroup(
     modifier: Modifier = Modifier,
-    border: BorderStroke? = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+    border: BorderStroke? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Surface(
@@ -517,7 +518,7 @@ fun AppDivider(
     )
 }
 
-// Floating interactive search pill pinned at bottom (types directly, aligns with keyboard)
+// Floating interactive search pill pinned at bottom
 @Composable
 fun AppSearchPill(
     value: String,
@@ -531,12 +532,11 @@ fun AppSearchPill(
     val keyboardController = LocalSoftwareKeyboardController.current
 
     Surface(
-        shape = RoundedCornerShape(26.dp),
+        shape = RoundedCornerShape(24.dp),
         color = AppTheme.colors.surface,
         border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
         shadowElevation = if (AppTheme.colors.isDark) 0.dp else 4.dp,
         modifier = modifier
-            .fillMaxWidth()
             .imePadding()
             .padding(bottom = 16.dp)
             .clickable(
@@ -548,23 +548,26 @@ fun AppSearchPill(
     ) {
         Row(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(52.dp)
-                .padding(horizontal = 16.dp),
+                .height(46.dp)
+                .padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            // Search icon on left
             Icon(
                 imageVector = Icons.Default.Search,
                 contentDescription = "Search",
                 tint = AppTheme.colors.textSecondary,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(18.dp)
             )
-            Spacer(modifier = Modifier.width(10.dp))
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            // Centered input field
             BasicTextField(
                 value = value,
                 onValueChange = onValueChange,
                 modifier = Modifier
-                    .weight(1f)
+                    .widthIn(min = 52.dp, max = 240.dp)
                     .focusRequester(focusRequester),
                 singleLine = true,
                 keyboardOptions = keyboardOptions,
@@ -575,36 +578,51 @@ fun AppSearchPill(
                 textStyle = TextStyle(
                     color = AppTheme.colors.textPrimary,
                     fontSize = 15.sp,
-                    fontWeight = FontWeight.Normal
+                    fontWeight = FontWeight.Normal,
+                    textAlign = TextAlign.Center
                 ),
                 cursorBrush = SolidColor(AppTheme.colors.primaryPurple),
                 decorationBox = { innerTextField ->
-                    Box(contentAlignment = Alignment.CenterStart) {
+                    Box(contentAlignment = Alignment.Center) {
                         if (value.isEmpty()) {
                             Text(
                                 text = placeholder,
                                 color = AppTheme.colors.textSecondary,
                                 fontSize = 15.sp,
-                                fontWeight = FontWeight.Normal
+                                fontWeight = FontWeight.Normal,
+                                textAlign = TextAlign.Center,
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                         innerTextField()
                     }
                 }
             )
+
+            // Right slot for clear button or symmetrical spacer
             if (value.isNotEmpty()) {
                 Spacer(modifier = Modifier.width(6.dp))
-                IconButton(
-                    onClick = { onValueChange("") },
-                    modifier = Modifier.size(24.dp)
+                Box(
+                    modifier = Modifier
+                        .size(20.dp)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) {
+                            onValueChange("")
+                        },
+                    contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
                         contentDescription = "Clear",
                         tint = AppTheme.colors.textSecondary,
-                        modifier = Modifier.size(18.dp)
+                        modifier = Modifier.size(16.dp)
                     )
                 }
+            } else {
+                Spacer(modifier = Modifier.width(26.dp))
             }
         }
     }
@@ -711,7 +729,7 @@ fun AppDropdownField(
                     shape = RoundedCornerShape(12.dp),
                     color = AppTheme.colors.surface,
                     shadowElevation = if (AppTheme.colors.isDark) 0.dp else 6.dp,
-                    border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+                    border = null,
                     modifier = Modifier.width(if (anchorWidthDp > 0.dp) anchorWidthDp else 280.dp)
                 ) {
                     Column(

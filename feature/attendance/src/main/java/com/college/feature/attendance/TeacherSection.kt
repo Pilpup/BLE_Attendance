@@ -219,7 +219,7 @@ internal fun TeacherSection(
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(12.dp),
                     color = AppTheme.colors.surface,
-                    border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
+                    border = null
                 ) {
                     Row(
                         modifier = Modifier
@@ -249,7 +249,7 @@ internal fun TeacherSection(
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(12.dp),
                     color = AppTheme.colors.surface,
-                    border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
+                    border = null
                 ) {
                     Row(
                         modifier = Modifier
@@ -279,7 +279,7 @@ internal fun TeacherSection(
             Surface(
                 shape = RoundedCornerShape(14.dp),
                 color = AppTheme.colors.surface,
-                border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+                border = null,
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
@@ -1351,7 +1351,7 @@ private fun TakeAttendanceSelectionView(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
                 color = AppTheme.colors.surface,
-                border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
+                border = null
             ) {
                 Row(
                     modifier = Modifier.padding(12.dp),
@@ -1445,7 +1445,6 @@ private fun AppDetailIsland(
         modifier = modifier
             .clip(shape)
             .background(AppTheme.colors.surface)
-            .border(1.dp, AppTheme.colors.surfaceBorder, shape)
             .padding(horizontal = 12.dp, vertical = 6.dp)
     ) {
         Column(
@@ -1524,7 +1523,7 @@ private fun OlderSessionsFilterDialog(
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
                                 color = if (isSel) AppTheme.colors.primaryPurple else AppTheme.colors.surface,
-                                border = BorderStroke(1.dp, if (isSel) AppTheme.colors.primaryPurple else AppTheme.colors.surfaceBorder),
+                                border = null,
                                 modifier = Modifier.clickable { course = if (isSel) null else prog }
                             ) {
                                 Text(
@@ -1556,7 +1555,7 @@ private fun OlderSessionsFilterDialog(
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
                                 color = if (isSel) AppTheme.colors.primaryPurple else AppTheme.colors.surface,
-                                border = BorderStroke(1.dp, if (isSel) AppTheme.colors.primaryPurple else AppTheme.colors.surfaceBorder),
+                                border = null,
                                 modifier = Modifier.clickable { classType = if (isSel) null else cls }
                             ) {
                                 Text(
@@ -1590,7 +1589,7 @@ private fun OlderSessionsFilterDialog(
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
                                 color = if (isSel) AppTheme.colors.primaryPurple else AppTheme.colors.surface,
-                                border = BorderStroke(1.dp, if (isSel) AppTheme.colors.primaryPurple else AppTheme.colors.surfaceBorder),
+                                border = null,
                                 modifier = Modifier.clickable { semester = if (isSel) null else sem }
                             ) {
                                 Text(
@@ -1704,7 +1703,7 @@ private fun OlderSessionsView(
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = if (activeFilterCount > 0) AppTheme.colors.primaryPurple.copy(alpha = 0.15f) else AppTheme.colors.surface,
-                        border = BorderStroke(1.dp, if (activeFilterCount > 0) AppTheme.colors.primaryPurple else AppTheme.colors.surfaceBorder),
+                        border = null,
                         modifier = Modifier.clickable { showFilterDialog = true }
                     ) {
                         Row(
@@ -1732,7 +1731,7 @@ private fun OlderSessionsView(
                     Surface(
                         shape = RoundedCornerShape(14.dp),
                         color = if (isAllSelected) AppTheme.colors.primaryPurple else AppTheme.colors.surface,
-                        border = BorderStroke(1.dp, if (isAllSelected) AppTheme.colors.primaryPurple else AppTheme.colors.surfaceBorder),
+                        border = null,
                         modifier = Modifier.clickable {
                             filterCourse = null
                             filterClassType = null
@@ -1779,7 +1778,7 @@ private fun OlderSessionsView(
                     Surface(
                         shape = RoundedCornerShape(20.dp),
                         color = AppTheme.colors.surface,
-                        border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+                        border = null,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Box(
@@ -1817,7 +1816,7 @@ private fun OlderSessionsView(
                     Surface(
                         shape = RoundedCornerShape(20.dp),
                         color = AppTheme.colors.surface,
-                        border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+                        border = null,
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(modifier = Modifier.fillMaxWidth()) {
@@ -1865,10 +1864,8 @@ private fun OlderSessionsView(
             AppSearchPill(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = "Search sessions...",
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(horizontal = 16.dp)
+                placeholder = "Search sessions",
+                modifier = Modifier.align(Alignment.BottomCenter)
             )
         }
     }
@@ -2018,15 +2015,14 @@ private fun SessionDetailScreen(
             }
         }
 
-        // Attendance student roster in same format
+        // Attendance student roster unified into a single island
         if (sortedRecords.isEmpty()) {
             item {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(100.dp)
-                        .background(AppTheme.colors.surface, RoundedCornerShape(12.dp))
-                        .border(1.dp, AppTheme.colors.surfaceBorder, RoundedCornerShape(12.dp)),
+                        .background(AppTheme.colors.surface, RoundedCornerShape(14.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
@@ -2037,70 +2033,80 @@ private fun SessionDetailScreen(
                 }
             }
         } else {
-            items(sortedRecords, key = { it.id ?: it.bleDeviceId }) { rec ->
-                val isPresent = isRecordPresent(rec)
-                val statusText = if (isPresent) "Present" else "Absent"
-                val statusColor = if (isPresent) successGreen else alertRed
-                val statusBg = if (isPresent) successGreenBg else alertRedBg
-
-                val rollNo = remember(rec) { getDisplayRollNo(rec) }
-                val shortRoll = remember(rollNo) { getRollNumberTwoDigits(rollNo) }
-                val studentName = remember(rec) { getDisplayStudentName(rec) }
-
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = CardDefaults.cardColors(containerColor = AppTheme.colors.surface),
-                    border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
+            item {
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = AppTheme.colors.surface,
+                    border = null,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        // Circle in front of name: last two digits of roll number (01, 02, 03..)
-                        Box(
-                            modifier = Modifier
-                                .size(32.dp)
-                                .background(AppTheme.colors.background, CircleShape)
-                                .border(1.dp, AppTheme.colors.surfaceBorder, CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                text = shortRoll,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace,
-                                color = AppTheme.colors.textPrimary
-                            )
-                        }
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        sortedRecords.forEachIndexed { index, rec ->
+                            if (index > 0) {
+                                HorizontalDivider(
+                                    color = AppTheme.colors.background,
+                                    thickness = 1.dp,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
 
-                        // Student name only (no roll number underneath)
-                        Text(
-                            text = studentName,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = AppTheme.colors.textPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
+                            val isPresent = isRecordPresent(rec)
+                            val statusText = if (isPresent) "Present" else "Absent"
+                            val statusBg = if (isPresent) AppTheme.colors.primaryPurple else AppTheme.colors.accentOrange
 
-                        // Compact status pill: Present or Absent only
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = statusBg,
-                            border = BorderStroke(1.dp, statusColor.copy(alpha = 0.4f))
-                        ) {
-                            Text(
-                                text = statusText,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = statusColor
-                            )
+                            val rollNo = remember(rec) { getDisplayRollNo(rec) }
+                            val shortRoll = remember(rollNo) { getRollNumberTwoDigits(rollNo) }
+                            val studentName = remember(rec) { getDisplayStudentName(rec) }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                // Roll number badge circle
+                                Box(
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .background(AppTheme.colors.background, CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = shortRoll,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = AppTheme.colors.textPrimary
+                                    )
+                                }
+
+                                // Student name
+                                Text(
+                                    text = studentName,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = AppTheme.colors.textPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+
+                                // Present or Absent status pill
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = statusBg,
+                                    border = null
+                                ) {
+                                    Text(
+                                        text = statusText,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
+                                }
+                            }
                         }
                     }
                 }
