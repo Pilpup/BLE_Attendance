@@ -800,7 +800,16 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     courseProgram = selectedCourse?.program,
                     courseSemester = selectedClassSemester()
                 )
-                val result = safeApiCall { api.createSession(req) }
+                // Cold-start resilience: Render free tier may still be booting when
+                // the create lands — a timed-out/502 first attempt gets one retry
+                // so the session actually exists for submit/finalize instead of
+                // class-wide 404s.
+                var result = safeApiCall { api.createSession(req) }
+                if (result is NetworkResult.Exception ||
+                    (result as? NetworkResult.Error)?.code?.let { it in 500..599 } == true
+                ) {
+                    result = safeApiCall { api.createSession(req) }
+                }
                 withContext(Dispatchers.Main) {
                     isCloudSyncing = false
                     when (result) {
@@ -818,7 +827,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                 cloudStatusMessage = "Session ID $sessionId is already in use by an active session — pick a new ID before broadcasting"
                                 android.util.Log.e("AttendanceViewModel", "Session create rejected: HTTP 409 - ${result.message}")
                             } else {
-                                cloudStatusMessage = "Cloud sync warning (HTTP ${result.code}): running locally ($sessionId)"
+                                cloudStatusMessage = "Cloud sync warning (HTTP ${result.code}): session NOT created — students cannot check in until you STOP and start a new class with a new ID"
                                 android.util.Log.e("AttendanceViewModel", "Session create failed: HTTP ${result.code} - ${result.message}")
                                 onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
                             }
@@ -888,7 +897,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         broadcastAirVerdicts(finalizedRecords)
                     }
                     is NetworkResult.Error -> {
-                        cloudStatusMessage = "Finalization failed: HTTP ${result.code} - ${result.message}"
+                        cloudStatusMessage = if (result.code == 404) {
+                            "Finalization failed (HTTP 404): the cloud session was never created — the create request at class start failed. See the banner shown then."
+                        } else {
+                            "Finalization failed: HTTP ${result.code} - ${result.message}"
+                        }
                         finalizedRecords = emptyList()
                     }
                     is NetworkResult.Exception -> {
