@@ -129,9 +129,20 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var cloudStatusMessage: String? by mutableStateOf(null)
     var studentStatusMessage: String? by mutableStateOf(null)
 
-    // Beacon broadcast payload
+    // Class semester parsed from the selected course ("Semester 3" -> 3), null
+    // when no class is picked. Drives the beacon tag and the create-payload
+    // class identity used by the server eligibility gate.
+    private fun selectedClassSemester(): Int? =
+        selectedCourse?.semester?.filter { it.isDigit() }?.toIntOrNull()
+
+    // Beacon broadcast payload: "S:<ID>:<SALT>[:<SEMESTER>]" — the optional 4th
+    // field tags the class semester so student phones can skip foreign-class
+    // beacons locally (UX only; the server eligibility gate is authoritative).
     val currentBroadcastToken: String
-        get() = if (isSessionActive) "S:$sessionId:$sessionSalt" else "IDLE"
+        get() = if (isSessionActive) {
+            val sem = selectedClassSemester()
+            if (sem != null) "S:$sessionId:$sessionSalt:$sem" else "S:$sessionId:$sessionSalt"
+        } else "IDLE"
 
     // Radio advertising configuration
     val teacherAdvMode = AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY
@@ -783,7 +794,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     sessionToken = sessionId,
                     sessionSalt = sessionSalt,
                     courseCode = selectedCourse?.courseCode,
-                    courseName = selectedCourse?.courseName
+                    courseName = selectedCourse?.courseName,
+                    // Teacher-declared class identity — powers the eligibility
+                    // snapshot the server gates student check-ins against
+                    courseProgram = selectedCourse?.program,
+                    courseSemester = selectedClassSemester()
                 )
                 val result = safeApiCall { api.createSession(req) }
                 withContext(Dispatchers.Main) {
@@ -1454,11 +1469,20 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             }
         }
 
-        // Check for teacher beacon packet format (S:<SessionID>:<Salt>)
+        // Check for teacher beacon packet format (S:<SessionID>:<Salt>[:<Semester>])
         val isBeacon = cleanMsg.startsWith("S:") || cleanMsg.startsWith("SESSION:")
         if (isBeacon && studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
             val parts = cleanMsg.split(":")
             if (parts.size >= 2) {
+                // Local class pre-filter (UX only — server gate is authoritative):
+                // a beacon tagged with a different semester is skipped WITHOUT
+                // latching, so the phone keeps listening for its own class.
+                val beaconSemester = parts.getOrNull(3)?.toIntOrNull()
+                val profileSemester = SessionManager.default.currentUser?.semester
+                if (beaconSemester != null && profileSemester != null && beaconSemester != profileSemester) {
+                    studentStatusMessage = "Nearby class is Semester $beaconSemester — your profile says Semester $profileSemester"
+                    return
+                }
                 detectedSessionId = parts[1]
                 detectedSessionSalt = if (parts.size >= 3) parts[2] else ""
                 studentPhase = StudentPhase.PROBING_NEIGHBORS

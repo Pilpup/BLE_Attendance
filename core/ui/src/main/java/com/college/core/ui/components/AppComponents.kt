@@ -137,13 +137,14 @@ fun AppProfileCard(
     modifier: Modifier = Modifier,
     initial: String? = null,
     avatarBg: Color = AppTheme.colors.accentOrange,
-    avatarIcon: ImageVector? = null
+    avatarIcon: ImageVector? = null,
+    border: BorderStroke? = BorderStroke(1.dp, AppTheme.colors.surfaceBorder)
 ) {
     Surface(
         onClick = onClick,
         shape = RoundedCornerShape(22.dp),
         color = AppTheme.colors.surface,
-        border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+        border = border,
         modifier = modifier.fillMaxWidth()
     ) {
         Row(
@@ -419,12 +420,13 @@ fun PokemonTrainerCard(
 @Composable
 fun AppCardGroup(
     modifier: Modifier = Modifier,
+    border: BorderStroke? = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
     content: @Composable ColumnScope.() -> Unit
 ) {
     Surface(
         shape = RoundedCornerShape(22.dp),
         color = AppTheme.colors.surface,
-        border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
+        border = border,
         modifier = modifier.fillMaxWidth()
     ) {
         Column(
@@ -515,7 +517,7 @@ fun AppDivider(
     )
 }
 
-// Floating interactive search pill pinned at bottom (types directly, expands, aligns with keyboard)
+// Floating interactive search pill pinned at bottom (types directly, aligns with keyboard)
 @Composable
 fun AppSearchPill(
     value: String,
@@ -527,9 +529,6 @@ fun AppSearchPill(
     onSearch: (() -> Unit)? = null
 ) {
     val keyboardController = LocalSoftwareKeyboardController.current
-    val screenWidth = LocalConfiguration.current.screenWidthDp.dp
-    val minPillWidth = (screenWidth / 3f).coerceIn(125.dp, 200.dp)
-    val maxPillWidth = (screenWidth - 32.dp).coerceAtLeast(minPillWidth)
 
     Surface(
         shape = RoundedCornerShape(26.dp),
@@ -537,10 +536,9 @@ fun AppSearchPill(
         border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
         shadowElevation = if (AppTheme.colors.isDark) 0.dp else 4.dp,
         modifier = modifier
+            .fillMaxWidth()
             .imePadding()
             .padding(bottom = 16.dp)
-            .animateContentSize()
-            .widthIn(min = minPillWidth, max = maxPillWidth)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null
@@ -548,68 +546,64 @@ fun AppSearchPill(
                 focusRequester.requestFocus()
             }
     ) {
-        Box(
+        Row(
             modifier = Modifier
+                .fillMaxWidth()
                 .height(52.dp)
                 .padding(horizontal = 16.dp),
-            contentAlignment = Alignment.Center
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Search,
-                    contentDescription = "Search",
-                    tint = AppTheme.colors.textSecondary,
-                    modifier = Modifier.size(20.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                BasicTextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    modifier = Modifier
-                        .weight(1f, fill = false)
-                        .focusRequester(focusRequester),
-                    singleLine = true,
-                    keyboardOptions = keyboardOptions,
-                    keyboardActions = KeyboardActions(onSearch = {
-                        onSearch?.invoke()
-                        keyboardController?.hide()
-                    }),
-                    textStyle = TextStyle(
-                        color = AppTheme.colors.textPrimary,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.Normal
-                    ),
-                    cursorBrush = SolidColor(AppTheme.colors.primaryPurple),
-                    decorationBox = { innerTextField ->
-                        Box(contentAlignment = Alignment.CenterStart) {
-                            if (value.isEmpty()) {
-                                Text(
-                                    text = placeholder,
-                                    color = AppTheme.colors.textSecondary,
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Normal
-                                )
-                            }
-                            innerTextField()
+            Icon(
+                imageVector = Icons.Default.Search,
+                contentDescription = "Search",
+                tint = AppTheme.colors.textSecondary,
+                modifier = Modifier.size(20.dp)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                modifier = Modifier
+                    .weight(1f)
+                    .focusRequester(focusRequester),
+                singleLine = true,
+                keyboardOptions = keyboardOptions,
+                keyboardActions = KeyboardActions(onSearch = {
+                    onSearch?.invoke()
+                    keyboardController?.hide()
+                }),
+                textStyle = TextStyle(
+                    color = AppTheme.colors.textPrimary,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Normal
+                ),
+                cursorBrush = SolidColor(AppTheme.colors.primaryPurple),
+                decorationBox = { innerTextField ->
+                    Box(contentAlignment = Alignment.CenterStart) {
+                        if (value.isEmpty()) {
+                            Text(
+                                text = placeholder,
+                                color = AppTheme.colors.textSecondary,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Normal
+                            )
                         }
+                        innerTextField()
                     }
-                )
-                if (value.isNotEmpty()) {
-                    Spacer(modifier = Modifier.width(6.dp))
-                    IconButton(
-                        onClick = { onValueChange("") },
-                        modifier = Modifier.size(22.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Clear",
-                            tint = AppTheme.colors.textSecondary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
+                }
+            )
+            if (value.isNotEmpty()) {
+                Spacer(modifier = Modifier.width(6.dp))
+                IconButton(
+                    onClick = { onValueChange("") },
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Clear",
+                        tint = AppTheme.colors.textSecondary,
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
             }
         }

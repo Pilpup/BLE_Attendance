@@ -1196,7 +1196,9 @@ private fun TakeAttendanceSelectionView(
             CourseResponse(
                 id = stableCourseId,
                 courseCode = code,
-                courseName = name
+                courseName = name,
+                program = courseProgram,
+                semester = semester
             )
         )
     }

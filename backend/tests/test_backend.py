@@ -437,7 +437,7 @@ async def test_submit_neighbors_salt_enforcement():
                     "roll_number": s_roll,
                     "department": "CSE",
                     "program": "B.Tech",
-                    "semester": 6,
+                    "semester": 1,
                     "section": "A",
                 },
             )
@@ -515,6 +515,164 @@ async def test_submit_neighbors_salt_enforcement():
         assert record_map["1234"]["status"] == "VERIFIED_PRESENT"
         assert record_map["1234"]["verification_method"] == "DIRECT_MUTUAL"
         assert record_map["5678"]["status"] == "VERIFIED_PRESENT"
+
+
+# Verifies the class-eligibility gate: wrong-semester and blank-profile students
+# are rejected before any salt/face work; matching students and non-student
+# roles pass; attempts surface as ELIGIBILITY_REJECTED on the audit dashboard
+@pytest.mark.anyio
+async def test_session_eligibility_gate():
+    import uuid
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from sqlalchemy import select
+    from app.database import get_db
+    from app.models.attendance import Base, EmailOTP
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with test_session_factory() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Register teacher and create a Semester 3 session (teacher-declared class)
+        t_reg = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "name": "Prof. Eligibility",
+                "email": "elig.teacher@univ.edu",
+                "password": "Password123!",
+                "role": "TEACHER",
+                "roll_number": "EMP777",
+                "department": "CSE",
+                "faculty_code": settings.FACULTY_SIGNUP_SECRET,
+            },
+        )
+        assert t_reg.status_code == 200
+        async with test_session_factory() as s:
+            otp_row = (await s.execute(select(EmailOTP).where(EmailOTP.email == "elig.teacher@univ.edu"))).scalars().first()
+            otp_code = otp_row.otp_code
+        t_verify = await client.post(
+            "/api/v1/auth/register/verify-otp",
+            json={"email": "elig.teacher@univ.edu", "otp_code": otp_code},
+        )
+        assert t_verify.status_code == 201
+        teacher_headers = {"Authorization": f"Bearer {t_verify.json()['access_token']}"}
+
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers=teacher_headers,
+            json={
+                "session_token": "ELIG", "session_salt": "S3M3", "total_enrolled": 5,
+                "course_program": "B-Tech", "course_semester": 3,
+            },
+        )
+        assert s_res.status_code == 201
+        session_data = s_res.json()
+        assert session_data["eligibility_program"] == "B-Tech"
+        assert session_data["eligibility_semester"] == 3
+        submit_url = f"/api/v1/attendance/sessions/{session_data['id']}/submit-neighbors"
+
+        async def register_student(email, roll, semester):
+            s_reg = await client.post(
+                "/api/v1/auth/register",
+                json={
+                    "name": f"Student {roll}", "email": email, "password": "Password123!",
+                    "role": "STUDENT", "roll_number": roll, "department": "CSE",
+                    "program": "B-Tech", "semester": semester, "section": "A",
+                },
+            )
+            assert s_reg.status_code == 200, s_reg.text
+            async with test_session_factory() as s:
+                s_otp_row = (await s.execute(select(EmailOTP).where(EmailOTP.email == email))).scalars().first()
+            verified = await client.post(
+                "/api/v1/auth/register/verify-otp",
+                json={"email": email, "otp_code": s_otp_row.otp_code},
+            )
+            assert verified.status_code == 201, verified.text
+            return verified.json()["access_token"]
+
+        # 1) Wrong-semester student (Sem 6, adjacent-room scenario) — WRONG salt too:
+        #    eligibility gate must fire FIRST and its reason must be the class binding
+        sem6_token = await register_student("elig.sem6@univ.edu", "22B0006", 6)
+        wrong_class = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {sem6_token}"},
+            json={"student_id": "0006", "neighbors": [], "session_salt": "WRNG"},
+        )
+        assert wrong_class.status_code == 403, wrong_class.text
+        assert "Semester 3" in wrong_class.json()["detail"]
+        assert "Semester 6" in wrong_class.json()["detail"]
+
+        # 2) Blank-profile student (no semester) — rejected with fix-your-profile hint
+        blank_token = await register_student("elig.blank@univ.edu", "22B0007", None)
+        blank = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {blank_token}"},
+            json={"student_id": "0007", "neighbors": [], "session_salt": "S3M3"},
+        )
+        assert blank.status_code == 403
+        assert "Attendance profile incomplete" in blank.json()["detail"]
+
+        # 3) Matching Sem-3 student with the correct salt passes the gate and
+        #    proceeds into the normal peer flow
+        sem3_token = await register_student("elig.sem3@univ.edu", "22B0003", 3)
+        valid = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {sem3_token}"},
+            json={"student_id": "0003", "neighbors": ["1111"], "session_salt": "S3M3"},
+        )
+        assert valid.status_code == 200, valid.text
+        assert valid.json()["status"] == "success"
+
+        # 4) Non-student role (DEVELOPER) bypasses class binding entirely — with
+        #    a WRONG salt it must fail on the SALT gate, never the eligibility one
+        import bcrypt as _bcrypt
+        async with test_session_factory() as s:
+            from app.core.security import create_access_token
+            from app.models.attendance import User as UserModel
+
+            dev_res = await s.execute(select(UserModel).where(UserModel.role == "TEACHER"))
+            teacher_row = dev_res.scalars().first()
+            dev = UserModel(
+                email="elig.dev@univ.edu", full_name="Dev Bypass",
+                hashed_password=_bcrypt.hashpw(b"Password123!", _bcrypt.gensalt()).decode(),
+                role="DEVELOPER",
+            )
+            s.add(dev)
+            await s.commit()
+            dev_token = create_access_token({"sub": str(dev.id)})
+            _ = teacher_row
+
+        dev_submit = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {dev_token}"},
+            json={"student_id": "9999", "neighbors": [], "session_salt": "WRNG"},
+        )
+        assert dev_submit.status_code == 403
+        assert "Nice try" in dev_submit.json()["detail"]  # salt-gate rejection, not eligibility
+
+        # 5) Audit dashboard surfaces rejected attempts as ELIGIBILITY_REJECTED
+        audit_res = await client.post(
+            f"/api/v1/attendance/sessions/{session_data['id']}/audit-and-finalize",
+            headers=teacher_headers,
+            json={"reports": {}},
+        )
+        assert audit_res.status_code == 200
+        audit_data = audit_res.json()
+        record_map = {r["ble_device_id"]: r for r in audit_data["records"]}
+        assert record_map["0006"]["verification_method"] == "ELIGIBILITY_REJECTED"
+        assert record_map["0006"]["status"] == "SPOOFER_REJECTED"
+        assert "Semester 3" in record_map["0006"]["remarks"]
+        assert record_map["0007"]["verification_method"] == "ELIGIBILITY_REJECTED"
 
 
 # Verifies expired OTP cleanup behavior and purge on invalid submission
@@ -842,7 +1000,7 @@ async def _register_battery_student(client, session_factory) -> str:
             "roll_number": f"RB{uid}X",
             "department": "CSE",
             "program": "B.Tech",
-            "semester": 6,
+            "semester": 1,
             "section": "A",
         },
     )
@@ -913,7 +1071,7 @@ async def _register_roll_student(client, session_factory, name: str, email: str,
             "roll_number": roll,
             "department": "CSE",
             "program": "B.Tech",
-            "semester": 6,
+            "semester": 1,
             "section": "A",
         },
     )

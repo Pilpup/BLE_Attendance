@@ -23,7 +23,11 @@ data class CourseCreateRequest(
 data class CourseResponse(
     val id: String,
     @SerializedName("course_code") val courseCode: String,
-    @SerializedName("course_name") val courseName: String
+    @SerializedName("course_name") val courseName: String,
+    // Class identity for the eligibility gate + beacon tag. Server course rows
+    // serialize an int, Gson coerces it leniently into this String.
+    @SerializedName("program") val program: String? = null,
+    @SerializedName("semester") val semester: String? = null
 )
 
 data class SessionCreateRequest(
@@ -32,7 +36,10 @@ data class SessionCreateRequest(
     @SerializedName("session_salt") val sessionSalt: String? = null,
     @SerializedName("total_enrolled") val totalEnrolled: Int = 0,
     @SerializedName("course_code") val courseCode: String? = null,
-    @SerializedName("course_name") val courseName: String? = null
+    @SerializedName("course_name") val courseName: String? = null,
+    // Teacher-declared class identity — eligibility snapshot source of truth
+    @SerializedName("course_program") val courseProgram: String? = null,
+    @SerializedName("course_semester") val courseSemester: Int? = null
 )
 
 @Immutable

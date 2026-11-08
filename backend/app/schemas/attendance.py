@@ -155,6 +155,11 @@ class SessionCreateRequest(BaseModel):
         description="4-char salt distributed ONLY via the teacher's BLE beacon (S:<ID>:<SALT>)",
     )
     total_enrolled: int = Field(default=0, ge=0)
+    # Teacher-declared class identity for the eligibility gate. Preferred over
+    # the course-row snapshot so a freshly auto-created course cannot bind the
+    # session to the wrong semester.
+    course_program: Optional[str] = Field(None, max_length=30)
+    course_semester: Optional[int] = Field(None, ge=1, le=10)
 
 
 # Session finalization request containing complete mesh audit records
@@ -254,6 +259,9 @@ class AttendanceSessionResponse(BaseModel):
     records: Optional[list[AttendanceRecordResponse]] = None
     course_code: Optional[str] = None
     course_name: Optional[str] = None
+    eligibility_program: Optional[str] = None
+    eligibility_department: Optional[str] = None
+    eligibility_semester: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 

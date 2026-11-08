@@ -1,5 +1,12 @@
 package com.attendance.ble.shell
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -26,6 +33,7 @@ import androidx.compose.material.icons.automirrored.filled.FactCheck
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
@@ -45,6 +53,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -71,7 +80,7 @@ fun HomeScreen(
     onNavigate: (String) -> Unit
 ) {
     var showAccountDialog by remember { mutableStateOf(false) }
-    var showAboutDialog by remember { mutableStateOf(false) }
+    var isAboutExpanded by remember { mutableStateOf(false) }
     var showDevActingDialog by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
 
@@ -168,6 +177,7 @@ fun HomeScreen(
                 },
                 initial = user?.name,
                 avatarBg = if (user != null) AppTheme.colors.accentOrange else AppTheme.colors.primaryPurple,
+                border = null,
                 onClick = {
                     if (user != null) {
                         showAccountDialog = true
@@ -178,7 +188,7 @@ fun HomeScreen(
             )
 
             // Campus features card group (filters directly inside this island)
-            AppCardGroup {
+            AppCardGroup(border = null) {
                 if (visibleFeatures.isEmpty()) {
                     Box(
                         modifier = Modifier
@@ -206,15 +216,60 @@ fun HomeScreen(
                 }
             }
 
-            // Application information group
-            AppCardGroup {
+            // Expandable application information group
+            val aboutChevronRotation by animateFloatAsState(
+                targetValue = if (isAboutExpanded) 180f else 0f,
+                label = "about_chevron_rotation"
+            )
+
+            AppCardGroup(
+                modifier = Modifier.animateContentSize(),
+                border = null
+            ) {
                 AppCardItem(
                     icon = Icons.Default.Info,
                     iconTint = Color.White,
                     iconBg = Color(0xFF64748B),
                     title = "About",
-                    onClick = { showAboutDialog = true }
+                    subtitle = "v1.0",
+                    onClick = { isAboutExpanded = !isAboutExpanded },
+                    trailing = {
+                        Icon(
+                            imageVector = Icons.Default.KeyboardArrowDown,
+                            contentDescription = if (isAboutExpanded) "Collapse" else "Expand",
+                            tint = AppTheme.colors.textSecondary,
+                            modifier = Modifier
+                                .size(22.dp)
+                                .rotate(aboutChevronRotation)
+                        )
+                    }
                 )
+
+                AnimatedVisibility(
+                    visible = isAboutExpanded,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, end = 16.dp, bottom = 16.dp, top = 2.dp)
+                    ) {
+                        HorizontalDivider(
+                            color = AppTheme.colors.surfaceBorder.copy(alpha = 0.5f),
+                            thickness = 1.dp,
+                            modifier = Modifier.padding(bottom = 12.dp)
+                        )
+
+                        // Gratitude message
+                        Text(
+                            text = "Thank you for using our app",
+                            fontSize = 14.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = AppTheme.colors.textSecondary
+                        )
+                    }
+                }
             }
 
             // Bottom clearance above floating search bar
@@ -248,12 +303,6 @@ fun HomeScreen(
             onRoleClick = if (SessionManager.default.realUser?.isDeveloper() == true) {
                 { showDevActingDialog = true }
             } else null
-        )
-    }
-
-    if (showAboutDialog) {
-        AboutDialog(
-            onDismiss = { showAboutDialog = false }
         )
     }
 
@@ -310,62 +359,6 @@ private fun PokemonTrainerCardDialog(
     }
 }
 
-// Application information modal
-@Composable
-private fun AboutDialog(
-    onDismiss: () -> Unit
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = AppTheme.colors.surface,
-        titleContentColor = AppTheme.colors.textPrimary,
-        textContentColor = AppTheme.colors.textPrimary,
-        shape = RoundedCornerShape(24.dp),
-        title = {
-            Text(
-                text = "College Hub",
-                fontWeight = FontWeight.Bold,
-                fontSize = 18.sp
-            )
-        },
-        text = {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(
-                    text = "A lightweight campus management application for student attendance and library services.",
-                    fontSize = 13.sp,
-                    color = AppTheme.colors.textSecondary
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = AppTheme.colors.primaryPurpleBg,
-                    border = BorderStroke(1.dp, AppTheme.colors.primaryPurple.copy(alpha = 0.3f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = "Version 2.0",
-                        color = AppTheme.colors.primaryPurple,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium,
-                        modifier = Modifier.padding(10.dp)
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = onDismiss,
-                colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.primaryPurple),
-                shape = RoundedCornerShape(12.dp)
-            ) {
-                Text("Close", color = Color.White, fontWeight = FontWeight.Bold)
-            }
-        }
-    )
-}
 
 // DEVELOPER-only acting-role selector: wears a role on the client lens so
 // developer accounts can preview student, teacher and staff flows end to end.

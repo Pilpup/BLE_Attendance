@@ -75,7 +75,7 @@ async def test_30_student_classroom_mesh_simulation():
                     "roll_number": sid,
                     "department": "CSE",
                     "program": "B.Tech",
-                    "semester": 6,
+                    "semester": 1,
                     "section": "A",
                 },
             )
@@ -93,7 +93,7 @@ async def test_30_student_classroom_mesh_simulation():
                 "roll_number": spoofer_id,
                 "department": "CSE",
                 "program": "B.Tech",
-                "semester": 6,
+                "semester": 1,
                 "section": "A",
             },
         )

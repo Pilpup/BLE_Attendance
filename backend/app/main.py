@@ -73,7 +73,11 @@ BEGIN
 
     -- attendance_sessions
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS course_id UUID;
-    ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS teacher_id UUID;
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS teacher_id UUID;
+    ALTER TABLE courses ALTER COLUMN teacher_id DROP NOT NULL;
+    ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS eligibility_program VARCHAR(30);
+    ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS eligibility_department VARCHAR(100);
+    ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS eligibility_semester INTEGER;
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS session_token VARCHAR(32);
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS session_salt VARCHAR(8);
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'ACTIVE';

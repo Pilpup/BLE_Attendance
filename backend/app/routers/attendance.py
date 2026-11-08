@@ -5,6 +5,7 @@ import base64
 import hashlib
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Union
@@ -70,6 +71,32 @@ router = APIRouter(prefix="/attendance", tags=["Attendance"])
 
 
 # Resolve an AttendanceSession by UUID or session token
+# Canonicalizes program strings so "B.Tech", "B-Tech" and "B Tech" compare equal
+def _program_key(value: Optional[str]) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
+
+
+# Returns None when `user` may submit to `session_obj`, else the human-readable
+# rejection reason. Pure in-memory comparison on objects both callers already
+# hold — the gate costs no extra queries at check-in time. Non-student roles
+# (TEACHER/STAFF/DEVELOPER) bypass class binding by design.
+def student_eligibility_detail(session_obj: AttendanceSession, user: User) -> Optional[str]:
+    if (user.role or "").upper() != "STUDENT":
+        return None
+    if user.semester is None or not (user.program or "").strip():
+        return "Attendance profile incomplete — update your program and semester before checking in"
+    if session_obj.eligibility_semester is None or not (session_obj.eligibility_program or "").strip():
+        return None  # unknown class identity (legacy rows) — nothing to bind to
+    semester_ok = user.semester == session_obj.eligibility_semester
+    program_ok = _program_key(user.program) == _program_key(session_obj.eligibility_program)
+    if semester_ok and program_ok:
+        return None
+    return (
+        f"This session is for {session_obj.eligibility_program} Semester {session_obj.eligibility_semester}"
+        f" — your profile says Semester {user.semester}"
+    )
+
+
 async def _resolve_session(session_id: str, db: AsyncSession) -> Optional[AttendanceSession]:
     load_opts = selectinload(AttendanceSession.records)
 
@@ -532,6 +559,7 @@ async def create_attendance_session(
 ):
     target_course_id = None
     target_uuid = None
+    course_obj: Optional[Course] = None
 
     if payload.course_id:
         try:
@@ -543,6 +571,7 @@ async def create_attendance_session(
         course_res = await db.execute(select(Course).where(Course.id == target_uuid))
         course = course_res.scalars().first()
         if course:
+            course_obj = course
             target_course_id = course.id
 
     if not target_course_id:
@@ -552,6 +581,7 @@ async def create_attendance_session(
         c_res = await db.execute(select(Course).where(func.upper(Course.course_code) == code_to_check))
         existing_c = c_res.scalars().first()
         if existing_c:
+            course_obj = existing_c
             target_course_id = existing_c.id
         else:
             new_course_id = target_uuid or uuid.uuid4()
@@ -564,7 +594,14 @@ async def create_attendance_session(
             db.add(new_c)
             await db.commit()
             await db.refresh(new_c)
+            course_obj = new_c
             target_course_id = new_c.id
+
+    # Eligibility snapshot: the teacher's declared class wins (their UI selection
+    # is the class actually being taught), the course row is the fallback.
+    eligibility_program = (payload.course_program or (course_obj.program if course_obj else None) or "").strip() or None
+    eligibility_semester = payload.course_semester if payload.course_semester is not None else (course_obj.semester if course_obj else None)
+    eligibility_department = course_obj.department if course_obj else None
 
     # Expire previous active sessions for this course created by current teacher
     active_check = await db.execute(
@@ -599,13 +636,17 @@ async def create_attendance_session(
             detail=f"Session ID '{payload.session_token}' is already in use by an active session — pick a new session ID",
         )
 
-    # Save new active attendance session
+    # Save new active attendance session (with eligibility snapshot for the
+    # student class-binding gate)
     session = AttendanceSession(
         id=uuid.uuid4(),
         course_id=target_course_id,
         teacher_id=current_user.id,
         session_token=payload.session_token,
         session_salt=payload.session_salt,
+        eligibility_program=eligibility_program,
+        eligibility_department=eligibility_department,
+        eligibility_semester=eligibility_semester,
         status="ACTIVE",
         total_enrolled=payload.total_enrolled,
         started_at=datetime.now(timezone.utc),
@@ -961,6 +1002,37 @@ async def submit_student_neighbors(
         session_obj.ended_at = datetime.now(timezone.utc)
         await db.commit()
         raise HTTPException(status_code=400, detail="Attendance session has expired")
+
+    # Class-eligibility gate: a student may only check in to the class the
+    # session is FOR. Runs on objects already loaded (session + JWT user) and
+    # before the rate limiter, so wrong-class attempts cost zero quota and no
+    # face/neighbor work. Mirrors the salt gate's rejection + flag pattern so
+    # the attempt stays visible on the teacher's audit dashboard.
+    eligibility_detail = student_eligibility_detail(session_obj, current_user)
+    if eligibility_detail:
+        raw_key = current_user.roll_number or str(current_user.id).replace("-", "")[:4]
+        claimed_key = raw_key[-4:].upper() if len(raw_key) >= 4 else raw_key.upper()
+        logger.warning(
+            f"[Eligibility Gate] Session {session_obj.id}: submit rejected for key {claimed_key} "
+            f"(authenticated) — {eligibility_detail}"
+        )
+        await _record_proxy_violation(
+            db=db,
+            session_id=session_obj.id,
+            device_id=claimed_key,
+            status="SPOOFER_REJECTED",
+            verification_method="ELIGIBILITY_REJECTED",
+            remarks=eligibility_detail,
+            student_id=current_user.id,
+            reported_neighbors=[
+                n[-4:].upper() if len(n) >= 4 else n.upper() for n in payload.neighbors
+            ],
+        )
+        await _commit_proxy_violation(db)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=eligibility_detail,
+        )
 
     # Per-(session, account) submit budget — deliberately NOT per-IP, the whole
     # classroom shares one Wi-Fi gateway address. Throttles salt brute-forcing

@@ -117,6 +117,12 @@ class AttendanceSession(Base):
     teacher_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     session_token: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     session_salt: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    # Eligibility snapshot ("what class is this session FOR") set once at
+    # creation from the teacher's selection or the course row. The student
+    # gate compares in-memory at submit — no per-check-in joins.
+    eligibility_program: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)
+    eligibility_department: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    eligibility_semester: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(50), default="ACTIVE")
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
