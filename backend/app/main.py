@@ -46,6 +46,8 @@ BEGIN
     ALTER TABLE courses ADD COLUMN IF NOT EXISTS periods_l INTEGER DEFAULT 3;
     ALTER TABLE courses ADD COLUMN IF NOT EXISTS periods_t INTEGER DEFAULT 1;
     ALTER TABLE courses ADD COLUMN IF NOT EXISTS periods_p INTEGER DEFAULT 0;
+    -- Full-row ORM loads (create route etc.) select created_at on every Course load
+    ALTER TABLE courses ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
     CREATE INDEX IF NOT EXISTS ix_courses_dept_sem ON courses(department, semester);
 
     -- course_units (academic syllabus hierarchy)
