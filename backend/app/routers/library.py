@@ -222,6 +222,13 @@ async def delete_book(
     return None
 
 
+# Hoarding guardrail (review §1.3.2): a single account must not tie up the
+# catalog. Counts this account's ACTIVE holds only; best-effort under
+# concurrency — inventory truth lives on the locked Book row, this cap just
+# prevents one user from mass-holding every title.
+MAX_ACTIVE_RESERVATIONS_PER_USER = 3
+
+
 # Reserve a copy of a book with row-level locking
 @router.post("/books/{book_id}/reserve", response_model=BookResponse)
 async def reserve_book(
@@ -234,6 +241,26 @@ async def reserve_book(
     book = result.scalars().first()
     if not book:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
+
+    # Per-user hoarding guard (review §1.3.2): count this account's ACTIVE holds
+    active_hold_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(BookReservation)
+            .where(
+                BookReservation.user_id == current_user.id,
+                BookReservation.status == "ACTIVE",
+            )
+        )
+    ).scalar_one()
+    if active_hold_count >= MAX_ACTIVE_RESERVATIONS_PER_USER:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Reservation limit reached: you already hold "
+                f"{MAX_ACTIVE_RESERVATIONS_PER_USER} active reservations"
+            ),
+        )
 
     # Check copy availability
     if book.available_copies <= 0:

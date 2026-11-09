@@ -185,8 +185,10 @@ async def test_course_units_and_topics_hierarchy():
         )
         assert u2_resp.status_code == 201, u2_resp.text
 
-        # Fetch full syllabus
-        syl_resp = await client.get(f"/api/v1/attendance/courses/{course_id}/syllabus")
+        # Fetch full syllabus (route now requires authentication)
+        syl_resp = await client.get(
+            f"/api/v1/attendance/courses/{course_id}/syllabus", headers=headers
+        )
         assert syl_resp.status_code == 200
         syllabus = syl_resp.json()
         assert len(syllabus) == 2

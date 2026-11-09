@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,19 +42,53 @@ INSECURE_DEFAULT_SECRETS = {
     "FACULTY_SIGNUP_SECRET": settings.FACULTY_SIGNUP_SECRET,
 }
 
+# Fragments that cannot occur in a genuine production secret — operators set
+# random tokens. Covers today's docker-compose placeholder idioms AND the
+# historical committed defaults still recoverable from git history, so pasting
+# either (in terms or in whole) cannot smuggle a weak value past the
+# exact-default comparison (review §1.1: closes the placeholder gap that
+# compose values sailed through).
+SECRET_PLACEHOLDER_TOKENS = (
+    "change_this",
+    "changeme",
+    "replace_me",
+    "super-secure",
+    "college_faculty_passcode",
+    "ble-mesh-attendance-secret-key",
+)
+# 32+ chars keeps room for human-set passcodes while forcing real entropy
+# (secrets.token_urlsafe(48) yields 64).
+MIN_SECRET_LENGTH = 32
+
+
+def insecure_secret_reason(name: str, value: str) -> Optional[str]:
+    """Reason a production secret value is unsafe, or None when acceptable."""
+    value = (value or "").strip()
+    if not value:
+        return f"{name} is empty"
+    if value == INSECURE_DEFAULT_SECRETS.get(name):
+        return f"{name} still uses the default committed in the repository"
+    if len(value) < MIN_SECRET_LENGTH:
+        return f"{name} is too short ({len(value)} chars < {MIN_SECRET_LENGTH})"
+    lowered = value.lower()
+    for token in SECRET_PLACEHOLDER_TOKENS:
+        if token in lowered:
+            return f"{name} contains placeholder marker '{token}'"
+    return None
+
 
 def validate_production_secrets() -> None:
     if settings.APP_ENV != "production":
         return
     offenders = [
-        name
-        for name, insecure_value in INSECURE_DEFAULT_SECRETS.items()
-        if getattr(settings, name) == insecure_value
+        reason
+        for name in INSECURE_DEFAULT_SECRETS
+        if (reason := insecure_secret_reason(name, getattr(settings, name, "")))
     ]
     if offenders:
         raise RuntimeError(
-            f"Refusing to start: APP_ENV is production but {', '.join(offenders)} "
-            "still use the built-in defaults committed in the repository. Generate "
-            "fresh values (python3 -c \"import secrets; print(secrets.token_urlsafe(48))\") "
+            "Refusing to start: APP_ENV is production but insecure secrets are "
+            "configured — " + "; ".join(offenders) + ". Generate fresh values "
+            "(python3 -c \"import secrets; print(secrets.token_urlsafe(48))\") "
             "and set them via environment variables before deploying."
         )

@@ -471,3 +471,58 @@ async def test_library_book_lookup_and_edition_overview():
         assert "1. Introduction and overview" in local_lookup.json()["table_of_contents"]
         assert local_lookup.json()["source"] == "Local Catalogue"
 
+
+@pytest.mark.anyio
+async def test_library_per_user_reservation_cap():
+    # review §1.3.2: no per-user cap meant one account could tie up the catalog
+    session_factory = await _make_test_env()
+    await _insert_role_user(
+        session_factory, name="Sarah Cap", email="sarahcap@univ.edu", role="STAFF", roll_number="LIB010"
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        staff_headers = await _login(client, "sarahcap@univ.edu")
+        book_ids = []
+        for i in range(4):
+            created = await client.post(
+                LIBRARY_URL,
+                headers=staff_headers,
+                json=_book_payload(f"97893801110{i}", title=f"Cap Test {i}", copies=1),
+            )
+            assert created.status_code == 201, created.text
+            book_ids.append(created.json()["id"])
+
+        student_headers = await _register_and_login(
+            client, name="Ida Hoard", email="ida@univ.edu", role="STUDENT", roll_number="22BCSE010"
+        )
+
+        # First three holds succeed
+        for i in range(3):
+            ok = await client.post(f"{LIBRARY_URL}/{book_ids[i]}/reserve", headers=student_headers)
+            assert ok.status_code == 200, ok.text
+
+        # Fourth hold is refused by the hoarding cap, not by stock
+        capped = await client.post(f"{LIBRARY_URL}/{book_ids[3]}/reserve", headers=student_headers)
+        assert capped.status_code == 409, capped.text
+        assert "Reservation limit reached" in capped.json()["detail"]
+
+        # Cancelling a hold frees budget for the next reservation
+        async with session_factory() as s:
+            ida = (await s.execute(select(User).where(User.email == "ida@univ.edu"))).scalar_one()
+            active = (
+                await s.execute(
+                    select(BookReservation).where(
+                        BookReservation.user_id == ida.id,
+                        BookReservation.status == "ACTIVE",
+                    )
+                )
+            ).scalars().all()
+        assert len(active) == 3
+        cancel = await client.post(
+            f"/api/v1/library/reservations/{active[0].id}/cancel", headers=student_headers
+        )
+        assert cancel.status_code == 200, cancel.text
+        retried = await client.post(f"{LIBRARY_URL}/{book_ids[3]}/reserve", headers=student_headers)
+        assert retried.status_code == 200, retried.text
+

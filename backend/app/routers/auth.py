@@ -1,12 +1,15 @@
+import asyncio
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from sqlalchemy import delete, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.security import (
+    DUMMY_BCRYPT_HASH,
     create_access_token,
     get_current_user,
     hash_password,
@@ -25,6 +28,7 @@ from app.schemas.auth import (
     VerifyOtpRequest,
 )
 from app.services.email import dispatch_otp_email, generate_otp
+from app.services.rate_limiter import login_email_limiter, login_ip_limiter
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -106,7 +110,7 @@ async def register_send_otp(
     temp_data = {
         "name": payload.name.strip(),
         "email": payload.email.strip().lower(),
-        "hashed_password": hash_password(payload.password),
+        "hashed_password": await asyncio.to_thread(hash_password, payload.password),
         "roll_number": payload.roll_number.strip(),
         "role": normalized_role,
         "department": payload.department.strip() if payload.department else None,
@@ -198,8 +202,23 @@ async def register_verify_otp(
             detail=f"Incorrect verification code ({remaining} attempts remaining).",
         )
 
-    # Create and persist new user
+    # R4 (review §3.1): two pending registrations of the same account can both
+    # pass the send-OTP pre-check (it only sees committed users) and race into
+    # verify — the loser would hit the unique constraints and 500. Re-check at
+    # insert time with a precise conflict, consuming the now-void OTP record.
     data = otp_record.temp_payload or {}
+    reg_email = (data.get("email", email) or "").strip().lower()
+    reg_roll = data.get("roll_number")
+    dup_query = select(User).where(User.email == reg_email)
+    if reg_roll:
+        dup_query = select(User).where(or_(User.email == reg_email, User.roll_number == reg_roll))
+    if (await db.execute(dup_query)).scalars().first():
+        await db.delete(otp_record)
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="User with this email or roll number is already registered",
+        )
     new_user = User(
         id=uuid.uuid4(),
         email=data.get("email", email),
@@ -214,7 +233,15 @@ async def register_verify_otp(
     )
     db.add(new_user)
     await db.delete(otp_record)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # Belt-and-braces for the TOCTOU gap the pre-check cannot see
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="User with this email or roll number is already registered",
+        )
     await db.refresh(new_user)
 
     # Generate JWT access token
@@ -236,16 +263,35 @@ async def register_verify_otp(
 # Verify password and send two-factor OTP
 @router.post("/login", response_model=LoginResponse)
 async def login(
+    request: Request,
     payload: LoginRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
 ):
     email = payload.email.strip().lower()
 
+    # Two-layer rate limit (review §1.2.1). Per-account: throttles online
+    # password guessing of a single mailbox; attempts count regardless of
+    # success — that is the point. Per-gateway floor: calibrated far above a
+    # whole classroom logging in through one shared NAT address, so genuine
+    # students never trip it (budget rationale in services/rate_limiter.py).
+    client_ip = request.client.host if request.client else "unknown"
+    if not await login_email_limiter.check(email) or not await login_ip_limiter.check(client_ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts. Please try again shortly.",
+        )
+
     # Look up user by email and verify password
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalars().first()
-    if not user or not verify_password(payload.password, user.hashed_password):
+    # Unknown emails burn a full bcrypt check against a dummy hash so response
+    # latency cannot reveal whether the mailbox exists (timing enumeration).
+    # bcrypt itself is offloaded to a worker thread — it must never block the
+    # event loop that every concurrent submit in the classroom waits on.
+    pw_hash = user.hashed_password if user else DUMMY_BCRYPT_HASH
+    password_ok = await asyncio.to_thread(verify_password, payload.password, pw_hash)
+    if not user or not password_ok:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",

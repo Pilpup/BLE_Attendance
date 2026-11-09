@@ -32,6 +32,14 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         hashed_password.encode("utf-8"),
     )
 
+# Burned once at import: the login route always pays a full bcrypt cost even
+# for unknown emails, so response latency cannot enumerate accounts
+# (review §1.2.2: same status, same message, same CPU budget every time).
+DUMMY_BCRYPT_HASH: str = bcrypt.hashpw(
+    b"timing-equalizer-dummy-login",
+    bcrypt.gensalt(),
+).decode("utf-8")
+
 # Generate signed JWT access token with expiration
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()

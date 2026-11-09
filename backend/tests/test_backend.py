@@ -1783,6 +1783,483 @@ def test_face_engine_hardware_acceleration_info():
     assert "CPUExecutionProvider" in info["onnxruntime_providers"]
 
 
+# ---------------------------------------------------------------------------
+# Login hardening (review §1.2.1 / §1.2.2) — chunk 1
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_login_email_limiter_budget():
+    # Private instance: never touch the module-level limiters that the real
+    # login routes and the test_library integration suite rely on.
+    from app.services.rate_limiter import SlidingWindowRateLimiter
+
+    limiter = SlidingWindowRateLimiter(max_events=10, window_seconds=300.0)
+    for _ in range(10):
+        assert await limiter.check("guess@example.com") is True
+    # Attempt 11 is refused — attempts count regardless of success, by design
+    assert await limiter.check("guess@example.com") is False
+
+
+@pytest.mark.anyio
+async def test_login_gateway_limiter_budget():
+    # The per-gateway floor exists only to stop bulk credential-stuffing from
+    # a single address; 150/window keeps a classroom's shared-NAT burst safe.
+    from app.services.rate_limiter import SlidingWindowRateLimiter
+
+    limiter = SlidingWindowRateLimiter(max_events=150, window_seconds=300.0)
+    for _ in range(150):
+        assert await limiter.check("gateway-1") is True
+    assert await limiter.check("gateway-1") is False
+
+
+def test_login_limiter_calibration_is_intentional():
+    # Guards the classroom reality: the gateway floor must stay ABOVE a full
+    # 70-student login burst through one NAT address. Shrinking it silently
+    # 429s innocent classmates mid-lecture.
+    from app.services import rate_limiter
+
+    assert rate_limiter.login_email_limiter._max_events == 10
+    assert rate_limiter.login_ip_limiter._max_events == 150
+    assert rate_limiter.login_ip_limiter._max_events > 70
+
+
+@pytest.mark.anyio
+async def test_dummy_bcrypt_hash_supports_timing_equalizer():
+    from app.core.security import DUMMY_BCRYPT_HASH, verify_password
+
+    # The dummy hash must behave like a real stored hash so unknown emails pay
+    # the identical bcrypt cost through the same code path (no enumeration).
+    assert verify_password("timing-equalizer-dummy-login", DUMMY_BCRYPT_HASH) is True
+    assert verify_password("any-user-password", DUMMY_BCRYPT_HASH) is False
+
+
+@pytest.mark.anyio
+async def test_flagged_faces_owner_only():
+    # review §1.3.1: flagged pairs carry students' face crops — another
+    # teacher's valid token must not be able to view another session's photos.
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from app.database import get_db
+    from app.models.attendance import Base, EmailOTP
+    from app.services.face_engine import face_registry
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with test_session_factory() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+
+        async def _register_teacher(name: str, email: str, emp_no: str) -> dict:
+            reg = await client.post(
+                "/api/v1/auth/register",
+                json={
+                    "name": name,
+                    "email": email,
+                    "password": "Password123!",
+                    "role": "TEACHER",
+                    "roll_number": emp_no,
+                    "department": "CSE",
+                    "faculty_code": settings.FACULTY_SIGNUP_SECRET,
+                },
+            )
+            assert reg.status_code == 200, reg.text
+            async with test_session_factory() as s:
+                otp_record = (
+                    await s.execute(select(EmailOTP).where(EmailOTP.email == email))
+                ).scalars().first()
+            verify = await client.post(
+                "/api/v1/auth/register/verify-otp",
+                json={"email": email, "otp_code": otp_record.otp_code},
+            )
+            assert verify.status_code == 201, verify.text
+            return {"Authorization": f"Bearer {verify.json()['access_token']}"}
+
+        owner_headers = await _register_teacher("Prof. Flag Owner", "flag.owner@univ.edu", "EMP701")
+        stranger_headers = await _register_teacher("Prof. Flag Stranger", "flag.stranger@univ.edu", "EMP702")
+
+        created = await client.post(
+            "/api/v1/attendance/sessions",
+            headers=owner_headers,
+            json={"session_token": "FFFF", "session_salt": "7F7F", "total_enrolled": 20},
+        )
+        assert created.status_code == 201, created.text
+        session_id = created.json()["id"]
+
+        # Seed a genuine flagged pair for the owner's session
+        face_registry._flagged_pairs[session_id] = [
+            {
+                "peer_1": "student-aaaa",
+                "peer_2": "student-bbbb",
+                "faces": ["UklGRg==", "UklGRg=="],
+                "remarks": "Mutual co-located claims, face pair flagged",
+            }
+        ]
+
+        leaked = await client.get(
+            f"/api/v1/attendance/sessions/{session_id}/flagged-faces",
+            headers=stranger_headers,
+        )
+        assert leaked.status_code == 403, leaked.text
+
+        owned = await client.get(
+            f"/api/v1/attendance/sessions/{session_id}/flagged-faces",
+            headers=owner_headers,
+        )
+        assert owned.status_code == 200, owned.text
+        assert owned.json()["count"] == 1
+
+        face_registry._flagged_pairs.pop(session_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Production secrets guard v2 — placeholder deny-list + length floor (chunk 3)
+# ---------------------------------------------------------------------------
+
+
+def test_insecure_secret_reason_catalogue():
+    from app import config
+
+    # 1. The two committed defaults are always refused
+    #    (the faculty default is exactly 32 chars — equality catches it,
+    #     a length floor alone would let it through)
+    assert config.insecure_secret_reason("JWT_SECRET_KEY", config.settings.JWT_SECRET_KEY)
+    assert config.insecure_secret_reason("FACULTY_SIGNUP_SECRET", config.settings.FACULTY_SIGNUP_SECRET)
+
+    # 2. compose JWT placeholder and BOTH eras of faculty placeholder
+    assert config.insecure_secret_reason("JWT_SECRET_KEY", "change_this_to_a_random_hex_key_32_bytes")
+    assert config.insecure_secret_reason("FACULTY_SIGNUP_SECRET", "college_faculty_passcode_2026")
+    assert config.insecure_secret_reason("FACULTY_SIGNUP_SECRET", "change_this_faculty_signup_passcode")
+
+    # 3. Historical committed values recoverable from git history
+    assert config.insecure_secret_reason("JWT_SECRET_KEY", "ble-mesh-attendance-secret-key-super-secure")
+
+    # 4. Empty / undersized
+    assert config.insecure_secret_reason("JWT_SECRET_KEY", "")
+    assert config.insecure_secret_reason("JWT_SECRET_KEY", "short")
+
+    # 5. Genuine random values pass under every managed name
+    import secrets as secrets_module
+    for name in config.INSECURE_DEFAULT_SECRETS:
+        assert config.insecure_secret_reason(name, secrets_module.token_urlsafe(48)) is None
+
+
+def test_validate_production_secrets_refuses_placeholder(monkeypatch):
+    import secrets
+    from app import config
+
+    monkeypatch.setattr(config.settings, "APP_ENV", "production")
+    monkeypatch.setattr(
+        config.settings, "JWT_SECRET_KEY", "change_this_to_a_random_hex_key_32_bytes"
+    )
+    monkeypatch.setattr(config.settings, "FACULTY_SIGNUP_SECRET", secrets.token_urlsafe(48))
+
+    with pytest.raises(RuntimeError) as err:
+        config.validate_production_secrets()
+    assert "JWT_SECRET_KEY" in str(err.value)
+
+
+def test_validate_production_secrets_allows_strong_values(monkeypatch):
+    import secrets
+    from app import config
+
+    monkeypatch.setattr(config.settings, "APP_ENV", "production")
+    fresh = secrets.token_urlsafe(48)
+    assert len(fresh) == 64
+    monkeypatch.setattr(config.settings, "JWT_SECRET_KEY", fresh)
+    monkeypatch.setattr(config.settings, "FACULTY_SIGNUP_SECRET", secrets.token_urlsafe(48))
+
+    config.validate_production_secrets()  # must not raise
+
+
+def test_validate_production_secrets_development_is_permissive(monkeypatch):
+    # development (Render today) boots with placeholder-ish values by design —
+    # the guard is an APP_ENV=production gate only
+    from app import config
+
+    monkeypatch.setattr(config.settings, "APP_ENV", "development")
+    monkeypatch.setattr(config.settings, "JWT_SECRET_KEY", config.settings.JWT_SECRET_KEY)
+    monkeypatch.setattr(config.settings, "FACULTY_SIGNUP_SECRET", "college_faculty_passcode_2026")
+
+    config.validate_production_secrets()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Race guards R1/R3/R4 (review §3.1) — chunk 4
+# ---------------------------------------------------------------------------
+
+
+class _MissingScalarsResult:
+    """Stand-in for an empty refer_of select() result (ScalarsResult chain)."""
+
+    def scalars(self):
+        class _NoRow:
+            def first(self):
+                return None
+        return _NoRow()
+
+
+@pytest.mark.anyio
+async def test_register_duplicate_racing_verification_is_409():
+    # R4: two pending registrations of the same account both pass send-OTP's
+    # committed-users pre-check — verifying both must NOT 500.
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from app.database import get_db
+    from app.models.attendance import Base, EmailOTP
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    race_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with race_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        payload = {
+            "name": "Race Dup",
+            "email": "race.dup@univ.edu",
+            "password": "Password123!",
+            "role": "STUDENT",
+            "roll_number": "22B7001",
+            "department": "CSE",
+        }
+        assert (await client.post("/api/v1/auth/register", json=payload)).status_code == 200
+
+        # register_send_otp bulk-purges prior REGISTER OTPs, so two pure-HTTP
+        # registrations can't both hold a code: the real race window is the
+        # interleaved DELETE/INSERT of two concurrent send requests, whose
+        # survivor is a second still-valid pending OTP. Seed exactly that.
+        import uuid as _uuid
+        from datetime import datetime, timedelta, timezone as _tz
+        from app.models.attendance import EmailOTP as _EmailOTP
+
+        async with race_db() as s:
+            first_code = (
+                await s.execute(
+                    select(EmailOTP).where(
+                        EmailOTP.email == "race.dup@univ.edu", EmailOTP.purpose == "REGISTER"
+                    )
+                )
+            ).scalars().one().otp_code
+            s.add(
+                _EmailOTP(
+                    id=_uuid.uuid4(),
+                    email="race.dup@univ.edu",
+                    otp_code="999999",
+                    purpose="REGISTER",
+                    attempts=0,
+                    expires_at=datetime.now(_tz.utc) + timedelta(minutes=5),
+                    created_at=datetime.now(_tz.utc) - timedelta(seconds=60),
+                )
+            )
+            await s.commit()
+
+        first_verify = await client.post(
+            "/api/v1/auth/register/verify-otp",
+            json={"email": "race.dup@univ.edu", "otp_code": first_code},
+        )
+        assert first_verify.status_code == 201, first_verify.text
+
+        second_verify = await client.post(
+            "/api/v1/auth/register/verify-otp",
+            json={"email": "race.dup@univ.edu", "otp_code": "999999"},
+        )
+        assert second_verify.status_code == 409, second_verify.text
+        assert "already registered" in second_verify.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_grace_duplicate_claim_succeeds():
+    # R1: after finalize, a replayed grace claim (double ping / keep-alive)
+    # re-hits the unique session constraints — must be accepted, not 500'd.
+    import uuid
+
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from app.database import get_db
+    from app.models.attendance import AttendanceRecord, Base
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    grace_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with grace_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_teacher = await _register_test_teacher(client, grace_db, "Prof. Grace Replay", "grace.replay@univ.edu")
+        tok_present = await _register_roll_student(client, grace_db, "Grace Punctual", "grace.punctual@univ.edu", "22B4470")
+        tok_straggler = await _register_roll_student(client, grace_db, "Grace Straggler", "grace.strag@univ.edu", "22B4471")
+
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"session_token": "GR01", "session_salt": "GRMAIN", "total_enrolled": 5},
+        )
+        assert s_res.status_code == 201, s_res.text
+        session_id = s_res.json()["id"]
+        session_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
+
+        res = await client.post(
+            session_url,
+            headers={"Authorization": f"Bearer {tok_present}"},
+            json={"student_id": "4470", "neighbors": [], "session_salt": "GRMAIN"},
+        )
+        assert res.status_code == 200, res.text
+
+        audit_res = await client.post(
+            f"/api/v1/attendance/sessions/{session_id}/audit-and-finalize",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"reports": {}},
+        )
+        assert audit_res.status_code == 200, audit_res.text
+
+        grace_payload = {"student_id": "4471", "neighbors": [], "session_salt": "GRMAIN"}
+        first = await client.post(
+            session_url, headers={"Authorization": f"Bearer {tok_straggler}"}, json=grace_payload
+        )
+        assert first.status_code == 200, first.text
+
+        # THE FIX: replaying the identical claim must be accepted, not 500
+        replay = await client.post(
+            session_url, headers={"Authorization": f"Bearer {tok_straggler}"}, json=grace_payload
+        )
+        assert replay.status_code == 200, replay.text
+
+        async with grace_db() as s:
+            rows = (
+                await s.execute(
+                    select(AttendanceRecord).where(
+                        AttendanceRecord.session_id == uuid.UUID(session_id),
+                        AttendanceRecord.ble_device_id == "4471",
+                    )
+                )
+            ).scalars().all()
+        assert len(rows) == 1
+
+
+@pytest.mark.anyio
+async def test_course_autocreate_race_adopts_existing():
+    # R4: the course auto-create race adopted the committed winner instead of
+    # 500ing the legitimate second creator.
+    import uuid
+
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+    from app.models.attendance import Base, Course
+    from app.routers.attendance import _resolve_or_create_course
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    course_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    winner_id = uuid.uuid4()
+    async with course_db() as s:
+        s.add(Course(id=winner_id, course_code="CS101", course_name="Winner", teacher_id=None))
+        await s.commit()
+
+    # Normal branch: create-on-miss still works
+    async with course_db() as s:
+        fresh = await _resolve_or_create_course(
+            db=s, code_to_check="CS204", course_name="Fresh", teacher_id=None
+        )
+        assert fresh.id is not None
+
+    # Race branch: loser's stale SELECT misses, concurrent creator COMMITS
+    # before ours does (IntegrityError on first commit), then re-select
+    # must find and adopt the winner rather than 500.
+    async with course_db() as s:
+        used = {"stale_miss": False}
+        real_execute = AsyncSession.execute
+        real_commit = AsyncSession.commit
+
+        async def stale_then_real(query, *a, **kw):
+            if not used["stale_miss"]:
+                used["stale_miss"] = True
+                return _MissingScalarsResult()
+            return await real_execute(s, query, *a, **kw)
+
+        calls = {"n": 0}
+
+        async def losing_commit():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise IntegrityError("uq course race", None, None)
+            return await real_commit(s)
+
+        s.execute = stale_then_real
+        s.commit = losing_commit
+
+        adopted = await _resolve_or_create_course(
+            db=s, code_to_check="CS101", course_name="Loser", teacher_id=None
+        )
+        assert adopted.id == winner_id
+
+    async with course_db() as s:
+        rows = (
+            await s.execute(select(Course).where(Course.course_code == "CS101"))
+        ).scalars().all()
+        assert len(rows) == 1
+
+
+@pytest.mark.anyio
+async def test_list_courses_does_not_fabricate_mock_context(monkeypatch):
+    # R3: outside tests, GET /courses must not fabricate the demo teacher
+    # (whose unhashable password 500s real logins and pollutes the DB).
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select, func
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from app.database import get_db
+    from app.models.attendance import Base, Course, User
+    from app.routers import attendance as attendance_router
+
+    monkeypatch.setattr(attendance_router, "is_test_environment", lambda: False)
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    mock_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with mock_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.get("/api/v1/attendance/courses")
+        assert res.status_code == 200, res.text
+
+    async with mock_db() as s:
+        assert (await s.execute(select(func.count()).select_from(User))).scalar_one() == 0
+        assert (await s.execute(select(func.count()).select_from(Course))).scalar_one() == 0
+
+
 
 
 

@@ -5,6 +5,8 @@ services:
     restart: always
     environment:
       POSTGRES_USER: college_admin
+      # PLACEHOLDER — a real value must be provided via .env / overrides. The
+      # backend's DATABASE_URL must use the same value if overridden here.
       POSTGRES_PASSWORD: change_this_secure_password
       POSTGRES_DB: college_attendance
     volumes:
@@ -29,13 +31,17 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # Every placeholder below makes the API boot fine in development but is
+      # NOT a real secret: in APP_ENV=production the startup guard
+      # (app/config.py — deny-list + length floor) refuses to serve until all
+      # of them are replaced with generated values.
       - DATABASE_URL=postgresql+asyncpg://college_admin:change_this_secure_password@db:5432/college_attendance
       - APP_ENV=production
       - API_V1_STR=/api/v1
       - JWT_SECRET_KEY=change_this_to_a_random_hex_key_32_bytes
       - JWT_ALGORITHM=HS256
       - ACCESS_TOKEN_EXPIRE_MINUTES=1440
-      - FACULTY_SIGNUP_SECRET=college_faculty_passcode_2026
+      - FACULTY_SIGNUP_SECRET=change_this_faculty_signup_passcode
     volumes:
       - ./app/models/weights:/app/app/models/weights:ro
 

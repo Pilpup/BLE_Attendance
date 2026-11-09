@@ -154,8 +154,51 @@ async def _resolve_session(session_id: str, db: AsyncSession) -> Optional[Attend
     return result.scalars().first()
 
 
+# R4 (review §3.1): concurrent session creation pointing at the same course
+# code raced the unique `courses.course_code` constraint and 500'd the
+# legitimate second creator. Extracted as a helper so the adopt-the-winner
+# race behavior is also unit-testable.
+async def _resolve_or_create_course(
+    db: AsyncSession,
+    code_to_check: str,
+    course_name: str,
+    teacher_id: Optional[uuid.UUID],
+    new_course_id: Optional[uuid.UUID] = None,
+) -> Course:
+    c_res = await db.execute(select(Course).where(func.upper(Course.course_code) == code_to_check))
+    existing_c = c_res.scalars().first()
+    if existing_c:
+        return existing_c
+    new_c = Course(
+        id=new_course_id or uuid.uuid4(),
+        course_code=code_to_check,
+        course_name=course_name,
+        teacher_id=teacher_id,
+    )
+    db.add(new_c)
+    try:
+        await db.commit()
+    except IntegrityError:
+        # The losing creator: someone committed the same code between our
+        # SELECT and COMMIT. Adopt their row instead of failing.
+        await db.rollback()
+        re_res = await db.execute(select(Course).where(func.upper(Course.course_code) == code_to_check))
+        winner = re_res.scalars().first()
+        if winner is None:
+            raise
+        return winner
+    await db.refresh(new_c)
+    return new_c
+
+
 # Ensure default teacher and course exist for development testing
 async def _get_or_create_mock_context(db: AsyncSession):
+    # R3 (review §3.1): this fabrication (a teacher with an unhashable stub
+    # password plus a demo course) must never enter a real deployment DB —
+    # production logins via that account 500 on `Invalid salt`. Unconditionally
+    # gated on the test environment so every caller is safe.
+    if not is_test_environment():
+        return None, None
     result = await db.execute(select(User).limit(1))
     teacher = result.scalars().first()
     if not teacher:
@@ -351,6 +394,7 @@ async def create_course(
 async def get_course_syllabus(
     course_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     course_res = await db.execute(select(Course).where(Course.id == course_id))
     course = course_res.scalars().first()
@@ -578,24 +622,14 @@ async def create_attendance_session(
         # Resolve or auto-create course
         raw_code = payload.course_code or (payload.course_id if not target_uuid else None) or "CS101"
         code_to_check = raw_code.strip()[:30].upper()
-        c_res = await db.execute(select(Course).where(func.upper(Course.course_code) == code_to_check))
-        existing_c = c_res.scalars().first()
-        if existing_c:
-            course_obj = existing_c
-            target_course_id = existing_c.id
-        else:
-            new_course_id = target_uuid or uuid.uuid4()
-            new_c = Course(
-                id=new_course_id,
-                course_code=code_to_check,
-                course_name=(payload.course_name or "General Lecture & Attendance")[:200],
-                teacher_id=current_user.id,
-            )
-            db.add(new_c)
-            await db.commit()
-            await db.refresh(new_c)
-            course_obj = new_c
-            target_course_id = new_c.id
+        course_obj = await _resolve_or_create_course(
+            db,
+            code_to_check,
+            course_name=(payload.course_name or "General Lecture & Attendance")[:200],
+            teacher_id=current_user.id,
+            new_course_id=target_uuid,
+        )
+        target_course_id = course_obj.id
 
     # Eligibility snapshot: the teacher's declared class wins (their UI selection
     # is the class actually being taught), the course row is the fallback.
@@ -1306,7 +1340,19 @@ async def submit_student_neighbors(
                 recorded_at=datetime.now(timezone.utc),
             )
             db.add(new_record)
-            await db.commit()
+            try:
+                await db.commit()
+            except IntegrityError:
+                # R1 race guard (review §3.1): a valid retrying student — a
+                # double grace claim or a replayed app keep-alive after their
+                # check-in — re-hits one of the session's unique keys
+                # (device/student/submission). Their attendance already
+                # exists; treat the claim as accepted, never 500 them.
+                await db.rollback()
+                logger.info(
+                    f"[In-Flight Grace Audit] Duplicate grace claim for late arrival {student_key} "
+                    f"in session {session_obj.id} — attendance record already present."
+                )
             logger.info(f"[In-Flight Grace Audit] Generated {rec_status} record for late arrival {student_key} in session {session_obj.id}")
 
     logger.info(f"[Check-In] Student: {student_key} submitted {len(normalized_neighbors)} neighbors: {normalized_neighbors} for session: {target_session_id}")
@@ -1600,6 +1646,15 @@ async def get_flagged_faces(
     session_obj = await _resolve_session(session_id, db)
     if not session_obj:
         raise HTTPException(status_code=404, detail="Attendance session not found")
+
+    # Owner gate (review §1.3.1): flagged pairs carry students' face crops —
+    # only the session's own teacher (or a privileged auditor) may view them.
+    user_role = (current_user.role or "").upper()
+    if session_obj.teacher_id != current_user.id and user_role not in ("DEVELOPER", "ADMIN"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You can only view flagged faces for your own attendance sessions",
+        )
 
     flagged = face_registry.get_flagged_pairs(str(session_obj.id))
     return {
