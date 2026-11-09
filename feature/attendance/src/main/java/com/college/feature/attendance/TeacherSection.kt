@@ -184,7 +184,9 @@ internal fun TeacherSection(
     selectedSessionForDetails: AttendanceSessionResponse? = null,
     onSelectSessionForDetails: (AttendanceSessionResponse) -> Unit = {},
     selectedCourse: CourseResponse? = null,
-    onExportAttendance: () -> Unit = {}
+    onExportAttendance: () -> Unit = {},
+    availableCourses: List<CourseResponse> = emptyList(),
+    onRefreshCourses: () -> Unit = {}
 ) {
     if (finalizedRecords.isNotEmpty()) {
         val (verifiedCount, unverifiedCount) = remember(finalizedRecords) {
@@ -605,6 +607,13 @@ internal fun TeacherSection(
             onExportAttendance = onExportAttendance
         )
     } else {
+        // Refresh course list whenever teacher dashboard or take attendance view opens
+        LaunchedEffect(teacherViewMode) {
+            if (teacherViewMode == TeacherViewMode.MENU || teacherViewMode == TeacherViewMode.TAKE_ATTENDANCE) {
+                onRefreshCourses()
+            }
+        }
+
         when (teacherViewMode) {
             TeacherViewMode.MENU,
             TeacherViewMode.TAKE_ATTENDANCE -> {
@@ -613,7 +622,8 @@ internal fun TeacherSection(
                     onStartSession = onStartSession,
                     onSelectCourse = onSelectCourse,
                     isCloudSyncing = isCloudSyncing,
-                    cloudStatusMessage = cloudStatusMessage
+                    cloudStatusMessage = cloudStatusMessage,
+                    availableCourses = availableCourses
                 )
             }
 
@@ -926,6 +936,24 @@ private val engineeringBranches = listOf(
     "EE"
 )
 
+// Matches course department with UI branch abbreviations
+private fun matchesBranch(department: String?, branch: String): Boolean {
+    if (department.isNullOrBlank()) return true
+    val deptLower = department.lowercase()
+    val branchLower = branch.lowercase()
+    if (deptLower == branchLower || deptLower.contains(branchLower)) return true
+    val tokens = deptLower.split(" ", "/", "-", "&", "(", ")").filter { it.isNotBlank() }
+    return when (branch.uppercase()) {
+        "CSE" -> deptLower.contains("computer") || tokens.any { it == "cse" }
+        "IT" -> deptLower.contains("information") || tokens.any { it == "it" }
+        "ECE" -> deptLower.contains("electronic") || tokens.any { it == "ece" }
+        "ME" -> deptLower.contains("mechanical") || tokens.any { it == "me" }
+        "CE" -> deptLower.contains("civil") || tokens.any { it == "ce" }
+        "EE" -> deptLower.contains("electrical") || tokens.any { it == "ee" }
+        else -> deptLower.contains(branchLower)
+    }
+}
+
 // Retrieves syllabus subjects for Semester 3; returns listOf("NONE") if no data is available
 private fun getSemesterSubjects(program: String, branch: String, semester: String): List<String> {
     val semNum = semester.filter { it.isDigit() }.toIntOrNull() ?: 3
@@ -1099,7 +1127,8 @@ private fun TakeAttendanceSelectionView(
     onStartSession: () -> Unit,
     onSelectCourse: (CourseResponse) -> Unit,
     isCloudSyncing: Boolean,
-    cloudStatusMessage: String?
+    cloudStatusMessage: String?,
+    availableCourses: List<CourseResponse> = emptyList()
 ) {
     var classType by remember { mutableStateOf("Regular") }
     var courseProgram by remember { mutableStateOf("B-Tech") }
@@ -1114,8 +1143,41 @@ private fun TakeAttendanceSelectionView(
         )
     }
 
-    val currentSubjects = remember(courseProgram, branch, semester) {
-        getSemesterSubjects(courseProgram, branch, semester)
+    // Program dropdown options extracted from database courses or defaults
+    val programOptions = remember(availableCourses) {
+        val fromDb = availableCourses.mapNotNull { it.program?.replace(".", "-")?.trim() }.filter { it.isNotBlank() }.distinct()
+        if (fromDb.isNotEmpty()) {
+            (listOf("B-Tech", "BCA") + fromDb).distinct()
+        } else {
+            listOf("B-Tech", "BCA")
+        }
+    }
+
+    // Matches backend courses against the currently selected academic filters
+    val dbMatchingCourses = remember(availableCourses, courseProgram, branch, semester) {
+        val semNum = semester.filter { it.isDigit() }.toIntOrNull() ?: 3
+        availableCourses.filter { course ->
+            val courseProg = course.program?.replace(".", "-") ?: "B-Tech"
+            val progMatches = courseProg.equals(courseProgram.replace(".", "-"), ignoreCase = true)
+            val semMatches = (course.semester?.filter { it.isDigit() }?.toIntOrNull() ?: 3) == semNum
+            val branchMatches = if (courseProgram == "BCA") true else matchesBranch(course.department, branch)
+            progMatches && semMatches && branchMatches
+        }
+    }
+
+    // Computes subject list from matched database courses or falls back to bundled syllabus
+    val currentSubjects = remember(dbMatchingCourses, courseProgram, branch, semester) {
+        if (dbMatchingCourses.isNotEmpty()) {
+            dbMatchingCourses.map { it.courseName }.distinct()
+        } else {
+            getSemesterSubjects(courseProgram, branch, semester)
+        }
+    }
+
+    // Resolves the selected CourseResponse model matching the active subject name
+    val selectedCourseObj = remember(dbMatchingCourses, availableCourses, subjectName) {
+        dbMatchingCourses.firstOrNull { it.courseName.equals(subjectName, ignoreCase = true) }
+            ?: availableCourses.firstOrNull { it.courseName.equals(subjectName, ignoreCase = true) }
     }
 
     // Keep subject aligned with branch/semester when switching
@@ -1132,16 +1194,33 @@ private fun TakeAttendanceSelectionView(
                 } else if (batchType == "Lab") {
                     batchType = "Lecture"
                 }
-                selectedUnit = "Unit 1"
-                topicCovered = getSyllabusTopics(first, "Unit 1").firstOrNull() ?: "NONE"
+                val matchedCourse = dbMatchingCourses.firstOrNull { it.courseName.equals(first, ignoreCase = true) }
+                val firstUnit = if (matchedCourse != null && matchedCourse.units.isNotEmpty()) {
+                    val u = matchedCourse.units.sortedBy { it.unitNumber }.first()
+                    if (u.unitTitle.isNotBlank()) "Unit ${u.unitNumber}: ${u.unitTitle}".trim() else "Unit ${u.unitNumber}"
+                } else {
+                    "Unit 1"
+                }
+                selectedUnit = firstUnit
+                val unitNum = matchedCourse?.units?.minByOrNull { it.unitNumber }?.unitNumber ?: 1
+                val topics = matchedCourse?.units?.firstOrNull { it.unitNumber == unitNum }?.topics?.sortedBy { it.topicOrder }?.map { it.topicName }
+                topicCovered = if (!topics.isNullOrEmpty()) {
+                    topics.firstOrNull() ?: "NONE"
+                } else {
+                    getSyllabusTopics(first, "Unit $unitNum").firstOrNull() ?: "NONE"
+                }
             }
         }
     }
 
-    // Unit options depending on subject
-    val unitOptions = remember(subjectName, batchType) {
+    // Unit options depending on database units or subject defaults
+    val unitOptions = remember(selectedCourseObj, subjectName, batchType) {
         if (subjectName == "NONE") {
             listOf("NONE")
+        } else if (selectedCourseObj != null && selectedCourseObj.units.isNotEmpty()) {
+            selectedCourseObj.units.sortedBy { it.unitNumber }.map { u ->
+                if (u.unitTitle.isNotBlank()) "Unit ${u.unitNumber}: ${u.unitTitle}".trim() else "Unit ${u.unitNumber}"
+            }
         } else if (subjectName.contains("Lab", ignoreCase = true) ||
             subjectName.contains("Project", ignoreCase = true) ||
             batchType == "Lab"
@@ -1158,12 +1237,24 @@ private fun TakeAttendanceSelectionView(
         }
     }
 
-    // Topic options depending on subject and unit
-    val availableTopics = remember(subjectName, selectedUnit) {
+    // Topic options depending on database topic records or bundled curriculum
+    val availableTopics = remember(selectedCourseObj, subjectName, selectedUnit) {
         if (subjectName == "NONE" || selectedUnit == "NONE") {
             listOf("NONE")
+        } else if (selectedCourseObj != null && selectedCourseObj.units.isNotEmpty()) {
+            val unitNum = UNIT_REGEX.find(selectedUnit)?.value?.filter { it.isDigit() }?.toIntOrNull()
+                ?: selectedUnit.filter { it.isDigit() }.toIntOrNull()
+                ?: 1
+            val matchedUnit = selectedCourseObj.units.firstOrNull { it.unitNumber == unitNum }
+            val topics = matchedUnit?.topics?.sortedBy { it.topicOrder }?.map { it.topicName }?.filter { it.isNotBlank() }
+            if (!topics.isNullOrEmpty()) {
+                topics
+            } else {
+                getSyllabusTopics(subjectName, "Unit $unitNum")
+            }
         } else {
-            getSyllabusTopics(subjectName, selectedUnit)
+            val u = UNIT_REGEX.find(selectedUnit)?.value ?: selectedUnit
+            getSyllabusTopics(subjectName, u)
         }
     }
 
@@ -1185,20 +1276,25 @@ private fun TakeAttendanceSelectionView(
     }
 
     // Synchronize course response metadata with selected academic fields
-    LaunchedEffect(classType, courseProgram, branch, semester, batchType, subjectName, selectedUnit, topicCovered) {
+    LaunchedEffect(classType, courseProgram, branch, semester, batchType, subjectName, selectedUnit, topicCovered, selectedCourseObj) {
         if (subjectName == "NONE") return@LaunchedEffect
         val branchSuffix = if (courseProgram != "BCA" && branch.isNotBlank()) " • $branch" else ""
         val topicSuffix = if (topicCovered.isNotBlank() && topicCovered != "NONE") " • $topicCovered" else ""
-        val code = "$courseProgram$branchSuffix $semester"
+        val code = selectedCourseObj?.courseCode ?: "$courseProgram$branchSuffix $semester"
         val name = "$subjectName • $classType $batchType ($selectedUnit$topicSuffix)"
-        val stableCourseId = java.util.UUID.nameUUIDFromBytes("academic-${courseProgram.lowercase()}-${branch.lowercase()}-${semester.replace(" ", "").lowercase()}".toByteArray()).toString()
+        val resolvedCourseId = selectedCourseObj?.id
+            ?: java.util.UUID.nameUUIDFromBytes("academic-${courseProgram.lowercase()}-${branch.lowercase()}-${semester.replace(" ", "").lowercase()}".toByteArray()).toString()
         onSelectCourse(
             CourseResponse(
-                id = stableCourseId,
+                id = resolvedCourseId,
                 courseCode = code,
                 courseName = name,
-                program = courseProgram,
-                semester = semester
+                program = selectedCourseObj?.program ?: courseProgram,
+                department = selectedCourseObj?.department ?: branch,
+                semester = selectedCourseObj?.semester ?: semester,
+                category = selectedCourseObj?.category,
+                courseType = selectedCourseObj?.courseType,
+                units = selectedCourseObj?.units ?: emptyList()
             )
         )
     }
@@ -1225,7 +1321,7 @@ private fun TakeAttendanceSelectionView(
             AppDropdownField(
                 label = "Course",
                 selectedValue = courseProgram,
-                options = listOf("B-Tech", "BCA"),
+                options = programOptions,
                 onSelect = { courseProgram = it },
                 placeholder = "Select Course",
                 modifier = Modifier.fillMaxWidth(),
@@ -1239,7 +1335,7 @@ private fun TakeAttendanceSelectionView(
                 AppDropdownField(
                     label = "Course",
                     selectedValue = courseProgram,
-                    options = listOf("B-Tech", "BCA"),
+                    options = programOptions,
                     onSelect = { courseProgram = it },
                     placeholder = "Select Course",
                     modifier = Modifier.weight(1f),
@@ -1308,9 +1404,23 @@ private fun TakeAttendanceSelectionView(
                         } else if (batchType == "Lab") {
                             batchType = "Lecture"
                         }
-                        val u = if (selectedUnit != "NONE") selectedUnit else "Unit 1"
-                        selectedUnit = u
-                        topicCovered = getSyllabusTopics(selected, u).firstOrNull() ?: "NONE"
+                        val matchedCourse = dbMatchingCourses.firstOrNull { it.courseName.equals(selected, ignoreCase = true) }
+                        val firstUnit = if (matchedCourse != null && matchedCourse.units.isNotEmpty()) {
+                            val u = matchedCourse.units.sortedBy { it.unitNumber }.first()
+                            if (u.unitTitle.isNotBlank()) "Unit ${u.unitNumber}: ${u.unitTitle}".trim() else "Unit ${u.unitNumber}"
+                        } else {
+                            if (selectedUnit != "NONE") selectedUnit else "Unit 1"
+                        }
+                        selectedUnit = firstUnit
+                        val unitNum = UNIT_REGEX.find(firstUnit)?.value?.filter { it.isDigit() }?.toIntOrNull()
+                            ?: firstUnit.filter { it.isDigit() }.toIntOrNull()
+                            ?: 1
+                        val topics = matchedCourse?.units?.firstOrNull { it.unitNumber == unitNum }?.topics?.sortedBy { it.topicOrder }?.map { it.topicName }
+                        topicCovered = if (!topics.isNullOrEmpty()) {
+                            topics.firstOrNull() ?: "NONE"
+                        } else {
+                            getSyllabusTopics(selected, "Unit $unitNum").firstOrNull() ?: "NONE"
+                        }
                     }
                 },
                 placeholder = "Select Subject",
@@ -1324,7 +1434,16 @@ private fun TakeAttendanceSelectionView(
                 options = unitOptions,
                 onSelect = { u ->
                     selectedUnit = u
-                    topicCovered = getSyllabusTopics(subjectName, u).firstOrNull() ?: "NONE"
+                    val unitNum = UNIT_REGEX.find(u)?.value?.filter { it.isDigit() }?.toIntOrNull()
+                        ?: u.filter { it.isDigit() }.toIntOrNull()
+                        ?: 1
+                    val matchedUnit = selectedCourseObj?.units?.firstOrNull { it.unitNumber == unitNum }
+                    val topics = matchedUnit?.topics?.sortedBy { it.topicOrder }?.map { it.topicName }?.filter { it.isNotBlank() }
+                    topicCovered = if (!topics.isNullOrEmpty()) {
+                        topics.firstOrNull() ?: "NONE"
+                    } else {
+                        getSyllabusTopics(subjectName, "Unit $unitNum").firstOrNull() ?: "NONE"
+                    }
                 },
                 placeholder = "Select Unit",
                 modifier = Modifier.weight(1.0f),

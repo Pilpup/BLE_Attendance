@@ -20,6 +20,24 @@ data class CourseCreateRequest(
 )
 
 @Immutable
+data class UnitTopicResponse(
+    val id: String? = null,
+    @SerializedName("unit_id") val unitId: String? = null,
+    @SerializedName("topic_order") val topicOrder: Int = 1,
+    @SerializedName("topic_name") val topicName: String = ""
+)
+
+@Immutable
+data class CourseUnitResponse(
+    val id: String? = null,
+    @SerializedName("course_id") val courseId: String? = null,
+    @SerializedName("unit_number") val unitNumber: Int = 1,
+    @SerializedName("unit_title") val unitTitle: String = "",
+    @SerializedName("teaching_hours") val teachingHours: Int? = null,
+    @SerializedName("topics") val topics: List<UnitTopicResponse> = emptyList()
+)
+
+@Immutable
 data class CourseResponse(
     val id: String,
     @SerializedName("course_code") val courseCode: String,
@@ -27,7 +45,11 @@ data class CourseResponse(
     // Class identity for the eligibility gate + beacon tag. Server course rows
     // serialize an int, Gson coerces it leniently into this String.
     @SerializedName("program") val program: String? = null,
-    @SerializedName("semester") val semester: String? = null
+    @SerializedName("department") val department: String? = null,
+    @SerializedName("semester") val semester: String? = null,
+    @SerializedName("category") val category: String? = null,
+    @SerializedName("course_type") val courseType: String? = null,
+    @SerializedName("units") val units: List<CourseUnitResponse> = emptyList()
 )
 
 data class SessionCreateRequest(

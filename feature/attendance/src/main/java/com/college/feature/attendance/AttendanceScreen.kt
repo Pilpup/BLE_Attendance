@@ -171,28 +171,37 @@ fun AttendanceScreen(
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
             when {
-                isTeacherPrivileged -> TeacherSection(
-                    isSessionActive = viewModel.isSessionActive,
-                    remainingSeconds = viewModel.remainingSeconds,
-                    finalizedRecords = viewModel.finalizedRecords,
-                    isCloudSyncing = viewModel.isCloudSyncing,
-                    isCancelling = viewModel.isCancelling,
-                    cloudStatusMessage = viewModel.cloudStatusMessage,
-                    onSelectCourse = { viewModel.selectedCourse = it },
-                    onStartSession = callbacks.onStartTeacherSession,
-                    onStopSession = callbacks.onStopTeacherSession,
-                    onResetSession = callbacks.onResetSession,
-                    onVerifyStudent = { rec -> viewModel.markStudentVerified(rec.bleDeviceId) },
-                    teacherViewMode = viewModel.teacherViewMode,
-                    onSetTeacherViewMode = { viewModel.teacherViewMode = it },
-                    pastSessions = viewModel.pastSessions,
-                    isLoadingHistory = viewModel.isLoadingHistory,
-                    onLoadHistory = { viewModel.loadSessionHistory() },
-                    selectedSessionForDetails = viewModel.selectedSessionForDetails,
-                    onSelectSessionForDetails = { viewModel.selectedSessionForDetails = it },
-                    selectedCourse = viewModel.selectedCourse,
-                    onExportAttendance = callbacks.onShareAttendance
-                )
+                isTeacherPrivileged -> {
+                    // Refresh courses whenever entering teacher view
+                    LaunchedEffect(Unit) {
+                        viewModel.loadCourses()
+                    }
+
+                    TeacherSection(
+                        isSessionActive = viewModel.isSessionActive,
+                        remainingSeconds = viewModel.remainingSeconds,
+                        finalizedRecords = viewModel.finalizedRecords,
+                        isCloudSyncing = viewModel.isCloudSyncing,
+                        isCancelling = viewModel.isCancelling,
+                        cloudStatusMessage = viewModel.cloudStatusMessage,
+                        onSelectCourse = { viewModel.selectedCourse = it },
+                        onStartSession = callbacks.onStartTeacherSession,
+                        onStopSession = callbacks.onStopTeacherSession,
+                        onResetSession = callbacks.onResetSession,
+                        onVerifyStudent = { rec -> viewModel.markStudentVerified(rec.bleDeviceId) },
+                        teacherViewMode = viewModel.teacherViewMode,
+                        onSetTeacherViewMode = { viewModel.teacherViewMode = it },
+                        pastSessions = viewModel.pastSessions,
+                        isLoadingHistory = viewModel.isLoadingHistory,
+                        onLoadHistory = { viewModel.loadSessionHistory() },
+                        selectedSessionForDetails = viewModel.selectedSessionForDetails,
+                        onSelectSessionForDetails = { viewModel.selectedSessionForDetails = it },
+                        selectedCourse = viewModel.selectedCourse,
+                        onExportAttendance = callbacks.onShareAttendance,
+                        availableCourses = viewModel.availableCourses,
+                        onRefreshCourses = { viewModel.loadCourses() }
+                    )
+                }
 
                 user.hasRole(Role.STUDENT) -> StudentSection(
                     user = user,

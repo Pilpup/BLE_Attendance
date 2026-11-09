@@ -15,6 +15,11 @@ interface AttendanceApiService {
     suspend fun listCourses(
     ): Response<List<CourseResponse>>
 
+    @GET("api/v1/attendance/courses/{courseId}/syllabus")
+    suspend fun getCourseSyllabus(
+        @Path("courseId") courseId: String
+    ): Response<List<CourseUnitResponse>>
+
     @POST("api/v1/attendance/courses")
     suspend fun createCourse(
         @Body body: CourseCreateRequest

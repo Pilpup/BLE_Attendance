@@ -341,25 +341,9 @@ async def list_courses(
 ):
     await _get_or_create_mock_context(db)
 
-    # Return teacher's courses if authenticated (including available syllabus courses)
-    if current_user and current_user.role == "TEACHER":
-        query = select(Course).where(
-            or_(
-                Course.teacher_id == current_user.id,
-                Course.teacher_id.is_(None),
-            )
-        )
-        if semester is not None:
-            query = query.where(Course.semester == semester)
-        if department is not None:
-            query = query.where(Course.department.ilike(f"%{department.strip()}%"))
-        if program is not None:
-            query = query.where(Course.program.ilike(f"%{program.strip()}%"))
-        result = await db.execute(query.order_by(Course.semester.asc(), Course.course_code.asc()))
-        return list(result.scalars().all())
-
-    # Return all courses when unauthenticated or student
-    query = select(Course)
+    query = select(Course).options(
+        selectinload(Course.units).selectinload(CourseUnit.topics)
+    )
     if semester is not None:
         query = query.where(Course.semester == semester)
     if department is not None:
@@ -367,7 +351,7 @@ async def list_courses(
     if program is not None:
         query = query.where(Course.program.ilike(f"%{program.strip()}%"))
     result = await db.execute(query.order_by(Course.semester.asc(), Course.course_code.asc()))
-    return result.scalars().all()
+    return list(result.scalars().all())
 
 
 # Register a new course

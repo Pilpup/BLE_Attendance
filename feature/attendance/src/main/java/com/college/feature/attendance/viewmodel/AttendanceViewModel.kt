@@ -537,9 +537,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // Fetch courses taught by teacher
+    // Fetch courses taught by teacher or college syllabus catalogue
     fun loadCourses() {
-        if (!SessionManager.default.isLoggedIn) return
         isLoadingCourses = true
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -549,12 +548,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     if (res.code() == 401) {
                         handleAuthExpired()
                     } else if (res.isSuccessful && res.body() != null) {
-                        availableCourses = res.body()!!
-                        if (selectedCourse == null && availableCourses.isNotEmpty()) {
-                            selectedCourse = availableCourses.first()
+                        val fetched = res.body()!!
+                        availableCourses = fetched
+                        if (selectedCourse == null && fetched.isNotEmpty()) {
+                            selectedCourse = fetched.first()
                         }
-                    } else {
-                        availableCourses = emptyList()
                     }
                 }
             } catch (_: Exception) {
