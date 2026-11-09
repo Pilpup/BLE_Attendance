@@ -49,11 +49,20 @@ AcousticDetectionResult evaluate_chirp_native(
     const double g3_coeff = (sample_rate == 48000) ? COEFF_19600_HZ : 2.0 * std::cos(2.0 * PI_VAL * 19600.0 / sample_rate);
     const double g4_coeff = (sample_rate == 48000) ? COEFF_20000_HZ : 2.0 * std::cos(2.0 * PI_VAL * 20000.0 / sample_rate);
 
-    // Precomputes Hann window scaled by 2.0
-    std::vector<double> window(num_samples);
-    const double inv_n = 2.0 * PI_VAL / static_cast<double>(num_samples - 1);
-    for (size_t i = 0; i < num_samples; ++i) {
-        window[i] = 1.0 - std::cos(static_cast<double>(i) * inv_n);
+    // Hann window, cached across calls: this function runs per audio callback
+    // (~every 20-40 ms); allocating a heap vector and recomputing cos() for
+    // every buffer stalls the high-priority DSP thread and defeats the point
+    // of native acceleration.
+    static thread_local std::vector<double> window;
+    static thread_local size_t window_size = 0;
+    if (window_size != num_samples) {
+        window.resize(num_samples);
+        const size_t window_den = (num_samples > 1) ? (num_samples - 1) : 1;
+        const double inv_n = 2.0 * PI_VAL / static_cast<double>(window_den);
+        for (size_t i = 0; i < num_samples; ++i) {
+            window[i] = 1.0 - std::cos(static_cast<double>(i) * inv_n);
+        }
+        window_size = num_samples;
     }
 
     double s0_prev = 0.0, s0_prev2 = 0.0;
@@ -62,46 +71,12 @@ AcousticDetectionResult evaluate_chirp_native(
     double g3_prev = 0.0, g3_prev2 = 0.0;
     double g4_prev = 0.0, g4_prev2 = 0.0;
 
-#if defined(__ARM_NEON)
-    // ARM NEON vectorization: evaluates 4 guard frequency bins in parallel
-    const float guard_coeffs[4] = {
-        static_cast<float>(g1_coeff),
-        static_cast<float>(g2_coeff),
-        static_cast<float>(g3_coeff),
-        static_cast<float>(g4_coeff)
-    };
-    const float32x4_t v_guard_coeffs = vld1q_f32(guard_coeffs);
-    float32x4_t v_guard_prev = vdupq_n_f32(0.0f);
-    float32x4_t v_guard_prev2 = vdupq_n_f32(0.0f);
-
-    for (size_t i = 0; i < num_samples; ++i) {
-        const double x = static_cast<double>(samples[i]) * window[i];
-        const float x_f = static_cast<float>(x);
-
-        // Scalar recurrence for target chirp frequency f0
-        const double s0 = x + (f0_coeff * s0_prev) - s0_prev2;
-        s0_prev2 = s0_prev;
-        s0_prev = s0;
-
-        // Vector NEON FMA recurrence across 4 guard bins simultaneously
-        const float32x4_t v_x = vdupq_n_f32(x_f);
-        float32x4_t v_next = vmlaq_f32(v_x, v_guard_coeffs, v_guard_prev);
-        v_next = vsubq_f32(v_next, v_guard_prev2);
-        v_guard_prev2 = v_guard_prev;
-        v_guard_prev = v_next;
-    }
-
-    // Extract guard bins from NEON vector register
-    float final_prev[4], final_prev2[4];
-    vst1q_f32(final_prev, v_guard_prev);
-    vst1q_f32(final_prev2, v_guard_prev2);
-    g1_prev = final_prev[0]; g1_prev2 = final_prev2[0];
-    g2_prev = final_prev[1]; g2_prev2 = final_prev2[1];
-    g3_prev = final_prev[2]; g3_prev2 = final_prev2[2];
-    g4_prev = final_prev[3]; g4_prev2 = final_prev2[3];
-
-#else
-    // Portable SIMD-optimizable loop for x86_64 and generic architectures
+    // Single double-precision recurrence loop for the target bin and all four
+    // guard bins. The previous ARM NEON path accumulated the guard bins in
+    // float32 while the scalar path used double — divergent precision made
+    // the guard baselines drift away from the target bin over an 80 ms
+    // window. Goertzel here is cheap (5 bins, <= 3.8k samples); correctness
+    // beats the micro-SIMD win.
     for (size_t i = 0; i < num_samples; ++i) {
         const double x = static_cast<double>(samples[i]) * window[i];
 
@@ -120,7 +95,6 @@ AcousticDetectionResult evaluate_chirp_native(
         const double s4 = x + (g4_coeff * g4_prev) - g4_prev2;
         g4_prev2 = g4_prev; g4_prev = s4;
     }
-#endif
 
     // Evaluates energy across target chirp and guard frequencies
     const double target_power = (s0_prev * s0_prev) + (s0_prev2 * s0_prev2) - (f0_coeff * s0_prev * s0_prev2);

@@ -200,7 +200,7 @@ async def test_30_student_classroom_mesh_simulation():
         audit_data = audit_res.json()
 
         assert audit_data["status"] == "COMPLETED"
-        assert audit_data["total_verified"] == 29
+        assert audit_data["total_verified"] == 25
         assert audit_data["total_spoofers"] == 1
 
         records = audit_data["records"]
@@ -212,12 +212,15 @@ async def test_30_student_classroom_mesh_simulation():
             assert record_map[sid]["status"] == "VERIFIED_PRESENT"
             assert record_map[sid]["affinity_score"] >= 0.50
 
-        # Verify all 4 offline students are marked present via the peer-witness
-        # rule (each is claimed by two verified in-room reporters)
+        # Verify the 4 offline students are FLAGGED_WITNESSED (each claimed by
+        # two verified in-room reporters). Peer witnessing is hearsay, so they
+        # surface for instructor confirmation instead of auto-verifying — two
+        # colluding friends must not be able to ghost an absent classmate in.
         for off_id in ["OF01", "OF02", "OF03", "OF04"]:
             assert off_id in record_map
-            assert record_map[off_id]["status"] == "VERIFIED_PRESENT"
-            assert record_map[off_id]["affinity_score"] >= 0.50
+            assert record_map[off_id]["status"] == "FLAGGED_WITNESSED"
+            assert record_map[off_id]["affinity_score"] == 0.00
+            assert "Instructor confirmation required" in record_map[off_id]["remarks"]
 
         # Verify Hallway Spoofer is rejected
         assert "SPOF" in record_map
@@ -228,7 +231,7 @@ async def test_30_student_classroom_mesh_simulation():
         # Phase 6: Simulate Air Verdict Bursts
         # Teacher sequentially broadcasts: V:<ID>:OK
         verified_ids = [r["ble_device_id"] for r in records if r["status"] == "VERIFIED_PRESENT"]
-        assert len(verified_ids) == 29
+        assert len(verified_ids) == 25
 
         for vid in verified_ids:
             verdict_packet = f"V:{vid}:OK"

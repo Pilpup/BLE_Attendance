@@ -14,7 +14,6 @@ import com.college.feature.library.network.BookLookupResponse
 import com.college.feature.library.network.LibraryApiClient
 import com.college.feature.library.network.LibraryApiService
 import com.college.feature.library.network.BookDto
-import com.college.feature.library.scanner.BookLookupHelper
 import retrofit2.Response
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -241,12 +240,16 @@ class LibraryViewModel : ViewModel() {
      * OpenLibrary, and ISBNdb providers.
      */
     fun lookupBook(isbn: String, onResult: (BookLookupResponse?) -> Unit) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             isLookingUpBook = true
             try {
-                val result = BookLookupHelper.lookup(isbn)
+                // Single source of truth: the backend scraper (Google Books →
+                // OpenLibrary → ISBNdb). The duplicate 481-line client-side
+                // scraper was removed; the app performs no direct external
+                // queries and holds no API-key logic.
+                val result = LibraryApiClient.service.lookupBook(isbn)
                 withContext(Dispatchers.Main) {
-                    onResult(result)
+                    onResult(result.body())
                 }
             } catch (_: Exception) {
                 withContext(Dispatchers.Main) {

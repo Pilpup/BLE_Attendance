@@ -164,24 +164,27 @@ def audit_classroom_mesh(reports: dict[str, list[str]]) -> list[dict]:
             "mutuals": mutuals,
         })
 
-    # Verifies offline peers reported by multiple in-room classmate witnesses
+    # Collects offline peers reported by verified in-room classmates. Peer
+    # witnessing is hearsay — two colluding friends could ghost an absent
+    # classmate from home by appending a known id. Witnessing must therefore
+    # only RAISE a record to instructor review, never auto-verify it.
     witness_map: dict[str, list[str]] = {}
     for reporter_id in verified_set:
         for neighbor in reports.get(reporter_id, []):
             if neighbor not in reports:
                 witness_map.setdefault(neighbor, []).append(reporter_id)
 
-    # Flags or confirms offline peers based on witness threshold
+    # Flags offline peers for instructor review based on witness support
     for offline_id, witnesses in witness_map.items():
         if len(witnesses) >= 2:
             results.append({
                 "ble_device_id": offline_id,
-                "status": "VERIFIED_PRESENT",
+                "status": "FLAGGED_WITNESSED",
                 "verification_method": "PEER_WITNESS",
-                "affinity_score": 0.85,
+                "affinity_score": 0.00,
                 "bridge_device_id": witnesses[0],
                 "reported_neighbors": [],
-                "remarks": f"Offline student witnessed by {len(witnesses)} verified classmates [{', '.join(witnesses)}]",
+                "remarks": f"Witnessed by {len(witnesses)} verified classmates [{', '.join(witnesses)}] - Instructor confirmation required",
                 "mutuals": witnesses,
             })
         else:

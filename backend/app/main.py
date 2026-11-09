@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from sqlalchemy import delete, text
-from app.config import settings
+from app.config import settings, validate_production_secrets
 from app.core.security import is_test_environment
 from app.database import AsyncSessionLocal, engine, is_postgres
 from app.models.attendance import Base, EmailOTP
@@ -197,6 +197,9 @@ async def purge_expired_otps_worker():
 # Manages application startup initialization and clean background task shutdown
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Fail fast rather than run with repository-committed secrets
+    validate_production_secrets()
+
     # Auto-initialize database tables if not already existing
     try:
         async with engine.begin() as conn:

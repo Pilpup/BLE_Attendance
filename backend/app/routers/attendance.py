@@ -967,6 +967,16 @@ async def submit_student_neighbors(
         co_located_peer_id = request.headers.get("x-co-located-peer-id")
         ultrasonic_proximity_str = request.headers.get("x-ultrasonic-proximity-detected")
         ultrasonic_proximity = ultrasonic_proximity_str.lower() in ("true", "1") if ultrasonic_proximity_str is not None else False
+        challenge_report_hdr = request.headers.get("x-challenge-report")
+        challenge_report = None
+        if challenge_report_hdr:
+            try:
+                challenge_report = {
+                    k.strip(): int(v)
+                    for k, v in (p.split("=", 1) for p in challenge_report_hdr.split(",") if "=" in p)
+                }
+            except ValueError:
+                challenge_report = {"raw": challenge_report_hdr}
 
         payload = SubmitNeighborsRequest(
             student_id=student_id,
@@ -976,6 +986,7 @@ async def submit_student_neighbors(
             face_image_base64=None,
             ultrasonic_proximity_detected=ultrasonic_proximity,
             co_located_peer_id=co_located_peer_id,
+            challenge_report=challenge_report,
         )
 
     session_obj = await _resolve_session(session_id, db)
@@ -1107,6 +1118,15 @@ async def submit_student_neighbors(
         f"IP: {request.client.host if request.client else 'unknown'} "
         f"FP: {hashlib.sha256(fingerprint_material.encode()).hexdigest()[:12]}"
     )
+
+    # Reflex-challenge counters are client-attested telemetry only. Logged for
+    # instructor triage (surface anomalies after collusion findings) and
+    # deliberately NEVER used as a security gate — the client could fake them.
+    if payload.challenge_report:
+        logger.info(
+            f"[Challenge Telemetry] Session: {target_session_id} Key: {student_key} "
+            f"Report: {payload.challenge_report}"
+        )
 
     # Face deduplication check (Layer 3: Camera Face Biometric Deduplication)
     face_check_result = None

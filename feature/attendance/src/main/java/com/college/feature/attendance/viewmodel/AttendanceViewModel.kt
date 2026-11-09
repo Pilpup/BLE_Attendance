@@ -121,7 +121,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Teacher navigation and history
     var teacherViewMode by mutableStateOf(TeacherViewMode.MENU)
-    var pastSessions by mutableStateOf<List<AttendanceSessionResponse>>(getDummyPastSessions())
+    var pastSessions by mutableStateOf<List<AttendanceSessionResponse>>(emptyList())
     var isLoadingHistory by mutableStateOf(false)
     var selectedSessionForDetails by mutableStateOf<AttendanceSessionResponse?>(null)
 
@@ -699,6 +699,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         closeNeighbors = closeHeader,
                         coLocatedPeerId = coLocatedPeerId,
                         ultrasonicProximityDetected = ultrasonicProximityDetected,
+                        challengeReport = "hits=${challengeScore},targets_spawned=${challengeTotalTargets}".takeIf { challengeTotalTargets > 0 },
                         relayedReportsJson = null,
                         imageBytes = requestBody
                     )
@@ -711,7 +712,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     sessionSalt = detectedSessionSalt.takeIf { it != "------" },
                     faceImageBase64 = facePayload,
                     ultrasonicProximityDetected = ultrasonicProximityDetected,
-                    coLocatedPeerId = coLocatedPeerId
+                    coLocatedPeerId = coLocatedPeerId,
+                    challengeReport = if (challengeTotalTargets > 0) {
+                        mapOf("hits" to challengeScore, "targets_spawned" to challengeTotalTargets)
+                    } else null
                 )
                 safeApiCall { api.submitNeighbors(sessId, req) }
             }
@@ -895,7 +899,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         finalizedRecords = body.records ?: emptyList()
                         recordSessionToHistory(finalizedRecords)
                         val verifiedCount = finalizedRecords.count { it.status == "VERIFIED_PRESENT" }
-                        val reviewCount = finalizedRecords.count { it.status == "ISOLATED_FLAGGED" || it.status == "UNVERIFIED" }
+                        val reviewCount = finalizedRecords.count { it.status == "ISOLATED_FLAGGED" || it.status == "FLAGGED_WITNESSED" || it.status == "UNVERIFIED" }
                         cloudStatusMessage = if (reviewCount > 0) {
                             "Completed • $verifiedCount present, $reviewCount need review"
                         } else {
@@ -1014,9 +1018,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun loadSessionHistory() {
-        if (pastSessions.isEmpty()) {
-            pastSessions = getDummyPastSessions()
-        }
         if (!SessionManager.default.isLoggedIn) return
         isLoadingHistory = true
         viewModelScope.launch(Dispatchers.IO) {
@@ -1026,301 +1027,17 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     isLoadingHistory = false
                     if (res.isSuccessful && !res.body().isNullOrEmpty()) {
                         pastSessions = res.body()!!
-                    } else if (pastSessions.isEmpty()) {
-                        pastSessions = getDummyPastSessions()
                     }
                 }
             } catch (_: Exception) {
                 withContext(Dispatchers.Main) {
                     isLoadingHistory = false
-                    if (pastSessions.isEmpty()) {
-                        pastSessions = getDummyPastSessions()
-                    }
                 }
             }
         }
     }
 
     // Realistic dummy sessions for reviewing historical attendance records
-    fun getDummyPastSessions(): List<AttendanceSessionResponse> {
-        val session1Records = listOf(
-            AttendanceRecordItem(
-                id = "s1-1",
-                bleDeviceId = "BLE-22CS001",
-                rollNumber = "22CS001",
-                studentName = "Aarav Sharma",
-                status = "VERIFIED_PRESENT",
-                verificationMethod = "BLE_CONSENSUS",
-                affinityScore = 0.96,
-                remarks = "Mutual in-degree verified"
-            ),
-            AttendanceRecordItem(
-                id = "s1-2",
-                bleDeviceId = "BLE-22CS004",
-                rollNumber = "22CS004",
-                studentName = "Ananya Verma",
-                status = "VERIFIED_PRESENT",
-                verificationMethod = "BLE_CONSENSUS",
-                affinityScore = 0.94,
-                remarks = "Mutual in-degree verified"
-            ),
-            AttendanceRecordItem(
-                id = "s1-3",
-                bleDeviceId = "BLE-22CS007",
-                rollNumber = "22CS007",
-                studentName = "Dev Patel",
-                status = "VERIFIED_PRESENT",
-                verificationMethod = "BLE_CONSENSUS",
-                affinityScore = 0.91,
-                remarks = "Mutual in-degree verified"
-            ),
-            AttendanceRecordItem(
-                id = "s1-4",
-                bleDeviceId = "BLE-22CS011",
-                rollNumber = "22CS011",
-                studentName = "Isha Gupta",
-                status = "VERIFIED_PRESENT",
-                verificationMethod = "MANUAL_OVERRIDE",
-                affinityScore = 1.0,
-                remarks = "Confirmed by instructor"
-            ),
-            AttendanceRecordItem(
-                id = "s1-5",
-                bleDeviceId = "BLE-22CS015",
-                rollNumber = "22CS015",
-                studentName = "Rohan Mehta",
-                status = "VERIFIED_PRESENT",
-                verificationMethod = "BLE_CONSENSUS",
-                affinityScore = 0.95,
-                remarks = "Mutual in-degree verified"
-            ),
-            AttendanceRecordItem(
-                id = "s1-6",
-                bleDeviceId = "BLE-22CS019",
-                rollNumber = "22CS019",
-                studentName = "Kabir Singh",
-                status = "ABSENT",
-                verificationMethod = "NONE",
-                affinityScore = 0.0,
-                remarks = "Not detected in mesh"
-            ),
-            AttendanceRecordItem(
-                id = "s1-7",
-                bleDeviceId = "BLE-22CS023",
-                rollNumber = "22CS023",
-                studentName = "Pooja Nair",
-                status = "ABSENT",
-                verificationMethod = "NONE",
-                affinityScore = 0.0,
-                remarks = "Did not check in"
-            ),
-            AttendanceRecordItem(
-                id = "s1-8",
-                bleDeviceId = "BLE-22CS031",
-                rollNumber = "22CS031",
-                studentName = "Vikram Malhotra",
-                status = "UNVERIFIED",
-                verificationMethod = "NONE",
-                affinityScore = 0.35,
-                remarks = "Insufficient quorum"
-            )
-        )
-
-        val session2Records = listOf(
-            AttendanceRecordItem(
-                id = "s2-1",
-                bleDeviceId = "BLE-22CS001",
-                rollNumber = "22CS001",
-                studentName = "Aarav Sharma",
-                status = "VERIFIED_PRESENT",
-                verificationMethod = "BLE_CONSENSUS",
-                affinityScore = 0.95
-            ),
-            AttendanceRecordItem(
-                id = "s2-2",
-                bleDeviceId = "BLE-22CS004",
-                rollNumber = "22CS004",
-                studentName = "Ananya Verma",
-                status = "ABSENT",
-                verificationMethod = "NONE",
-                affinityScore = 0.0
-            ),
-            AttendanceRecordItem(
-                id = "s2-3",
-                bleDeviceId = "BLE-22CS007",
-                rollNumber = "22CS007",
-                studentName = "Dev Patel",
-                status = "VERIFIED_PRESENT",
-                verificationMethod = "BLE_CONSENSUS",
-                affinityScore = 0.92
-            ),
-            AttendanceRecordItem(
-                id = "s2-4",
-                bleDeviceId = "BLE-22CS011",
-                rollNumber = "22CS011",
-                studentName = "Isha Gupta",
-                status = "VERIFIED_PRESENT",
-                verificationMethod = "BLE_CONSENSUS",
-                affinityScore = 0.89
-            ),
-            AttendanceRecordItem(
-                id = "s2-5",
-                bleDeviceId = "BLE-22CS015",
-                rollNumber = "22CS015",
-                studentName = "Rohan Mehta",
-                status = "VERIFIED_PRESENT",
-                verificationMethod = "MANUAL_OVERRIDE",
-                affinityScore = 1.0,
-                remarks = "Confirmed by instructor"
-            ),
-            AttendanceRecordItem(
-                id = "s2-6",
-                bleDeviceId = "BLE-22CS019",
-                rollNumber = "22CS019",
-                studentName = "Kabir Singh",
-                status = "VERIFIED_PRESENT",
-                verificationMethod = "BLE_CONSENSUS",
-                affinityScore = 0.91
-            ),
-            AttendanceRecordItem(
-                id = "s2-7",
-                bleDeviceId = "BLE-22CS023",
-                rollNumber = "22CS023",
-                studentName = "Pooja Nair",
-                status = "ABSENT",
-                verificationMethod = "NONE",
-                affinityScore = 0.0
-            ),
-            AttendanceRecordItem(
-                id = "s2-8",
-                bleDeviceId = "BLE-22CS031",
-                rollNumber = "22CS031",
-                studentName = "Vikram Malhotra",
-                status = "VERIFIED_PRESENT",
-                verificationMethod = "BLE_CONSENSUS",
-                affinityScore = 0.93
-            )
-        )
-
-        val session3Records = listOf(
-            AttendanceRecordItem(
-                id = "s3-1",
-                bleDeviceId = "BLE-22CS001",
-                rollNumber = "22CS001",
-                studentName = "Aarav Sharma",
-                status = "VERIFIED_PRESENT",
-                verificationMethod = "BLE_CONSENSUS",
-                affinityScore = 0.97
-            ),
-            AttendanceRecordItem(
-                id = "s3-2",
-                bleDeviceId = "BLE-22CS004",
-                rollNumber = "22CS004",
-                studentName = "Ananya Verma",
-                status = "VERIFIED_PRESENT",
-                verificationMethod = "BLE_CONSENSUS",
-                affinityScore = 0.96
-            ),
-            AttendanceRecordItem(
-                id = "s3-3",
-                bleDeviceId = "BLE-22CS007",
-                rollNumber = "22CS007",
-                studentName = "Dev Patel",
-                status = "ABSENT",
-                verificationMethod = "NONE",
-                affinityScore = 0.0
-            ),
-            AttendanceRecordItem(
-                id = "s3-4",
-                bleDeviceId = "BLE-22CS011",
-                rollNumber = "22CS011",
-                studentName = "Isha Gupta",
-                status = "ABSENT",
-                verificationMethod = "NONE",
-                affinityScore = 0.0
-            ),
-            AttendanceRecordItem(
-                id = "s3-5",
-                bleDeviceId = "BLE-22CS015",
-                rollNumber = "22CS015",
-                studentName = "Rohan Mehta",
-                status = "VERIFIED_PRESENT",
-                verificationMethod = "BLE_CONSENSUS",
-                affinityScore = 0.94
-            ),
-            AttendanceRecordItem(
-                id = "s3-6",
-                bleDeviceId = "BLE-22CS019",
-                rollNumber = "22CS019",
-                studentName = "Kabir Singh",
-                status = "ABSENT",
-                verificationMethod = "NONE",
-                affinityScore = 0.0
-            ),
-            AttendanceRecordItem(
-                id = "s3-7",
-                bleDeviceId = "BLE-22CS023",
-                rollNumber = "22CS023",
-                studentName = "Pooja Nair",
-                status = "VERIFIED_PRESENT",
-                verificationMethod = "MANUAL_OVERRIDE",
-                affinityScore = 1.0,
-                remarks = "Confirmed by instructor"
-            ),
-            AttendanceRecordItem(
-                id = "s3-8",
-                bleDeviceId = "BLE-22CS031",
-                rollNumber = "22CS031",
-                studentName = "Vikram Malhotra",
-                status = "ABSENT",
-                verificationMethod = "NONE",
-                affinityScore = 0.0
-            )
-        )
-
-        return listOf(
-            AttendanceSessionResponse(
-                id = "past-sess-1",
-                courseId = "academic-b-tech-cse-semester5",
-                sessionToken = "8F4A",
-                status = "COMPLETED",
-                totalVerified = 5,
-                totalSpoofers = 0,
-                startedAt = "2026-11-05T09:30:00",
-                records = session1Records,
-                courseCode = "B-Tech • CSE Semester 5",
-                courseName = "Computer Networks • Regular Lecture (Unit 2 • BLE Advertising & Proximity Packets)",
-                subjectName = "Computer Networks"
-            ),
-            AttendanceSessionResponse(
-                id = "past-sess-2",
-                courseId = "academic-b-tech-cse-semester5",
-                sessionToken = "7E2C",
-                status = "COMPLETED",
-                totalVerified = 6,
-                totalSpoofers = 0,
-                startedAt = "2026-11-04T14:15:00",
-                records = session2Records,
-                courseCode = "B-Tech • CSE Semester 5",
-                courseName = "Operating Systems • Regular Lab (Unit 3 • Process Scheduling & Deadlocks)",
-                subjectName = "Operating Systems"
-            ),
-            AttendanceSessionResponse(
-                id = "past-sess-3",
-                courseId = "academic-b-tech-cse-semester5",
-                sessionToken = "4B19",
-                status = "COMPLETED",
-                totalVerified = 4,
-                totalSpoofers = 0,
-                startedAt = "2026-11-03T11:00:00",
-                records = session3Records,
-                courseCode = "B-Tech • CSE Semester 5",
-                courseName = "Database Management Systems • Extra Lecture (Unit 1 • Relational Algebra & Normalization)",
-                subjectName = "Database Management Systems"
-            )
-        )
-    }
-
     fun stopTeacherSession() {
         teacherTimer?.cancel()
         teacherTimer = null
@@ -1666,6 +1383,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                             myRecord.status == "SPOOFER_REJECTED" && myRecord.verificationMethod == "SALT_REJECTED" -> "In-room beacon verification failed"
                                             myRecord.status == "SPOOFER_REJECTED" -> "Peer claims unconfirmed — please ask your instructor to review"
                                             myRecord.status == "ISOLATED_FLAGGED" -> "Needs instructor confirmation"
+                                            myRecord.status == "FLAGGED_WITNESSED" -> "Verified classmates witnessed you — instructor confirmation needed"
                                             else -> myRecord.remarks ?: "Attendance not confirmed"
                                         }
                                         onStartScanning?.invoke()
@@ -1771,6 +1489,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                         hasLocalDefenseFailed -> "Attendance not confirmed. Please see instructor."
                                         myRecord.status == "SPOOFER_REJECTED" -> "Peer claims unconfirmed — please ask your instructor to review"
                                         myRecord.status == "ISOLATED_FLAGGED" -> "Needs instructor confirmation"
+                                        myRecord.status == "FLAGGED_WITNESSED" -> "Verified classmates witnessed you — instructor confirmation needed"
                                         else -> "Attendance not confirmed"
                                     }
                                     onStartScanning?.invoke()

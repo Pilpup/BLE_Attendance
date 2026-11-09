@@ -149,6 +149,7 @@ class UltrasonicProximityManager(private val context: Context) {
                 record.startRecording()
                 val audioBuffer = ShortArray(1024)
                 val tracker = BurstEnvelopeTracker()
+                var lastMetricPostMs = 0L
 
                 while (isDiagnosticRunning.get()) {
                     val readSamples = record.read(audioBuffer, 0, audioBuffer.size)
@@ -190,7 +191,14 @@ class UltrasonicProximityManager(private val context: Context) {
                             burstPeakPowerDb = tracker.burstPeakPowerDb,
                             burstPeakSnrDb = tracker.burstPeakSnrDb
                         )
-                        mainHandler.post { onMetric(metric) }
+                        // Diagnostic metric stream: audio buffers arrive every
+                        // ~21 ms (48 Hz). Posting at that cadence floods the
+                        // main looper and thrashes recompositions — coalesce
+                        // to ~5 Hz, but keep finalized burst results immediate.
+                        if (emitFinalized || now - lastMetricPostMs >= 200) {
+                            lastMetricPostMs = now
+                            mainHandler.post { onMetric(metric) }
+                        }
                     }
                 }
             } catch (e: Exception) {

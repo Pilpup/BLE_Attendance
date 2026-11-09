@@ -84,7 +84,7 @@ class BLEAuditRecordItem(BaseModel):
     )
     student_id: Optional[UUID] = Field(None, description="Linked user UUID (optional, set after JWT)")
     status: str = Field(
-        ..., description="VERIFIED_PRESENT | SPOOFER_REJECTED | ISOLATED_FLAGGED | ABSENT"
+        ..., description="VERIFIED_PRESENT | SPOOFER_REJECTED | ISOLATED_FLAGGED | FLAGGED_WITNESSED | ABSENT"
     )
     verification_method: str = Field(
         default="NONE", description="DIRECT_MUTUAL | TRIADIC_CLOSURE | MANUAL_OVERRIDE | NONE"
@@ -225,6 +225,10 @@ class SubmitNeighborsRequest(BaseModel):
     co_located_peer_id: Optional[str] = Field(
         default=None,
         description="The peer student ID detected within ultrasonic range on the same desk"
+    )
+    challenge_report: Optional[dict] = Field(
+        default=None,
+        description="Client-computed reflex-challenge counters (hits / targets spawned). INFORMATIONAL TELEMETRY ONLY: client-attested data must never gate security verdicts."
     )
 
     # Strips whitespace from student identifier

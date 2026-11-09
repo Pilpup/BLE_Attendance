@@ -173,11 +173,16 @@ def test_mesh_audit_offline_peer_witness():
     results = audit_classroom_mesh(reports)
     res_map = {r["ble_device_id"]: r for r in results}
 
-    # OFF1 was witnessed by 2 verified peers (A and B) -> Verified Present
+    # OFF1 was witnessed by 2 verified peers (A and B). Peer witnessing is
+    # hearsay — two colluding friends could ghost an absent classmate from
+    # home. It must raise the record to instructor review only, never
+    # auto-verify it.
     assert "OFF1" in res_map
-    assert res_map["OFF1"]["status"] == "VERIFIED_PRESENT"
+    assert res_map["OFF1"]["status"] != "VERIFIED_PRESENT"
+    assert res_map["OFF1"]["status"] == "FLAGGED_WITNESSED"
     assert res_map["OFF1"]["verification_method"] == "PEER_WITNESS"
-    assert res_map["OFF1"]["affinity_score"] == 0.85
+    assert res_map["OFF1"]["affinity_score"] == 0.00
+    assert "Instructor confirmation required" in res_map["OFF1"]["remarks"]
 
     # OFF_SINGLE was witnessed by only 1 peer (A) -> Isolated Flagged (Cannot buddy-punch)
     assert "OFF_SINGLE" in res_map

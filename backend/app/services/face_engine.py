@@ -309,6 +309,8 @@ class SessionFaceRegistry:
 
     def __init__(self, engine: Optional[FaceMatchingEngine] = None):
         self.engine = engine or FaceMatchingEngine()
+        # Serializes registry read-modify-write across worker threads
+        self._registry_lock = threading.Lock()
         # session_id -> { student_key: {"embedding": np.ndarray, "roll": str, "flagged": bool, "image_b64": Optional[str]} }
         self._registry: dict[str, dict[str, dict]] = {}
         # session_id -> list of duplicate match dictionaries for instructor review
@@ -391,6 +393,38 @@ class SessionFaceRegistry:
                 remarks=remarks or "REJECTED: No human face detected"
             )
 
+        # Serialize the registry read-modify-write: this method runs via
+        # asyncio.to_thread, so concurrent 70-student bursts race the keys and
+        # matrix appends in the helper below, desynchronizing len(_session_keys)
+        # from matrix.shape[0] — later submissions then crash on a broadcast
+        # mismatch and brick check-ins for the rest of the session. The slow
+        # CV2 face extraction stays OUTSIDE the lock; only state mutation and
+        # matrix scoring are serialized.
+        self._registry_lock.acquire()
+        try:
+            return self._register_and_check_locked(
+                session_id=session_id,
+                student_key=student_key,
+                roll_number=roll_number,
+                embedding=embedding,
+                raw_bytes=raw_bytes,
+                cluster_peers=cluster_peers,
+                threshold=threshold,
+            )
+        finally:
+            self._registry_lock.release()
+
+    # Shared-registry read-modify-write; caller must hold _registry_lock
+    def _register_and_check_locked(
+        self,
+        session_id: str,
+        student_key: str,
+        roll_number: Optional[str],
+        embedding: np.ndarray,
+        raw_bytes: bytes,
+        cluster_peers: Optional[set[str] | list[str]],
+        threshold: float,
+    ) -> FaceCheckResult:
         # Updates session activity timestamp and cleans stale registries
         self._prune_stale_sessions()
         self._session_timestamps[session_id] = time.time()
