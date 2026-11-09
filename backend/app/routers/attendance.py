@@ -8,7 +8,7 @@ import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Union
+from typing import AsyncGenerator, Dict, List, Optional, Union
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -17,6 +17,15 @@ from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+
+
+# R2 (review §3.1): request-scoped finalize gate. FastAPI acquires it BEFORE
+# the route body starts and releases it in the dependency's finally, even on
+# exceptions — so no early 4xx, audit crash, or crash-aborted commit can ever
+# leave a submission stranded between drain and commit.
+async def _session_gate_dependency(session_id: str) -> AsyncGenerator[None, None]:
+    async with submission_buffer.session_gate(session_id):
+        yield
 
 
 def _is_session_stale(started_at: Optional[datetime], minutes: int) -> bool:
@@ -756,6 +765,7 @@ async def finalize_attendance_session(
     payload: SessionFinalizeRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_teacher),
+    _finalize_gate: None = Depends(_session_gate_dependency),
 ):
     session_obj = await _resolve_session(session_id, db)
 
@@ -962,8 +972,31 @@ async def finalize_attendance_session(
 
     session_obj.status = "COMPLETED"
     session_obj.ended_at = datetime.now(timezone.utc)
-    session_obj.total_verified = verified_count
-    session_obj.total_spoofers = spoofer_count
+
+    # R5 (review §5 honesty): counters must reflect committed DB rows, not
+    # payload-computed tallies — prior VERIFIED rows absent from this request
+    # (grace-path additions, out-of-band verdicts) would otherwise be dropped
+    # from the visible counts.
+    await db.flush()
+    verified_res = await db.execute(
+        select(func.count()).select_from(AttendanceRecord).where(
+            AttendanceRecord.session_id == session_obj.id,
+            AttendanceRecord.status == "VERIFIED_PRESENT",
+        )
+    )
+    session_obj.total_verified = verified_res.scalar() or 0
+    spoofer_res = await db.execute(
+        select(func.count()).select_from(AttendanceRecord).where(
+            AttendanceRecord.session_id == session_obj.id,
+            AttendanceRecord.status.in_([
+                "SPOOFER_REJECTED",
+                "DUPLICATE_FACE_PROXY",
+                "CO_LOCATED_SAME_DESK_PROXY",
+                "NO_FACE_DETECTED",
+            ]),
+        )
+    )
+    session_obj.total_spoofers = spoofer_res.scalar() or 0
 
     await submission_buffer.clear_session(str(session_obj.id))
     await db.commit()
@@ -1249,22 +1282,28 @@ async def submit_student_neighbors(
             ultrasonic_claim = normalized_claim
             logger.info(f"[Layer 4] Ultrasonic claim received from {student_key}: co-located with {normalized_claim} (deferred to finalize for reciprocal confirmation)")
 
-    # Stage student check-in submission into in-memory buffer
-    await submission_buffer.stage_submission(
-        session_id=str(target_session_id),
-        device_key=student_key,
-        student_id=user_id,
-        reported_neighbors=normalized_neighbors,
-        claimed_ultrasonic=ultrasonic_claim,
-    )
+    # R2 (review §3.1): the gate MUST span both the stage and the post-stage
+    # committed-status re-read — a stage entering between finalize's drain and
+    # its commit otherwise reads the still-ACTIVE (uncommitted) status and is
+    # silently orphaned moments later by finalize's buffer clear. Holding the
+    # same per-session lock finalize holds makes intake atomic either way.
+    async with submission_buffer.session_gate(str(target_session_id)):
+        # Stage student check-in submission into in-memory buffer
+        await submission_buffer.stage_submission(
+            session_id=str(target_session_id),
+            device_key=student_key,
+            student_id=user_id,
+            reported_neighbors=normalized_neighbors,
+            claimed_ultrasonic=ultrasonic_claim,
+        )
 
-    # Re-read session status after staging: if finalize committed while this submission was in
-    # flight (the finalize already popped the buffer), reroute through the grace path below so
-    # the straggler gets an attendance record instead of being silently orphaned.
-    fresh_status_res = await db.execute(
-        select(AttendanceSession.status).where(AttendanceSession.id == session_obj.id)
-    )
-    session_obj.status = fresh_status_res.scalar_one_or_none() or session_obj.status
+        # Re-read session status after staging: if finalize committed while this submission was in
+        # flight (the finalize already popped the buffer), reroute through the grace path below so
+        # the straggler gets an attendance record instead of being silently orphaned.
+        fresh_status_res = await db.execute(
+            select(AttendanceSession.status).where(AttendanceSession.id == session_obj.id)
+        )
+        session_obj.status = fresh_status_res.scalar_one_or_none() or session_obj.status
 
     if session_obj.status == "CANCELLED":
         raise HTTPException(
@@ -1360,7 +1399,14 @@ async def submit_student_neighbors(
         "status": "success",
         "student": student_key,
         "recorded_neighbors": normalized_neighbors,
-        "face_verified": True if payload.face_image_base64 else None,
+        # R5 (review §5 honesty): bound to the CHECK OUTCOME, not to payload
+        # presence — this can only be True after the biometric check both
+        # detected a face and did not flag it as a duplicate (the no-face and
+        # duplicate branches raise 403 above).
+        "face_verified": (
+            (face_check_result.has_human_face and not face_check_result.is_duplicate)
+            if face_check_result else None
+        ),
         "face_diagnostic": face_check_result.remarks if face_check_result else None,
     }
 
@@ -1375,6 +1421,7 @@ async def audit_and_finalize_session(
     payload: MeshAuditRunRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_teacher),
+    _finalize_gate: None = Depends(_session_gate_dependency),
 ):
     session_obj = await _resolve_session(session_id, db)
 
@@ -1565,7 +1612,16 @@ async def audit_and_finalize_session(
 
     session_obj.status = "COMPLETED"
     session_obj.ended_at = datetime.now(timezone.utc)
-    session_obj.total_verified = verified_count
+
+    # R5 (review §5 honesty): verified count is recounted from durable rows —
+    # the payload-computed tally could be clobbered by grace-path increments.
+    verified_res = await db.execute(
+        select(func.count()).select_from(AttendanceRecord).where(
+            AttendanceRecord.session_id == session_obj.id,
+            AttendanceRecord.status == "VERIFIED_PRESENT",
+        )
+    )
+    session_obj.total_verified = verified_res.scalar() or 0
 
     # Count all spoofers and proxy violators on the session
     spoofer_res = await db.execute(
@@ -1717,7 +1773,10 @@ async def lab_face_check(
         )
         return FaceLabCheckResponse(has_face=has_face, remarks=remarks)
     except Exception as e:
-        return FaceLabCheckResponse(has_face=False, remarks=f"Processing error: {e}")
+        # R5 (review §5 honesty): failures are server errors, not a pretend
+        # 200 carrying an error string in remarks.
+        logger.error(f"[Face Lab] face-check failed: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Face processing failed")
 
 
 # Compare two diagnostic face images
@@ -1747,11 +1806,8 @@ async def lab_face_compare(
             remarks=remarks
         )
     except Exception as e:
-        return FaceLabCompareResponse(
-            has_face_a=False,
-            has_face_b=False,
-            similarity_score=0.0,
-            is_duplicate=False,
-            remarks=f"Comparison error: {e}"
-        )
+        # R5 (review §5 honesty): failures are server errors, not a pretend
+        # 200 carrying an error string in remarks.
+        logger.error(f"[Face Lab] compare failed: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Image comparison failed")
 

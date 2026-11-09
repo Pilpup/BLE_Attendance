@@ -351,7 +351,7 @@ class SessionFaceRegistry:
                     return FaceCheckResult(
                         is_duplicate=False,
                         has_human_face=False,
-                        remarks="REJECTED: Face image payload exceeds maximum allowed size (3MB)"
+                        remarks=f"REJECTED: Face image payload exceeds maximum allowed size ({MAX_PAYLOAD_BYTES // 1_000_000}MB)"
                     )
                 raw_bytes = face_bytes
             elif face_base64:
@@ -365,7 +365,7 @@ class SessionFaceRegistry:
                     return FaceCheckResult(
                         is_duplicate=False,
                         has_human_face=False,
-                        remarks="REJECTED: Face image payload exceeds maximum allowed size (3MB)"
+                        remarks=f"REJECTED: Face image payload exceeds maximum allowed size ({MAX_PAYLOAD_BYTES // 1_000_000}MB)"
                     )
 
                 raw_bytes = base64.b64decode(clean_b64)

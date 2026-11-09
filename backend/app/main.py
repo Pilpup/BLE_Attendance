@@ -6,7 +6,7 @@ import os
 import traceback
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from sqlalchemy import delete, text
 from app.config import settings, validate_production_secrets
@@ -268,6 +268,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# R5 (review §5 hardening): reject oversized declared bodies before framework
+# buffering. uvicorn buffers the whole request body before FastAPI handlers
+# run; this is the cheap declared-size gate — the face engine's per-field byte
+# cap (face_engine.MAX_PAYLOAD_BYTES = 4MB) stays the byte-authoritative bound
+# on actual decoded content.
+MAX_REQUEST_BODY_BYTES = 6_000_000
+
+
+@app.middleware("http")
+async def oversized_body_guard(request: Request, call_next):
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_REQUEST_BODY_BYTES:
+        return PlainTextResponse("Request body too large", status_code=413)
+    return await call_next(request)
 
 
 # Logs non-health HTTP requests and response status codes

@@ -2260,6 +2260,331 @@ async def test_list_courses_does_not_fabricate_mock_context(monkeypatch):
         assert (await s.execute(select(func.count()).select_from(Course))).scalar_one() == 0
 
 
+# ---------------------------------------------------------------------------
+# R2 finalize boundary gate (review §3.1) — chunk 4b
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_submit_during_finalize_inflight_is_not_orphaned(tmp_path):
+    # R2: a submission that lands while finalize is IN FLIGHT (already popped
+    # the staging buffer, not yet committed) previously read the still-ACTIVE
+    # status, got a plain success, and was silently orphaned by finalize's
+    # post-processing buffer clear. The route-level session gate must hold the
+    # submit's stage + committed-status re-read across the finalize boundary —
+    # so the straggler either gets drained, or is honestly rerouted to the
+    # grace path with an attendance record.
+    import asyncio
+    import uuid
+
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from app.database import get_db
+    from app.models.attendance import AttendanceRecord, Base
+    from app.services import submission_buffer as submission_buffer_module
+
+    race_buffer = submission_buffer_module.submission_buffer
+    real_pop = race_buffer.pop_submissions
+
+    async def slowed_pop(sid):
+        # Determinize the pop→commit window: the drain completes (so any stage
+        # landing in the next moment can never be drained again), then finalize
+        # stalls before its commit while the session status is still ACTIVE.
+        result = await real_pop(sid)
+        await asyncio.sleep(0.5)
+        return result
+
+    saved_pop = race_buffer.pop_submissions
+    race_buffer.pop_submissions = slowed_pop
+    try:
+        # File-backed sqlite so two concurrent requests get separate connections
+        test_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/race.db", echo=False)
+        async with test_engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        race_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+        async def override_get_db():
+            async with race_db() as s:
+                yield s
+
+        app.dependency_overrides[get_db] = override_get_db
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            tok_teacher = await _register_test_teacher(client, race_db, "Prof. Race Gate", "race.gate@univ.edu")
+            tok_straggler = await _register_roll_student(client, race_db, "Race Straggler", "race.strag@univ.edu", "22B4481")
+
+            s_res = await client.post(
+                "/api/v1/attendance/sessions",
+                headers={"Authorization": f"Bearer {tok_teacher}"},
+                json={"session_token": "RZ01", "session_salt": "RZMAIN", "total_enrolled": 5},
+            )
+            assert s_res.status_code == 201, s_res.text
+            session_id = s_res.json()["id"]
+            session_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
+
+            # Fire finalize first; once it is inside its body (gate-region), the
+            # straggler submits into the pop→commit window.
+            finalize_task = asyncio.create_task(
+                client.post(
+                    f"/api/v1/attendance/sessions/{session_id}/audit-and-finalize",
+                    headers={"Authorization": f"Bearer {tok_teacher}"},
+                    json={"reports": {}},
+                )
+            )
+            await asyncio.sleep(0.08)  # finalize past route entry / row lock
+            submit_task = asyncio.create_task(
+                client.post(
+                    session_url,
+                    headers={"Authorization": f"Bearer {tok_straggler}"},
+                    json={"student_id": "4481", "neighbors": [], "session_salt": "RZMAIN"},
+                )
+            )
+            finalize_res, submit_res = await asyncio.gather(finalize_task, submit_task)
+
+            assert submit_res.status_code == 200, submit_res.text
+            assert finalize_res.status_code == 200, finalize_res.text
+
+            async with race_db() as s:
+                rows = (
+                    await s.execute(
+                        select(AttendanceRecord).where(
+                            AttendanceRecord.session_id == uuid.UUID(session_id),
+                            AttendanceRecord.ble_device_id == "4481",
+                        )
+                    )
+                ).scalars().all()
+        # The straggler MUST exist exactly once — drained or graced, never orphaned
+        assert len(rows) == 1, (
+            "R2 lost a mid-finalize submission: got zero records for the straggler. "
+            f"submit_res {submit_res.status_code}: {submit_res.text[:220]}"
+        )
+        # A still-resident staged entry is tolerable (additive, pruned by TTL);
+        # note: keep buffer-emptiness checks out — the gate does not evict.
+    finally:
+        race_buffer.pop_submissions = saved_pop
+
+
+# ---------------------------------------------------------------------------
+# Honesty statuses (review §5) — chunk 5
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_submit_face_verified_reflects_outcome():
+    # R5: face_verified is bound to the CHECK OUTCOME. Unverifiable face
+    # payloads must be REJECTED (they must never surface as face_verified True),
+    # and a no-face submission must carry face_verified None.
+    import io
+    import base64
+    from PIL import Image
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from app.database import get_db
+    from app.models.attendance import Base
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    face_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with face_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    img = Image.new("RGB", (100, 100), color=(180, 140, 120))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    b64_img = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_stud = await _register_battery_student(client, face_db)
+
+        res = await client.post(
+            "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
+            headers={"Authorization": f"Bearer {tok_stud}"},
+            json={
+                "student_id": "STUD5",
+                "neighbors": ["PEER-A1"],
+                "session_salt": "DEMO1",
+                "face_image_base64": b64_img,
+            },
+        )
+        assert res.status_code == 200, res.text
+        assert res.json()["face_verified"] is True
+        assert res.json()["face_diagnostic"] is not None
+
+        # No-face submission: verified must honestly be None
+        noface = await client.post(
+            "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
+            headers={"Authorization": f"Bearer {tok_stud}"},
+            json={
+                "student_id": "STUD5",
+                "neighbors": ["PEER-A1"],
+                "session_salt": "DEMO1",
+            },
+        )
+        assert noface.status_code == 200, noface.text
+        assert noface.json()["face_verified"] is None
+
+        # UNVERIFIABLE face payload: a fake/non-decodable image must never pass
+        bogus_face = await client.post(
+            "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
+            headers={"Authorization": f"Bearer {tok_stud}"},
+            json={
+                "student_id": "STUD5",
+                "neighbors": ["PEER-A1"],
+                "session_salt": "DEMO1",
+                "face_image_base64": "!!!!not-base64-face!!!!",
+            },
+        )
+        assert bogus_face.status_code == 403, bogus_face.text
+        assert "Biometric proxy rejected" in bogus_face.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_lab_face_check_errors_are_http_errors():
+    # R5: /lab/face-check failures must be HTTP errors, never a pretend-200
+    # carrying an error string inside remarks.
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from app.database import get_db
+    from app.models.attendance import Base
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    lab_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with lab_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_teacher = await _register_test_teacher(client, lab_db, "Prof. Lab Err", "lab.err@univ.edu")
+        res = await client.post(
+            "/api/v1/attendance/lab/face-check",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"face_image_base64": "!!!!not-base64-face!!!!"},
+        )
+        assert res.status_code >= 400, res.text
+        assert "Face processing failed" in res.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_finalize_counts_are_recounted_from_db():
+    # R5: finalize counters must reflect committed DB rows, not payload
+    # tallies. A prior VERIFIED row that is absent from the finalize payload
+    # would have been silently dropped from total_verified before this fix.
+    import uuid
+
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from app.database import get_db
+    from app.models.attendance import AttendanceRecord, AttendanceSession, Base, User
+    from datetime import datetime, timezone
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    count_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with count_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_teacher = await _register_test_teacher(client, count_db, "Prof. Recount", "recount@univ.edu")
+        tok_stud_b = await _register_roll_student(client, count_db, "Count Bravo", "count.bravo@univ.edu", "22B4521")
+
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"session_token": "CQ01", "session_salt": "CQ1A", "total_enrolled": 5},
+        )
+        assert s_res.status_code == 201, s_res.text
+        session_id = s_res.json()["id"]
+
+        async with count_db() as s:
+            session_row = (
+                await s.execute(
+                    select(AttendanceSession).where(AttendanceSession.id == uuid.UUID(session_id))
+                )
+            ).scalars().first()
+            student_b = (await s.execute(select(User).where(User.roll_number == "22B4521"))).scalars().first()
+            assert student_b is not None
+            # A prior VERIFIED record NOT present in the finalize payload
+            prior_row = AttendanceRecord(
+                id=uuid.uuid4(),
+                session_id=session_row.id,
+                student_id=student_b.id,
+                ble_device_id="4521",
+                status="VERIFIED_PRESENT",
+                verification_method="BLE_MESH",
+                affinity_score=1.0,
+                reported_neighbors=[],
+                remarks="Prior verified row (grace-path style)",
+                recorded_at=datetime.now(timezone.utc),
+            )
+            s.add(prior_row)
+            await s.commit()
+
+        fin = await client.post(
+            f"/api/v1/attendance/sessions/{session_id}/finalize",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={
+                "records": [
+                    {
+                        "ble_device_id": "4522",
+                        "student_id": None,
+                        "status": "VERIFIED_PRESENT",
+                        "verification_method": "DIRECT_MUTUAL",
+                        "affinity_score": 1.0,
+                        "reported_neighbors": [],
+                    }
+                ]
+            },
+        )
+        assert fin.status_code == 200, fin.text
+        # Recount sees the prior row (1) + the drained payload row (1) = 2
+        assert fin.json()["total_verified"] == 2, fin.text
+        assert fin.json()["total_spoofers"] == 0
+
+
+@pytest.mark.anyio
+async def test_oversized_body_is_rejected_with_413():
+    # R5: declared overlong bodies are refused at the middleware gate before
+    # framework buffering and engine decoding.
+    from httpx import AsyncClient, ASGITransport
+    from app.main import app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Control: small bodies pass through unimpeded
+        res = await client.get("/health")
+        assert res.status_code == 200
+
+        big = b"x" * (7_000_000)
+        res = await client.post(
+            "/api/v1/attendance/sessions",
+            content=big,
+            headers={"Content-Type": "application/json"},
+        )
+        assert res.status_code == 413, res.text
+        assert "too large" in res.text
+
+
 
 
 
