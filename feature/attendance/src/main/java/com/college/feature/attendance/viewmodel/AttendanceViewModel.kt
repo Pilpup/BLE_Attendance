@@ -1070,6 +1070,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         auditPollingJob = null
 
         // Real classroom mode: Listen for teacher BLE beacon broadcast
+        invalidateBeaconLatch()
         detectedSessionId = "----"
         detectedSessionSalt = "------"
         studentPhase = StudentPhase.LISTENING_FOR_TEACHER
@@ -1114,6 +1115,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         isRefreshingAudit = false
         detectedSessionId = "----"
         detectedSessionSalt = "------"
+        invalidateBeaconLatch()
         studentPhase = StudentPhase.STANDBY
         onStopScanning?.invoke()
         onStopBroadcasting?.invoke()
@@ -1189,6 +1191,82 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     // Processes incoming BLE advertising packets for beacon and peer discovery
+    // ------------------------------------------------------------------
+    // Cross-class beacon latch hardening.
+    //
+    // Two adjacent rooms can run attendance simultaneously and BLE crosses
+    // walls. Latching the FIRST beacon heard let a wall-side student bind to
+    // the neighboring class (wrong roster, wrong salt). Instead the first
+    // beacon OPENS this decision window; later beacons only refresh the pool
+    // and peak RSSI. At window close the strongest candidate latches — the
+    // room the student physically sits in hears its podium beacon strongest
+    // by a wide margin versus a wall-crossed foreign one.
+    // ------------------------------------------------------------------
+
+    // 2 s covers several beacon repeats: enough peak-RSSI samples to separate
+    // the podium beacon from a wall-crossed foreign one, short enough that
+    // check-in pacing is unaffected.
+    private val latchDecisionWindowMs = 2_000L
+
+    private data class BeaconCandidate(
+        val sessionId: String,
+        val sessionSalt: String,
+        var peakRssi: Int
+    )
+
+    private val beaconCandidates = LinkedHashMap<String, BeaconCandidate>()
+
+    // Guards the pending decision job: every reset/lifecycle transition bumps
+    // the epoch so a stale timer can never latch a pre-reset candidate pool.
+    private var latchEpoch = 0
+
+    private fun invalidateBeaconLatch() {
+        latchEpoch++
+        beaconCandidates.clear()
+    }
+
+    private fun collectBeaconCandidate(sessionId: String, sessionSalt: String, rssi: Int) {
+        val existing = beaconCandidates[sessionId]
+        if (existing != null) {
+            if (rssi > existing.peakRssi) existing.peakRssi = rssi
+            return
+        }
+        beaconCandidates[sessionId] = BeaconCandidate(sessionId, sessionSalt, rssi)
+        android.util.Log.i(
+            "AttendanceViewModel",
+            "Beacon candidate: $sessionId @${rssi}dBm (pool size ${beaconCandidates.size})"
+        )
+        if (beaconCandidates.size == 1) {
+            val epoch = ++latchEpoch
+            viewModelScope.launch {
+                delay(latchDecisionWindowMs)
+                resolveBeaconLatch(epoch)
+            }
+        }
+    }
+
+    private fun resolveBeaconLatch(epoch: Int) {
+        // A reset (start-listening / cancel / expiry paths) bumped the epoch,
+        // or the student left the listening phase — discard this era's pool.
+        if (epoch != latchEpoch || studentPhase != StudentPhase.LISTENING_FOR_TEACHER) return
+        // Highest observed RSSI wins; deterministic lexicographic tie-break
+        // keeps the (pathological) equal-peak case from flip-flopping.
+        val chosen = beaconCandidates.values
+            .sortedWith(compareBy<BeaconCandidate> { -it.peakRssi }.thenBy { it.sessionId })
+            .firstOrNull() ?: return
+        val pool = beaconCandidates.entries
+            .joinToString(",") { "${it.key}@${it.value.peakRssi}dBm" }
+        android.util.Log.i(
+            "AttendanceViewModel",
+            "Beacon latch: ${chosen.sessionId} @${chosen.peakRssi}dBm [candidates: $pool]"
+        )
+        invalidateBeaconLatch()
+        detectedSessionId = chosen.sessionId
+        detectedSessionSalt = chosen.sessionSalt
+        studentPhase = StudentPhase.PROBING_NEIGHBORS
+        startStudentDiscoveryWindow()
+    }
+
     fun onPacketReceived(rssi: Int, messageText: String) {
         val cleanMsg = messageText.trim()
 
@@ -1218,7 +1296,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             }
         }
 
-        // Check for teacher beacon packet format (S:<SessionID>:<Salt>[:<Semester>])
+        // Teacher beacon format (S:<SessionID>:<Salt>[:<Semester>]). Beacons are
+        // POOLED, not latched: see the latch-hardening block above. The first
+        // beacon opens the decision window; the strongest candidate wins.
         val isBeacon = cleanMsg.startsWith("S:") || cleanMsg.startsWith("SESSION:")
         if (isBeacon && studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
             val parts = cleanMsg.split(":")
@@ -1232,10 +1312,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     studentStatusMessage = "Nearby class is Semester $beaconSemester — your profile says Semester $profileSemester"
                     return
                 }
-                detectedSessionId = parts[1]
-                detectedSessionSalt = if (parts.size >= 3) parts[2] else ""
-                studentPhase = StudentPhase.PROBING_NEIGHBORS
-                startStudentDiscoveryWindow()
+                collectBeaconCandidate(parts[1], if (parts.size >= 3) parts[2] else "", rssi)
             }
             return
         }
@@ -1429,6 +1506,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         ultrasonicProximityDetected = false
         coLocatedPeerId = null
         auditedRecord = null
+        invalidateBeaconLatch()
         detectedSessionId = "----"
         detectedSessionSalt = "------"
         studentPhase = StudentPhase.LISTENING_FOR_TEACHER
@@ -1453,6 +1531,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         ultrasonicProximityDetected = false
         coLocatedPeerId = null
         auditedRecord = null
+        invalidateBeaconLatch()
         detectedSessionId = "----"
         detectedSessionSalt = "------"
         studentPhase = StudentPhase.LISTENING_FOR_TEACHER
