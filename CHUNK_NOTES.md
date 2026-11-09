@@ -240,15 +240,63 @@ drift *class* that the current suite cannot catch. Diff: `attendance.py` +112/�
 
 ---
 
+## Chunk 6 — Android build security ✅
+
+**Scope:** release builds no longer leak secrets to logcat — OkHttp header logging gated on
+`BuildConfig.DEBUG`; R8 strips `Log.v/d/i` from release dexes; release-on-CI fails fast without real
+signing configuration.
+
+**Receipts:**
+
+- `./gradlew :app:assembleRelease` → **exit 0**, APK **3,783,893 bytes** (4 bytes lighter than the
+  pre-chunk 3,783,897; a size delta is *not* the real receipt here — the dex grep is).
+- **Dex-level strip proof:** the release dex no longer contains the `Log.i` literal from
+  BleAdvertiser ("Radio broadcasting started successfully" → **ABSENT**) while the `Log.w` literal
+  ("BluetoothLeAdvertiser not available or permissions missing") remains **PRESENT** — exactly the
+  v/d/i-strip / w-e-keep contract.
+- **CI fail-fast proof:** `CI=true ./gradlew :app:assembleRelease` → BUILD FAILED, **exit 1**, at
+  configuration time, with the message "Release build on CI requires signing configuration: set
+  KEYSTORE_PATH, KEYSTORE_PASSWORD, KEY_ALIAS and KEY_PASSWORD environment variables."
+  (`/tmp/opencode/ci_fail.log`). Local (no CI var) still builds via the debug-keystore fallback.
+- **Precondition verified, not assumed:** `isMinifyEnabled = true` (`app/build.gradle.kts:61`) —
+  `assumenosideeffects` is inert without R8, so the strip's liveness was checked before claiming it.
+
+**Notes (honest):**
+
+- **AGP 8.5.2 defaults `buildConfig` off** — no module in this project had the flag, so
+  `BuildConfig.DEBUG` could not even resolve in `core/network` until
+  `buildFeatures { buildConfig = true }` was added. Discovered during recon, not from the review.
+- **The actual leak shaped the fix:** the OkHttp interceptor ran at `Level.HEADERS` *unconditionally*,
+  printing the `Authorization` bearer token (and every request header) into logcat on release
+  devices — attacker-adjacent on shared devices and a gift to anyone with `adb logcat`. Debug keeps
+  full header inspection; release logs nothing; R8 is the second guard, not the primary one.
+- `BuildConfig` resolves same-package (`com.college.core.network.BuildConfig`) — no import needed;
+  the exit-0 build plus the level-gate code confirm the wiring.
+- **ProGuard keeps `Log.w/e` deliberately:** Kotlin sources use them widely (`BleAdvertiser`,
+  `BleScanner`, `AttendanceViewModel:763/:776`) and they matter for crash triage in the wild.
+- **Signing fail-fast fires at configuration time** (`org.gradle.api.GradleException` thrown in the
+  release block — the CI log shows the failure before any task runs), and a `require` catches a
+  *half-configured* environment (keystore path exists but a password/alias missing), which
+  previously surfaced as an obscure signing failure late in the build. `CI` counts as truthy unless
+  blank or exactly `false`, matching GitHub Actions/GitLab conventions while still letting a local
+  developer opt out explicitly. Local machines keep the debug fallback so `assembleRelease` remains
+  buildable without secrets in the repository.
+- **Process mistake made and fixed (receipt integrity):** the first CI-fail run piped Gradle into
+  `tail` and echoed `GRADLE_EXIT=$?` — which reported *tail's* exit code (0), masquerading as "CI
+  fail-fast did not trigger". Corrected with a file redirect + `$?` on the raw command → honest
+  exit 1. Lesson recorded: never read `$?` behind a pipe for build receipts.
+
+---
+
 ## Pending chunks (map as agreed)
 
-- **4b** — R2 finalize lock (stage/pop window; highest backend risk) ← *next*
+- **4b** — R2 finalize lock (stage/pop window; highest backend risk) ← *done*
 - **5** — Honesty statuses: `face_verified` truthful, lab routes → real 5xx, `total_verified` DB
   recount, body cap + decode bounds (test assertions get updated — expected churn) ← *done, no churn needed*
 - **6** — Android build security: `BuildConfig.DEBUG` log gate, ProGuard Log strip, CI-only keystore
-  fail-fast ← *next*
+  fail-fast ← *done (dex-level strip proof + CI exit-1 proof)*
 - **7** — Auth lifecycle: `token_version` + `is_active` + logout (missing claim == v0 for deploy
-  safety; DDL `ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version`)
+  safety; DDL `ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version`) ← *next*
 - **8** — SessionManager fail-closed (no token in plaintext fallback), permission UX, bridge
   clearing, `realUser` → state
 - **9** — URL single-source (`ServerConfigManager` only; delete VM:262 filters + LAN quick button)

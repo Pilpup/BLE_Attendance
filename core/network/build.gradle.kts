@@ -5,6 +5,9 @@ android {
     compileSdk = 34
     defaultConfig { minSdk = 24 }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
+    // R6 (review P0): BuildConfig.DEBUG gates OkHttp header logging — tokens
+    // must never reach logcat on release devices.
+    buildFeatures { buildConfig = true }
     kotlinOptions { jvmTarget = "17" }
 }
 dependencies {

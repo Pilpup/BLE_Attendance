@@ -15,7 +15,16 @@ object NetworkClient {
             .addInterceptor(AuthInterceptor(SessionManager.default))
             .addInterceptor(
                 HttpLoggingInterceptor().apply {
-                    level = HttpLoggingInterceptor.Level.HEADERS
+                    // R6 (review P0): unconditional HEADERS logging printed the
+                    // Authorization bearer token (and every request header) into
+                    // logcat on release builds. Debug builds keep full header
+                    // inspection; release builds log nothing, and R8 strips
+                    // remaining Log.* calls as a second guard.
+                    level = if (BuildConfig.DEBUG) {
+                        HttpLoggingInterceptor.Level.HEADERS
+                    } else {
+                        HttpLoggingInterceptor.Level.NONE
+                    }
                 }
             )
             .connectTimeout(30, TimeUnit.SECONDS)

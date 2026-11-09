@@ -1,5 +1,15 @@
 # Comprehensive ProGuard Rules for Ble Attendance App
 
+# R6 (review P0): strip debug/verbose/info Log calls from release builds so any
+# overlooked literals never reach logcat; warnings/errors remain for crash
+# triage. (OkHttp's own HttpLoggingInterceptor is additionally level-gated on
+# BuildConfig.DEBUG in NetworkClient.)
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+}
+
 # General reflection attributes
 -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod,RuntimeVisibleAnnotations,RuntimeVisibleParameterAnnotations
 
