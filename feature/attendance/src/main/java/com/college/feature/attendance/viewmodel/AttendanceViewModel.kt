@@ -100,6 +100,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     val studentId: String get() = currentRollNumber
     val studentShortId: String get() = currentRollNumber.takeLast(4).padStart(4, '0').uppercase()
 
+    // Valid neighbor short id: 4 chars of A–Z / 0–9 / '-' (roll-derived ids like
+    // "-001" or hex-like default ids). Anything outside this alphabet is wire junk.
+    private val peerIdPattern = Regex("[0-9A-Z-]{4}")
+
     var isAuthLoading: Boolean by mutableStateOf(false)
     var authErrorText: String? by mutableStateOf(null)
     var showAuthDialog: Boolean by mutableStateOf(false)
@@ -154,6 +158,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var detectedSessionSalt by mutableStateOf("------")
     private val rawDiscoveredPeers = java.util.concurrent.ConcurrentHashMap<String, PeerData>()
     private var peerBatchJob: Job? = null
+
+    // Throttle for the unclassified-packet diagnostic log (one line / 2s max)
+    private var lastNeglectedPacketLogMs = 0L
     val discoveredPeers: Map<String, PeerData> get() = rawDiscoveredPeers
 
     // Interactive reflex challenge state (score is cosmetic, informational only)
@@ -1425,10 +1432,22 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun startStudentDiscoveryWindow() {
+        // Fresh discovery window → fresh peer graph: stale claims from a prior
+        // session (rapid back-to-back retests) must never leak into this report
+        rawDiscoveredPeers.clear()
+        testedUltrasonicPeers.clear()
+        topDeskNeighbours = emptyList()
         startPeerBatchUpdates()
         studentDiscoverySecondsRemaining = 25
         val probePayload = "$detectedSessionId$studentShortId"
-        onStartBroadcasting?.invoke(probePayload, AdvertiseSettings.ADVERTISE_TX_POWER_LOW)
+        if (currentRollNumber == defaultLocalId) {
+            // A device without a bound roll would broadcast a RANDOM default id —
+            // every listener nearby would ingest it as a phantom classmate that
+            // can never check in or reciprocate. Listen-only mode instead.
+            android.util.Log.w("AttendanceViewModel", "Probe broadcast suppressed: no real roll bound — default random id would fabricate a phantom peer for classmates")
+        } else {
+            onStartBroadcasting?.invoke(probePayload, AdvertiseSettings.ADVERTISE_TX_POWER_LOW)
+        }
 
         studentTimer?.cancel()
         studentTimer = object : CountDownTimer(25000L, 1000L) {
@@ -1504,41 +1523,59 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             return
         }
 
-        // Check for student peer discovery packet
-        val isPeerProbe = (cleanMsg.length == 8 || (cleanMsg.length > 8 && cleanMsg.startsWith(detectedSessionId)))
-                && !cleanMsg.startsWith("S:") && !cleanMsg.startsWith("SESSION:")
+        // Check for student peer discovery packet. Wire contract is EXACT:
+        // "<latched session token (4 chars)><peer short id (4 chars)>". Anything
+        // else — foreign advertisers sharing our service UUID, stray app
+        // instances, garbled fragments — must never fabricate a classmate via
+        // takeLast(4) of arbitrary-length text (the phantom-peer vector).
         // Ingest peer probes only during active probing phase to keep submitted snapshot stable
         val canReceiveProbe = studentPhase == StudentPhase.PROBING_NEIGHBORS
+        val sessionLen = detectedSessionId.length
+        val isPeerProbe = cleanMsg.length == sessionLen + 4 &&
+                cleanMsg.startsWith(detectedSessionId) &&
+                !cleanMsg.startsWith("S:") && !cleanMsg.startsWith("SESSION:")
 
         if (isPeerProbe && canReceiveProbe && detectedSessionId != "----") {
-            // Verify packet matches active session ID
-            if (cleanMsg.startsWith(detectedSessionId)) {
-                val peerId = cleanMsg.removePrefix(detectedSessionId).takeLast(4)
-                if (peerId.isNotEmpty() && peerId != studentShortId) {
-                    val existing = rawDiscoveredPeers[peerId]
-                    val updatedPeer = if (existing != null) {
-                        existing.withSample(rssi)
-                    } else {
-                        PeerData(peerId).withSample(rssi)
-                    }
-                    rawDiscoveredPeers[peerId] = updatedPeer
-
-                    if (existing == null) {
-                        // Push updated peer list to server
-                        submitMyNeighborsToCloud(keepRadioActive = true)
-                    }
-
-                    // Layer 4 Ultrasonic Proximity Evaluation:
-                    // Close proximity (RSSI >= -68 dBm) activates the ultrasonic acoustic distance handshake.
-                    // Neither radio nor ultrasonic alone can flag a student: both must independently agree.
-                    val isClosePeer = rssi >= -68 || updatedPeer.medianRssi >= -68
-                    if (isClosePeer && !testedUltrasonicPeers.contains(peerId)) {
-                        testedUltrasonicPeers.add(peerId)
-                        triggerUltrasonicProximityHandshake(peerId)
-                    }
+            val peerId = cleanMsg.substring(sessionLen).uppercase()
+            if (peerId != studentShortId && peerIdPattern.matches(peerId)) {
+                val existing = rawDiscoveredPeers[peerId]
+                val updatedPeer = if (existing != null) {
+                    existing.withSample(rssi)
+                } else {
+                    PeerData(peerId).withSample(rssi)
                 }
+                rawDiscoveredPeers[peerId] = updatedPeer
+
+                if (existing == null) {
+                    // First sight of this peer this window — one diagnostic line
+                    // so phantom emitters are identifiable from logcat alone
+                    android.util.Log.i("AttendanceViewModel", "Peer ingested: id=$peerId msg='$cleanMsg' rssi=$rssi session=$detectedSessionId")
+                    // Push updated peer list to server
+                    submitMyNeighborsToCloud(keepRadioActive = true)
+                }
+
+                // Layer 4 Ultrasonic Proximity Evaluation:
+                // Close proximity (RSSI >= -68 dBm) activates the ultrasonic acoustic distance handshake.
+                // Neither radio nor ultrasonic alone can flag a student: both must independently agree.
+                val isClosePeer = rssi >= -68 || updatedPeer.medianRssi >= -68
+                if (isClosePeer && !testedUltrasonicPeers.contains(peerId)) {
+                    testedUltrasonicPeers.add(peerId)
+                    triggerUltrasonicProximityHandshake(peerId)
+                }
+                return
             }
-            return
+            // Shaped-but-invalid probe (own echo / malformed id) falls through to
+            // the throttled neglect log below, with full packet text
+        }
+
+        // Anything reaching the scanner that matched nothing we speak — verdicts
+        // for other students, foreign-class beacons, unclassified shapes — gets
+        // one throttled diagnostic line per 2s: enough to identify phantom
+        // emitters from logcat, without flooding the log
+        val nowMs = android.os.SystemClock.elapsedRealtime()
+        if (nowMs - lastNeglectedPacketLogMs > 2000) {
+            lastNeglectedPacketLogMs = nowMs
+            android.util.Log.i("AttendanceViewModel", "BLE packet not ingested: '$cleanMsg' (rssi=$rssi phase=$studentPhase session=$detectedSessionId)")
         }
     }
 
