@@ -249,6 +249,30 @@ async def _populate_course_metadata(session_obj: AttendanceSession, db: AsyncSes
         session_obj.course_name = course.course_name
 
 
+# R11-B fix: the audit-and-finalize response is the teacher's LIVE post-class
+# list (the app maps body.records straight onto finalizedRecords), but unlike
+# the history/detail routes it returned raw AttendanceRecord rows — with no
+# users join, so student_name/roll_number stayed NULL and the teacher screen
+# degraded to "Student 20" fallback names. Same enrichment the other two read
+# routes perform; records carry no persistent name column (name is never
+# stored, always joined from users).
+async def _populate_record_student_details(
+    session_obj: AttendanceSession, db: AsyncSession
+) -> None:
+    if not session_obj.records:
+        return
+    student_ids = [r.student_id for r in session_obj.records if r.student_id]
+    if not student_ids:
+        return
+    u_res = await db.execute(select(User).where(User.id.in_(student_ids)))
+    user_map = {u.id: u for u in u_res.scalars().all()}
+    for r in session_obj.records:
+        u = user_map.get(r.student_id) if r.student_id else None
+        if u is not None:
+            r.roll_number = u.roll_number
+            r.student_name = u.full_name
+
+
 # Record or update a proxy violation record for a device
 # Record proxy violation handling concurrent write races
 async def _record_proxy_violation(
@@ -778,6 +802,7 @@ async def finalize_attendance_session(
         )
         session_obj.records = list(final_recs.scalars().all())
         await _populate_course_metadata(session_obj, db)
+        await _populate_record_student_details(session_obj, db)
         return session_obj
 
     # Load prior records to update existing entries and avoid duplicates
@@ -990,6 +1015,7 @@ async def finalize_attendance_session(
     face_registry.clear_session(str(session_obj.id))
 
     await _populate_course_metadata(session_obj, db)
+    await _populate_record_student_details(session_obj, db)
 
     logger.info(f"[Audit Finalized] Session: {session_obj.id}, Verified: {session_obj.total_verified}, Spoofers: {session_obj.total_spoofers}, Total Records: {len(payload.records)}")
     return session_obj
@@ -1434,6 +1460,7 @@ async def audit_and_finalize_session(
         )
         session_obj.records = list(final_recs.scalars().all())
         await _populate_course_metadata(session_obj, db)
+        await _populate_record_student_details(session_obj, db)
         return session_obj
 
     # Fetch all cloud-submitted student and relay reports from memory buffer and fallback database
@@ -1629,6 +1656,7 @@ async def audit_and_finalize_session(
     face_registry.clear_session(str(session_obj.id))
 
     await _populate_course_metadata(session_obj, db)
+    await _populate_record_student_details(session_obj, db)
 
     logger.info(f"[Audit Finalized] Session: {session_obj.id}, Verified: {session_obj.total_verified}, Spoofers: {session_obj.total_spoofers}, Total Records: {len(audit_results)}")
     return session_obj

@@ -1504,6 +1504,15 @@ async def test_finalize_staged_drain_requires_reciprocal_peers():
         assert record_map["6611"]["affinity_score"] == 1.00
         assert "mutual desk neighbor [6612]" in record_map["6611"]["remarks"]
 
+        # R11-B: the finalize payload must carry users-joined names and rolls —
+        # the teacher's live post-class screen renders from exactly this
+        # response, and the "Student 20" fallback previously meant
+        # student_name arrived NULL here (finalize never joined users).
+        assert record_map["6611"]["student_name"] == "Mutual One"
+        assert record_map["6611"]["roll_number"] == "22B6611"
+        assert record_map["6613"]["student_name"] == "Fake Claimer"
+        assert record_map["6613"]["roll_number"] == "22B6613"
+
         assert record_map["6612"]["status"] == "VERIFIED_PRESENT"
         assert "mutual desk neighbor [6611]" in record_map["6612"]["remarks"]
 

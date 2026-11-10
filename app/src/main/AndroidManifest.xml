@@ -4,6 +4,11 @@
     <!-- Network permission -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- R11 fix (chunk 11, wake lock for the student probing phase —
+         PARTIAL_WAKE_LOCK acquire throws SecurityException without it.
+         Install-time permission, no runtime prompt needed. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
     <!-- Bluetooth & location permissions live in :feature:attendance's
          AndroidManifest.xml and are merged into this final manifest by AGP. -->
 

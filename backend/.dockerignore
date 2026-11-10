@@ -5,3 +5,9 @@ __pycache__/
 .env
 *.db
 tests/
+
+# R10 follow-up (2026-11-10): the 411MB of the 460MB build context copied into
+# the image via `COPY . .` is this dev venv — the runtime stage installs its
+# own site-packages into /usr/local from the builder stage, so the venv in the
+# image is pure dead weight (~doubling image size).
+.venv/
