@@ -76,6 +76,12 @@ class MainActivity : ComponentActivity() {
             bleScanner.stopScanning()
         }
 
+        // R11-C (review §2.1): scan density so the idle listening phases run
+        // BALANCED and only the peer discovery window demands LOW_LATENCY.
+        viewModel.onSwitchScanLatency = { lowLatency ->
+            bleScanner.setScanLatency(lowLatency)
+        }
+
         setContent {
             val context = androidx.compose.ui.platform.LocalContext.current
 

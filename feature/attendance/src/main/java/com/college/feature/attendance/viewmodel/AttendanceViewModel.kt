@@ -211,6 +211,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
     private val testedUltrasonicPeers = mutableSetOf<String>()
 
+    // R11-C (review §2.2): bumped by the peer-ingest path on every map write
+    // (new peer or RSSI sample refresh); peerBatchJob flushes only when this
+    // counter moves. Main-thread writes only (every bump site lives there).
+    @Volatile
+    private var peerRevision = 0L
+
     // R11 (review §2.8): PARTIAL wake lock for the student probing phase — a
     // 25 s BLE discovery window plus device-to-device ultrasonic handshakes
     // can run while a pocketed phone has dozed the CPU, where scan callbacks
@@ -246,8 +252,21 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     private fun startPeerBatchUpdates() {
         if (peerBatchJob?.isActive == true) return
         peerBatchJob = viewModelScope.launch(Dispatchers.Default) {
+            // R11-C (review §2.2, deferred from chunk 11): change-driven
+            // top-3 refresh. peerRevision bumps on every peer map write; a
+            // silent classroom now skips the sort-plus-main-thread write
+            // entirely (the old loop sorted and posted every 300ms for the
+            // whole probing phase no matter what). Same 300ms cadence once
+            // packets flow: seen is read BEFORE the flush, so packets landing
+            // during the sort belong to the next tick — a change is never
+            // lost. Equivalent to review's Flow::sample remedy without
+            // pulling a state flow over the ConcurrentHashMap.
+            var lastSeenRevision = -1L
             while (isActive) {
                 delay(300L)
+                val seen = peerRevision
+                if (seen == lastSeenRevision) continue
+                lastSeenRevision = seen
                 val top = rawDiscoveredPeers.values
                     .filter { it.medianRssi >= -92 }
                     .sortedByDescending { it.medianRssi }
@@ -276,6 +295,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var onStopBroadcasting: (() -> Unit)? = null
     var onStartScanning: (() -> Unit)? = null
     var onStopScanning: (() -> Unit)? = null
+
+    // R11-C (review §2.1, deferred from chunk 11): MainActivity wires this to
+    // BleScanner.setScanLatency — LOW_LATENCY only for the active peer
+    // discovery window, BALANCED while idly listening and after the window.
+    var onSwitchScanLatency: ((lowLatency: Boolean) -> Unit)? = null
 
     var studentDiscoverySecondsRemaining by mutableIntStateOf(0)
     private var teacherTimer: CountDownTimer? = null
@@ -1196,6 +1220,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         studentTimer?.cancel()
         studentTimer = null
         studentDiscoverySecondsRemaining = 0
+        // R11-C: drop scan density even when Next is tapped before the window
+        // closes (fast game finish) — audit wait/verdict listening runs BALANCED.
+        onSwitchScanLatency?.invoke(false)
         val sessId = detectedSessionId.takeIf { it.isNotBlank() && it != "----" } ?: backendSessionId ?: ""
         if (hasLocalDefenseFailed) {
             if (studentStatusMessage == null) {
@@ -1227,6 +1254,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         testedUltrasonicPeers.clear()
         topDeskNeighbours = emptyList()
         startPeerBatchUpdates()
+        // R11-C (review §2.1): the only phase that needs packet density —
+        // 25 s peer discovery window (plus the reflex game that rides it).
+        onSwitchScanLatency?.invoke(true)
         // R11 (review §2.8): hold the CPU for the whole probe sequence
         // (BLE window + ultrasonic handshakes) even if the user pockets the
         // phone; bounded by the 105 s timeout, released on teardown.
@@ -1256,6 +1286,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             override fun onFinish() {
                 studentDiscoverySecondsRemaining = 0
                 flushPeerBatchImmediately()
+                // R11-C (review §2.1): the 25 s discovery window is closed —
+                // the score window and audit wait run on BALANCED (battery).
+                onSwitchScanLatency?.invoke(false)
                 // Background BLE discovery window complete; sync neighbors to cloud
                 submitMyNeighborsToCloud(keepRadioActive = true)
                 // studentPhase remains PROBING_NEIGHBORS so the score window stays visible
@@ -1413,6 +1446,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     PeerData(peerId).withSample(rssi)
                 }
                 rawDiscoveredPeers[peerId] = updatedPeer
+                peerRevision++ // R11-C: change-driven batch flush (both new peer and RSSI sample count)
 
                 if (existing == null) {
                     // First sight of this peer this window — one diagnostic line

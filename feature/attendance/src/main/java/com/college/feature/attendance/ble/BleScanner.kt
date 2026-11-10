@@ -43,14 +43,38 @@ class BleScanner(
     private val bleScanner get() = bluetoothManager.adapter?.bluetoothLeScanner
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // Starts low-latency BLE scan filtered by classroom service UUID
+    // R11-C (review §2.1, deferred from chunk 11): scan density follows the
+    // discovery phase. BALANCED while idly listening for the teacher beacon and
+    // after the discovery window (battery + thermal on old SoCs), LOW_LATENCY
+    // only while the active peer-discovery window demands packet density.
+    // Bluetooth scan settings are immutable per scan: a mode change while
+    // scanning means a stop+restart of the SAME filter and callback — the
+    // defensive stopScan inside startScanning() tolerates the swap, and the
+    // brief rescan blind spot lands at an intentional phase boundary, never
+    // mid-handshake.
+    @Volatile
+    private var lowLatencyScanning = false
+
+    fun setScanLatency(lowLatency: Boolean) {
+        if (lowLatencyScanning == lowLatency) return
+        lowLatencyScanning = lowLatency
+        startScanning()
+    }
+
+    // Starts a BLE scan filtered by classroom service UUID, at the density
+    // currently selected for the discovery phase (BALANCED by default)
     fun startScanning() {
         val filter = ScanFilter.Builder()
             .setServiceData(BleConstants.PARCEL_UUID, null)
             .build()
 
+        val scanMode = if (lowLatencyScanning) {
+            ScanSettings.SCAN_MODE_LOW_LATENCY
+        } else {
+            ScanSettings.SCAN_MODE_BALANCED
+        }
         val settings = ScanSettings.Builder()
-            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setScanMode(scanMode)
             .build()
 
         val scanner = bleScanner
@@ -75,6 +99,9 @@ class BleScanner(
 
     // Stops active BLE scanning
     fun stopScanning() {
+        // Teardown also resets density: the next listening phase starts
+        // BALANCED until a discovery window asks for LOW_LATENCY again.
+        lowLatencyScanning = false
         try {
             bleScanner?.stopScan(scanCallback)
         } catch (e: Exception) {
