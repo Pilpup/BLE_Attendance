@@ -112,6 +112,20 @@ class BestFrameAnalyzer(
         }
     }
 
+    // R11 (review §2.3): detaches the winning candidate WITHOUT recycling its
+    // bitmap — ownership transfers to the caller. Needed because the expensive
+    // JPEG+Base64 encode must move off the main thread while CameraX teardown
+    // stays on it: getBestCandidate() shares the reference and leaves the
+    // analyzer free to recycle the bitmap in reset(), which would poison the
+    // encode running concurrently on a worker.
+    fun takeBestCandidate(): BestFrameCandidate? {
+        synchronized(lock) {
+            val taken = bestCandidate
+            bestCandidate = null
+            return taken
+        }
+    }
+
     // Purges stored candidate bitmap from memory
     fun reset() {
         synchronized(lock) {

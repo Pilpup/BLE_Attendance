@@ -18,6 +18,24 @@ class BleScanner(
 ) {
     companion object {
         private const val TAG = "BleScanner"
+
+        // R11 (review §2.1): the full set of payload shapes AttendanceViewModel
+        // actually consumes (trim + startsWith checks at :1315/:1341/:1368) —
+        // teacher beacon "S:"/"SESSION:", air verdict "V:", and the 8-char peer
+        // probe "<4-char session><4-char peer id>". The VM additionally
+        // constrains probes to the latched session id, which the scanner cannot
+        // know — so length==8 here must stay the looser superset. Everything
+        // else (foreign advertisers, garbled fragments) previously crossed the
+        // thread bridge only to be throttled-logged; now it never allocates or
+        // posts at all.
+        fun looksLikeAttendanceMessage(messageText: String): Boolean {
+            val msg = messageText.trim()
+            if (msg.isEmpty()) return false
+            return msg.startsWith("S:") ||
+                    msg.startsWith("SESSION:") ||
+                    msg.startsWith("V:") ||
+                    msg.length == 8
+        }
     }
 
     // Bluetooth system service and scanner handles
@@ -70,7 +88,15 @@ class BleScanner(
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             super.onScanResult(callbackType, result)
 
+            // R11 (review §2.1): binder-thread gate BEFORE allocating a payload
+            // String or posting to the main looper. A 100-phone room on
+            // LOW_LATENCY previously meant thousands of posts/sec on weak
+            // devices (jank + allocation churn). -95 dBm keeps
+            // classroom-relevant traffic; weaker advertisements could only
+            // ever become a throttled neglect log or false adjacency noise.
             val rssi = result.rssi
+            if (rssi < -95) return
+
             val antennaTime = result.timestampNanos
             val osTime = SystemClock.elapsedRealtimeNanos()
             val latencyMs = (osTime - antennaTime) / 1_000_000.0
@@ -87,6 +113,11 @@ class BleScanner(
             }
 
             val messageText = String(serviceDataBytes, Charsets.UTF_8)
+            // Second gate: only payloads the ViewModel actually speaks
+            // (teacher beacon / air verdict / 8-char peer probe) bridge to the
+            // main thread. Foreign app instances and truncated fragments used
+            // to cross the bridge only to be throttled-logged there.
+            if (!looksLikeAttendanceMessage(messageText)) return
 
             // Dispatch received packet to the main thread
             mainHandler.post {

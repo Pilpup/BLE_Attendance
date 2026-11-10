@@ -25,6 +25,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -38,7 +39,6 @@ import androidx.compose.ui.unit.coerceAtLeast
 import androidx.compose.ui.unit.dp
 import com.college.feature.attendance.telemetry.ExpiredTargetEvent
 import com.college.feature.attendance.telemetry.TapEvent
-import kotlinx.coroutines.delay
 import java.util.Random
 import kotlin.math.absoluteValue
 import kotlin.math.cos
@@ -271,7 +271,14 @@ fun OrbPoppingGame(
                 break
             }
 
-            delay(16L)
+            // R11 (review §2.2): pace on the frame clock instead of a fixed
+            // 16 ms delay. delay(16) fights vsync — on 60 Hz devices it drifts
+            // to effectively 2-3 frames per tick (jank), on 120 Hz it wastes
+            // battery recomposing twice per frame. withFrameNanos suspends
+            // until the next frame is actually produced. Game semantics are
+            // untouched: spawn/expiry math still uses System.currentTimeMillis()
+            // exactly as recorded at seed time.
+            withFrameNanos { }
         }
     }
 

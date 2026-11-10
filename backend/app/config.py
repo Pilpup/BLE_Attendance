@@ -61,6 +61,15 @@ SECRET_PLACEHOLDER_TOKENS = (
 MIN_SECRET_LENGTH = 32
 
 
+def _placeholder_token_in(value: str) -> Optional[str]:
+    """First placeholder marker found in a value, or None (shared scanner)."""
+    lowered = (value or "").lower()
+    for token in SECRET_PLACEHOLDER_TOKENS:
+        if token in lowered:
+            return token
+    return None
+
+
 def insecure_secret_reason(name: str, value: str) -> Optional[str]:
     """Reason a production secret value is unsafe, or None when acceptable."""
     value = (value or "").strip()
@@ -70,10 +79,27 @@ def insecure_secret_reason(name: str, value: str) -> Optional[str]:
         return f"{name} still uses the default committed in the repository"
     if len(value) < MIN_SECRET_LENGTH:
         return f"{name} is too short ({len(value)} chars < {MIN_SECRET_LENGTH})"
-    lowered = value.lower()
-    for token in SECRET_PLACEHOLDER_TOKENS:
-        if token in lowered:
-            return f"{name} contains placeholder marker '{token}'"
+    if (token := _placeholder_token_in(value)) is not None:
+        return f"{name} contains placeholder marker '{token}'"
+    return None
+
+
+def database_url_reason() -> Optional[str]:
+    """Reason the production DATABASE_URL is unsafe, or None when acceptable.
+
+    R10 (review §1.1/§1.8, deferred from chunk 3): DATABASE_URL was outside
+    the guard's reach — the compose file embeds the shared placeholder
+    password directly in the DSN, so a placeholder booted alongside rotated
+    JWT/faculty secrets. The embedded password must be replaced too.
+    """
+    url = (getattr(settings, "DATABASE_URL", "") or "").strip()
+    if not url:
+        return "DATABASE_URL is empty"
+    if (token := _placeholder_token_in(url)) is not None:
+        return (
+            "DATABASE_URL contains placeholder marker "
+            f"'{token}' — the compose default database password must be replaced"
+        )
     return None
 
 
@@ -85,6 +111,8 @@ def validate_production_secrets() -> None:
         for name in INSECURE_DEFAULT_SECRETS
         if (reason := insecure_secret_reason(name, getattr(settings, name, "")))
     ]
+    if (db_reason := database_url_reason()) is not None:
+        offenders.append(db_reason)
     if offenders:
         raise RuntimeError(
             "Refusing to start: APP_ENV is production but insecure secrets are "

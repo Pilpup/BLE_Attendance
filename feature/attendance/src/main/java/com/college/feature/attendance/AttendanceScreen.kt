@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.college.core.model.Role
 import com.college.core.model.User
+import com.college.core.network.ServerConfigManager
 import com.college.core.ui.theme.AppTheme
 import com.college.feature.attendance.network.AttendanceApiClient
 import com.college.feature.attendance.network.RegisterRequest
@@ -497,19 +498,17 @@ private fun AuthServerDialog(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
+                    // R9 (review §3.4): shortcuts reference the single URL
+                    // source, never fresh literals. The hardcoded basement-LAN
+                    // button (10.115.186.134:53317) is deleted — it shipped a
+                    // fixed private IP into every release build; a needed dev
+                    // target can be typed into the field above instead.
                     OutlinedButton(
-                        onClick = { serverUrlInput = "https://ble-attendance-api-dbf1.onrender.com/" },
+                        onClick = { serverUrlInput = ServerConfigManager.DEFAULT_BASE_URL },
                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                         modifier = Modifier.height(28.dp)
                     ) {
                         Text("Cloud Render", fontSize = 10.sp)
-                    }
-                    OutlinedButton(
-                        onClick = { serverUrlInput = "http://10.115.186.134:53317/" },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        modifier = Modifier.height(28.dp)
-                    ) {
-                        Text("Local LAN (10.115.186.134:53317)", fontSize = 10.sp)
                     }
                 }
             }
@@ -519,7 +518,12 @@ private fun AuthServerDialog(
                 if (isLoggedIn) {
                     Button(
                         onClick = {
-                            onUpdateServerUrl(serverUrlInput)
+                            // R9-A (found during chunk 9): Log Out used to
+                            // silently COMMIT whatever sat in the URL field as
+                            // the new server address — a half-typed or stale LAN
+                            // value could strand a logged-out user on the wrong
+                            // backend. Server changes belong to the register
+                            // flow, where the field is a deliberate input.
                             onLogout()
                             onDismiss()
                         },

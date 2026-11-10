@@ -4,6 +4,7 @@ import android.app.Application
 import android.bluetooth.le.AdvertiseSettings
 import android.content.Context
 import android.os.CountDownTimer
+import android.os.PowerManager
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -210,6 +211,34 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
     private val testedUltrasonicPeers = mutableSetOf<String>()
 
+    // R11 (review §2.8): PARTIAL wake lock for the student probing phase — a
+    // 25 s BLE discovery window plus device-to-device ultrasonic handshakes
+    // can run while a pocketed phone has dozed the CPU, where scan callbacks
+    // and AudioRecord reads drop and the peer graph silently starves.
+    // PARTIAL (CPU on, no screen), bounded by a hard timeout as the crash
+    // safety belt, and explicitly released on both student teardown paths.
+    private val powerManager =
+        application.getSystemService(Context.POWER_SERVICE) as? PowerManager
+    private var probingWakeLock: PowerManager.WakeLock? = null
+
+    @Suppress("WakelockTimeout")
+    private fun acquireProbingWakeLock() {
+        val pm = powerManager ?: return
+        if (probingWakeLock?.isHeld == true) return
+        val lock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "attendance:peer_probe")
+        // 105 s timeout = crash-safety belt: happy paths release explicitly
+        // (stopStudentScanning / resetStudentSession), but a crashed process
+        // must never hold the SoC awake forever. Bounded well above the 25 s
+        // window + all burst handshakes it may spawn.
+        lock.acquire(105_000L)
+        probingWakeLock = lock
+    }
+
+    private fun releaseProbingWakeLock() {
+        probingWakeLock?.takeIf { it.isHeld }?.release()
+        probingWakeLock = null
+    }
+
     // Batched top 3 nearest desk/bench neighbors (median RSSI >= -92 dBm)
     var topDeskNeighbours by mutableStateOf<List<PeerData>>(emptyList())
         private set
@@ -258,13 +287,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         currentRollNumber = SessionManager.default.currentUser?.rollNumber
             ?: prefs.getString("roll_number", defaultLocalId)
             ?: defaultLocalId
-        val savedUrl = prefs.getString("server_url", null)
-        if (!savedUrl.isNullOrBlank() && !savedUrl.contains("10.0.2.2") && !savedUrl.contains("10.115.") && !savedUrl.contains(":53317") && !savedUrl.contains(":8000")) {
-            AttendanceApiClient.baseUrl = savedUrl
-        } else {
-            AttendanceApiClient.baseUrl = "https://ble-attendance-api-dbf1.onrender.com/"
-            prefs.edit().putString("server_url", AttendanceApiClient.baseUrl).apply()
-        }
+        // R9 (review §3.4): ServerConfigManager is the ONLY URL owner. It was
+        // initialized just above; its persisted value is scheme-normalized,
+        // already live for every request via HostSelectionInterceptor, and
+        // AttendanceApiClient.baseUrl reads from it. The old block re-read the
+        // same file/key, re-adjudicated the value with hand-rolled LAN-string
+        // filters, then re-persisted through a second writer — three URL
+        // sources of truth adjudicating each other on every cold start.
         hydrateSessionFromPrefs()
         if (isTeacherMode) {
             loadCourses()
@@ -356,10 +385,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // Persist custom server URL
+    // R9 (review §3.4): single write path — the AttendanceApiClient.baseUrl
+    // delegate persists through ServerConfigManager, which owns scheme
+    // normalization. The removed direct prefs write was a second writer on the
+    // same file/key, able to race the normalized value with raw user input.
     fun setServerUrl(url: String) {
         AttendanceApiClient.baseUrl = url
-        prefs.edit().putString("server_url", AttendanceApiClient.baseUrl).apply()
     }
 
     fun login(email: String, pass: String, onOtpRequired: (String) -> Unit = {}, onComplete: (Boolean) -> Unit = {}) {
@@ -1117,6 +1148,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     // Student scanning stop
     fun stopStudentScanning() {
         stopPeerBatchUpdates()
+        releaseProbingWakeLock() // R11 (review §2.8): explicit CPU hold release
         studentTimer?.cancel()
         studentTimer = null
         studentDiscoverySecondsRemaining = 0
@@ -1130,6 +1162,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     // Reset student attendance session back to standby
     fun resetStudentSession() {
         stopPeerBatchUpdates()
+        releaseProbingWakeLock() // R11 (review §2.8): explicit CPU hold release
         studentTimer?.cancel()
         studentTimer = null
         studentDiscoverySecondsRemaining = 0
@@ -1194,6 +1227,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         testedUltrasonicPeers.clear()
         topDeskNeighbours = emptyList()
         startPeerBatchUpdates()
+        // R11 (review §2.8): hold the CPU for the whole probe sequence
+        // (BLE window + ultrasonic handshakes) even if the user pockets the
+        // phone; bounded by the 105 s timeout, released on teardown.
+        acquireProbingWakeLock()
         studentDiscoverySecondsRemaining = 25
         val probePayload = "$detectedSessionId$studentShortId"
         if (currentRollNumber == defaultLocalId) {
@@ -1415,14 +1452,33 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         ultrasonicWasTriggered = true
         viewModelScope.launch(Dispatchers.Default) {
             val isEmitter = studentShortId < peerId
+            var started = false
             if (isEmitter) {
                 // Emitter transmits sustained 30-burst pulse train (3.6s) to ensure listener captures it
-                proximityManager.emitBurstSequence(count = 30, intervalMs = 120L)
+                started = proximityManager.emitBurstSequence(count = 30, intervalMs = 120L)
             } else {
                 // Listener listens for 3500ms to guarantee capture of incoming chirp ensemble
-                proximityManager.collectBurstEnsemble(listenDurationMs = 3500L) { summary ->
+                started = proximityManager.collectBurstEnsemble(listenDurationMs = 3500L) { summary ->
                     handleEnsembleSummary(summary, peerId)
                 }
+            }
+
+            // R11 (review §2.4): a BUSY handshake never actually tested the
+            // peer — previously the device stayed in testedUltrasonicPeers
+            // forever, permanently freezing that student pair's verification.
+            // Un-blacklist only on busy (false); the real paths (true) either
+            // own completion or deliberately keep the peer (permission-missing
+            //  = not retriable). testedUltrasonicPeers must be touched only
+            // from the main thread (every other access point lives there), so
+            // the hop back to Main is mandatory, not cosmetic.
+            if (!started) {
+                withContext(Dispatchers.Main) {
+                    testedUltrasonicPeers.remove(peerId)
+                }
+                android.util.Log.i(
+                    "AttendanceViewModel",
+                    "Ultrasonic handshake deferred for $peerId (role=${if (isEmitter) "emitter" else "listener"} mic/speaker busy) — peer unblacklisted, will retry on next sighting"
+                )
             }
         }
     }

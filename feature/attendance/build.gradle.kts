@@ -54,11 +54,15 @@ dependencies {
     // ViewModel plumbing for the migrated attendance engine (AndroidViewModel, viewModelScope)
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.7.0")
 
-    // CameraX for biometric face capture during reflex challenge
-    implementation("androidx.camera:camera-core:1.3.1")
-    implementation("androidx.camera:camera-camera2:1.3.1")
-    implementation("androidx.camera:camera-lifecycle:1.3.1")
-    implementation("androidx.camera:camera-view:1.3.1")
+    // CameraX for biometric face capture during reflex challenge.
+    // R11 (item 24 as scoped): pinned to the SAME 1.4.0 the :feature:library
+    // module already resolves — the old 1.3.1 pins here dragged two CameraX
+    // majors' worth of artifacts into any app including both modules
+    // (duplicate-class classpath roulette on old R8 runs).
+    implementation("androidx.camera:camera-core:1.4.0")
+    implementation("androidx.camera:camera-camera2:1.4.0")
+    implementation("androidx.camera:camera-lifecycle:1.4.0")
+    implementation("androidx.camera:camera-view:1.4.0")
 
     // Network stack for this feature's own Retrofit service. Mirrors :core:network
     // (whose artifacts are implementation-scoped, not exported) so feature code

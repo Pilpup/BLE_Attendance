@@ -69,6 +69,15 @@ private class BurstEnvelopeTracker(
 // Manages ultrasonic acoustic transmission and detection for physical desk co-location
 class UltrasonicProximityManager(private val context: Context) {
 
+    init {
+        // R11 (review §2.6): resolve the device's effective audio sample rate
+        // exactly once, before any chirp is queued — this manager is the only
+        // owner of the ultrasonic handshake, so its construction is the
+        // guaranteed-earliest hook. 44.1 kHz-locked devices previously died
+        // silently at AudioRecord init.
+        UltrasonicToneSynthesizer.resolveEffectiveSampleRate(context)
+    }
+
     private val isListening = AtomicBoolean(false)
     private var audioRecord: AudioRecord? = null
     private val executor = Executors.newSingleThreadExecutor()
@@ -135,8 +144,17 @@ class UltrasonicProximityManager(private val context: Context) {
         if (!hasPermission) return
 
         isDiagnosticRunning.set(true)
-        diagnosticThread = Thread {
-            val sampleRate = UltrasonicToneSynthesizer.DEFAULT_SAMPLE_RATE
+        val diagnosticReader = Thread {
+            // R11 (review §2.7): LINUX niceness for THIS reader thread only —
+            // AudioRecord.read starvation was the diagnostic's failure mode on
+            // loaded devices. Replaces the old java-side
+            // Thread.MAX_PRIORITY, which fought every other thread (the OS
+            // scheduler maps niceness properly for audio-critical paths).
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+
+            // R11 (review §2.6): 44.1 kHz devices init AudioRecord at their
+            // HAL rate; 48 kHz previously failed every source fallback.
+            val sampleRate = UltrasonicToneSynthesizer.EFFECTIVE_SAMPLE_RATE
             var record: AudioRecord? = null
             try {
                 record = createAudioRecord(sampleRate)
@@ -210,10 +228,14 @@ class UltrasonicProximityManager(private val context: Context) {
                 } catch (_: Exception) {}
                 isDiagnosticRunning.set(false)
             }
-        }.apply {
-            priority = Thread.MAX_PRIORITY
-            start()
         }
+        // R11 (review §2.7): no java-side MAX_PRIORITY — the urgent-audio
+        // niceness above is set inside the body and is the correct mechanism.
+        // Assign then start the SAME object: a stopLiveDiagnostic() racing in
+        // between must see at most one started Thread, and a thread it clears
+        // before start() exits immediately via the flag anyway.
+        diagnosticThread = diagnosticReader
+        diagnosticReader.start()
     }
 
     // Stops live diagnostic radar
@@ -237,10 +259,7 @@ class UltrasonicProximityManager(private val context: Context) {
                     break
                 }
             }
-        }.apply {
-            priority = Thread.MAX_PRIORITY
-            start()
-        }
+        }.also { it.start() }
     }
 
     // Stops emitting acoustic beacon
@@ -256,8 +275,13 @@ class UltrasonicProximityManager(private val context: Context) {
         intervalMs: Long = 130L,
         onProgress: (sent: Int, total: Int) -> Unit = { _, _ -> },
         onComplete: () -> Unit = {}
-    ) {
-        if (isBeaconEmitting.get()) return
+    ): Boolean {
+        // R11 (review §2.4): report whether the sequence actually STARTED. A
+        // busy emitter previously swallowed the request silently — the caller
+        // marked the peer as tested without a single chirp played. Busy now
+        // returns false so the peer can be un-blacklisted and retried on its
+        // next close-proximity sighting.
+        if (isBeaconEmitting.get()) return false
         isBeaconEmitting.set(true)
         beaconThread = Thread {
             for (i in 1..count) {
@@ -273,17 +297,16 @@ class UltrasonicProximityManager(private val context: Context) {
             isBeaconEmitting.set(false)
             beaconThread = null
             mainHandler.post { onComplete() }
-        }.apply {
-            priority = Thread.MAX_PRIORITY
-            start()
-        }
+        }.also { it.start() }
+        return true
     }
 
     // Transmits an inaudible Hann-windowed 19.2 kHz acoustic ping
     fun emitChirp(onComplete: (() -> Unit)? = null) {
         UltrasonicToneSynthesizer.playChirp(
             frequencyHz = UltrasonicToneSynthesizer.DEFAULT_FREQUENCY_HZ,
-            sampleRate = UltrasonicToneSynthesizer.DEFAULT_SAMPLE_RATE,
+            // R11 (review §2.6): match the mic side — one device-wide rate.
+            sampleRate = UltrasonicToneSynthesizer.EFFECTIVE_SAMPLE_RATE,
             durationMs = UltrasonicToneSynthesizer.DEFAULT_DURATION_MS,
             onComplete = onComplete
         )
@@ -316,7 +339,9 @@ class UltrasonicProximityManager(private val context: Context) {
 
         executor.execute {
             isListening.set(true)
-            val sampleRate = UltrasonicToneSynthesizer.DEFAULT_SAMPLE_RATE
+            // R11 (review §2.6): effective device rate — 44.1 kHz HALs no
+            // longer fail AudioRecord init at a forced 48 kHz.
+            val sampleRate = UltrasonicToneSynthesizer.EFFECTIVE_SAMPLE_RATE
             var record: AudioRecord? = null
             var bestDetection = UltrasonicDetectionResult(isDetected = false, snrDb = 0.0, targetPower = 0.0)
 
@@ -381,11 +406,14 @@ class UltrasonicProximityManager(private val context: Context) {
         listenDurationMs: Long = 1800L,
         calibratedRefPowerDb: Double = GoertzelDetector.CALIBRATED_REF_POWER_DB,
         onComplete: (AcousticStatisticalSummary) -> Unit
-    ) {
+    ): Boolean {
         if (isListening.get()) {
-            val emptySummary = GoertzelDetector.computeTrimmedMeanStats(emptyList(), calibratedRefPowerDb)
-            mainHandler.post { onComplete(emptySummary) }
-            return
+            // R11 (review §2.4): busy — return false WITHOUT posting a
+            // fabricated empty summary. The empty summary used to run the
+            // caller's verdict path and mark the pair code-separated while
+            // nothing had been recorded; the VM now un-blacklists the peer and
+            // retries once the mic is idle.
+            return false
         }
 
         val hasPermission = ContextCompat.checkSelfPermission(
@@ -394,14 +422,20 @@ class UltrasonicProximityManager(private val context: Context) {
         ) == PackageManager.PERMISSION_GRANTED
 
         if (!hasPermission) {
+            // Permission missing: not retriable by definition — retrying a
+            // permanently denied or withdrawn mic can never produce a verdict.
+            // Keep the historical behavior (empty summary + true) so the
+            // caller does not un-blacklist-loop this peer forever.
             val emptySummary = GoertzelDetector.computeTrimmedMeanStats(emptyList(), calibratedRefPowerDb)
             mainHandler.post { onComplete(emptySummary) }
-            return
+            return true
         }
 
         executor.execute {
             isListening.set(true)
-            val sampleRate = UltrasonicToneSynthesizer.DEFAULT_SAMPLE_RATE
+            // R11 (review §2.6): effective device rate for the ensemble mic
+            // read; Goertzel coefficients accept either verified rate.
+            val sampleRate = UltrasonicToneSynthesizer.EFFECTIVE_SAMPLE_RATE
             var record: AudioRecord? = null
             val burstPowers = mutableListOf<Double>()
 
@@ -454,6 +488,8 @@ class UltrasonicProximityManager(private val context: Context) {
                 mainHandler.post { onComplete(summary) }
             }
         }
+        // Accepted: the executor job owns completion now (finally → onComplete).
+        return true
     }
 
     // Stops any active listening and releases resources

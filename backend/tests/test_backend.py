@@ -2795,6 +2795,62 @@ async def test_stale_version_token_rejected():
         assert "revoked" in dead.json()["detail"].lower()
 
 
+# ---------------------------------------------------------------------------
+# Docker/infra hardening (review §1.1/§1.8/§3.6) — chunk 10
+# ---------------------------------------------------------------------------
+
+
+def test_production_guard_rejects_placeholder_database_url(monkeypatch):
+    # R10 (deferred from chunk 3): DATABASE_URL was outside the guard's reach —
+    # the compose file embeds the shared placeholder password directly in the
+    # DSN. A placeholder must not boot in production even alongside rotated
+    # JWT/faculty secrets.
+    import secrets
+
+    from app import config
+
+    monkeypatch.setattr(config.settings, "APP_ENV", "production")
+    monkeypatch.setattr(config.settings, "JWT_SECRET_KEY", secrets.token_urlsafe(64))
+    monkeypatch.setattr(config.settings, "FACULTY_SIGNUP_SECRET", secrets.token_urlsafe(64))
+    monkeypatch.setattr(
+        config.settings,
+        "DATABASE_URL",
+        "postgresql+asyncpg://college_admin:change_this_secure_password@db:5432/college_attendance",
+    )
+
+    with pytest.raises(RuntimeError) as err:
+        config.validate_production_secrets()
+    assert "DATABASE_URL" in str(err.value)
+    # Same convention as the other secrets: the MESSAGE names the matching
+    # MARKER token ("change_this"), never the full leaked-looking value
+    assert "change_this" in str(err.value)
+
+    # A real generated credential in the DSN passes
+    monkeypatch.setattr(
+        config.settings,
+        "DATABASE_URL",
+        f"postgresql+asyncpg://college_admin:{secrets.token_urlsafe(24)}@db:5432/college_attendance",
+    )
+    assert config.database_url_reason() is None
+
+    # Empty is also refused in production (an unset DSN is a config error there)
+    monkeypatch.setattr(config.settings, "DATABASE_URL", "")
+    assert config.database_url_reason() == "DATABASE_URL is empty"
+
+
+def test_compose_publishes_no_postgres_port():
+    # R10 (review §1.8): the db service must not publish 5432 to the host —
+    # only the backend on the compose network talks to it.
+    import yaml
+    from pathlib import Path
+
+    compose_path = Path(__file__).resolve().parent.parent / "docker-compose.yml"
+    compose = yaml.safe_load(compose_path.read_text())
+    db = compose["services"]["db"]
+    assert not db.get("ports"), f"db still publishes ports: {db.get('ports')}"
+    assert db.get("expose") is not None, "db must expose 5432 internally only"
+
+
 
 
 

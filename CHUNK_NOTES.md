@@ -407,6 +407,209 @@ through `viewModel.logout()` via AppNavigation.
 
 ---
 
+## Chunk 9 — URL single-source ✅ (+ bug R9-A found & fixed)
+
+**Scope:** review §3.4 — three URL sources of truth collapsed into one owner
+(`ServerConfigManager`); hand-rolled boot filters deleted; hardcoded basement-LAN quick button
+deleted. Plus one UI bug found during the chunk (R9-A).
+
+**Receipts:**
+
+- `./gradlew :app:assembleRelease` → **exit 0**, APK **3,783,888 bytes**.
+- **Constant sweep:** zero live references to `10.115` / `:53317` / `10.0.2.2` / `:8000` across all
+  Kotlin (the single grep hit is the deletion comment itself). Both rogue sites were
+  `AttendanceViewModel:262` (boot-time filter ad-hoc veto) and `AttendanceScreen:508-512` (LAN
+  button compiled into release UI).
+- Diff: 2 files **+24/−18** (WebView unchanged; no module gradle changes needed —
+  `feature/attendance` already had `buildConfig = true`).
+
+**What was actually wrong (discovered while consolidating):** both owners pointed at the SAME
+SharedPreferences file AND key (`ble_attendance_prefs/server_url`) — the duplication was not two
+files but **two writers and two readers with different adjudication rules fighting over one key**:
+ServerConfigManager normalized scheme on write; the ViewModel re-read the raw key at boot,
+vetoed "suspicious" URLs with string contains-checks, re-persisted through a second writer, and
+its setter also persisted without scheme normalization (a raw host like `10.115.186.134:53317`
+saved exactly as typed by the VM path). Whichever ran last won; every boot re-adjudicated.
+
+- **Deletion is behavior-safe** (verified, not assumed): `HostSelectionInterceptor` rewrites every
+  request's Host at *request time* from `ServerConfigManager.currentHttpUrl` — that includes all
+  `AttendanceApiClient`/`LibraryApiClient` traffic; `AttendanceApiClient.baseUrl`'s own delegate
+  getter reads `ServerConfigManager.currentBaseUrl` and setter persists through it. The VM's boot
+  block re-dictating the URL was redundant with `ServerConfigManager.init` (which runs first in the
+  same init) and active harm whenever the two disagreed — every disagreement was a future
+  "401 from nowhere" bug, exactly as §3.4 predicted.
+- **LAN quick-button deleted outright** (§3.4's remedy; not merely debug-gated): a release build
+  shipping a fixed basement-IP button is a hard-coded redirect into a private network. The Cloud
+  Render shortcut stays but references `ServerConfigManager.DEFAULT_BASE_URL` — no fresh literals;
+  the search field remains for any needed custom target.
+- **R9-A (found in this chunk):** the `AuthServerDialog`'s **Log Out button also committed the URL
+  field** (`onUpdateServerUrl(serverUrlInput)` inside the logout handler) — pressing Log Out with
+  a half-typed or stale LAN value silently switched the backend, stranding a logged-out user on
+  the wrong server with no way to change it back before logging in elsewhere. Removed; the register
+  flow keeps its URL apply (deliberate server-switch before creating an account).
+
+**Honest caveats:**
+
+- The deleted filters' legitimate job (deflecting a persisted dev URL) now lives with the single
+  owner (`formatBaseUrl`: private-range → http, otherwise https). Side effect of the §3.4 remedy:
+  a user-typed dev URL can now legitimately persist across restarts — that IS the single-owner
+  policy. The review's **§1.7.3 (cleartext-HTTP hardening: `usesCleartextTraffic="true"` app-wide +
+  `HostSelectionInterceptor` rewriting every request, sending Authorization over plain http to any
+  host) was verified P1 but never chunked** — user later reviewed it deliberately and accepted
+  keeping as-is (see the consciously-accepted note in the rejected list below).
+- VM `setServerUrl` remains as a thin façade only because `AuthServerDialog` already binds to it;
+  its body is now the single delegate assignment.
+
+---
+
+## Chunk 10 — Docker/infra hardening ✅ (+ a self-caught assertion slip)
+
+**Scope:** review §1.8 + §3.6 + the chunk-3 deferral — multi-stage non-root Dockerfile with
+`--proxy-headers`, exact dependency pins, Postgres 5432 closed to the host, `DATABASE_URL`
+placeholder now inside the production guard, and the single-worker truth codified (startup
+warning + README banner).
+
+**Receipts:**
+
+- pytest **72 passed** (+2) in 36.59s — the new guard test (DSN placeholder refused,
+  generated-credential DSN accepted, empty DSN refused in production) and the compose test
+  (db publishes **no** `ports`, exposes 5432 on the compose network only; YAML parses clean).
+- **Pins receipt:** `uv pip install --dry-run -r requirements.txt` → "Would make no changes" —
+  every exact pin is already satisfied in the venv the 72-test suite runs against, so the pins
+  ARE the verified set (fastapi 0.159.0, uvicorn 0.54.0, sqlalchemy 2.1.6, asyncpg 0.32.0,
+  opencv-python-headless 5.0.0.93, …; `psycopg[binary]` previously had NO version at all).
+- **CMD flags verified locally:** `uvicorn --help` on the pinned 0.54.0 confirms
+  `--proxy-headers` and `--forwarded-allow-ips` exist as used.
+- **Docker build NOT executed by me — honest limit:** the daemon socket is permission-denied for
+  this user (`ERROR: permission denied … /var/run/docker.sock`), so the image-build receipt must
+  be produced user-side: `cd backend && docker build -t ble-attend-backend:chunk10 .` — then spot
+  check `docker run --rm ble-attend-backend:chunk10 id -u` → expect `1000` (or similar non-zero),
+  and `docker run --rm … which gcc` → expect empty. Diff: Dockerfile rewritten (multi-stage:
+  builder compiles wheels into `/install`, runtime copies to `/usr/local` and never sees
+  build-essential; `useradd nonroot` + `chown /app`; `--proxy-headers --forwarded-allow-ips="*"`),
+  requirements.txt re-pinned, compose 5432 closed, config/main/tests/README edits.
+
+**Notes (honest):**
+
+- **Self-caught slip in my own new test:** I first asserted the FULL password string
+  (`change_this_secure_password`) inside the RuntimeError text — but the guard's chunk-3
+  convention (pinned by the catalogue test) reports the matching **marker token** (`change_this`)
+  only, deliberately never echoing the full suspect value. The red was mine to fix; the guard
+  needed no change. Also fixed in the same pass: a bare `config.database_url_reason() is None`
+  expression with no `assert` (would have silently checked nothing).
+- **The deferred §1.1 gap is now genuinely closed end-to-end:** a compose deployment with rotated
+  JWT/faculty secrets but the shared placeholder DB password now refuses boot in production with
+  "DATABASE_URL contains placeholder marker 'change_this'" — before chunk 10 it sailed through
+  and connected with a placeholder-clad database over a *published* host port.
+- **DATABASE_URL policy accounting:** production-empty DSN → refused (a config error, not a
+  default); placeholder marker in DSN → refused with the marker named; real DSN → fine. Permission
+  here means "consistent with the rest of the guard", not a blanket "DATABASE_URL must be exact".
+- **Single-worker guard is a WARNING, not a kill switch** (matching the review's own wording):
+  production still boots if an operator forces `WEB_CONCURRENCY=4`, but the log names the exact
+  consequences (split login budgets, stranded staged check-ins) and the actual fix (Postgres/Redis
+  structures). README deployment notes repeat it in operator language.
+- compose keeps the backend's 8000 published (that is the product surface); only the database
+  lost its host port. Placeholders in compose stay — the guard now refuses them in production,
+  which was always the intended pairing (chunk 3's comments already said so).
+- README was a 5-line stub; a "Deployment notes (backend)" section was appended. Pre-existing
+  typos in the user's stub left untouched (user content).
+
+---
+
+## Chunk 11 — P2 perf pack ✅ (+ two self-caught build mistakes + a camera refactor)
+
+**Scope:** review §2 (older-hardware pack) — BLE binder-thread prefilter, vsync-paced game loop,
+face encode off the main thread, effective 44.1 kHz audio rate, thread-priority corrections,
+busy-handshake un-blacklist, probing wake lock, CameraX version alignment. Deferred on purpose:
+scan-mode switching (§2.1) and the `peerBatchJob` `while(true) delay(300)` rewrite (§2.2) — recorded
+honestly, they stay explicit follow-ups.
+
+**Receipts:**
+
+- `./gradlew :app:assembleRelease` → **exit 0**, **BUILD SUCCESSFUL in 35s**, APK **3,783,887**
+  (chunk 9 was 3,783,888 — byte-identical shape, no dependency bloat despite CameraX 1.4.0 claim).
+- Backend untouched this chunk; 72 passing from chunk 10 stands.
+- The review's claimed `:339/:424` MAX_PRIORITY sites were line-number noise; real audit found the
+  priority setters with grep across all of feature/ (three sites, all now handled — see below).
+
+**Diff map (what changed where):**
+
+- `BleScanner.kt` — binder-thread gate before ANY allocation/posting: `rssi < -95` heap cut +
+  `looksLikeAttendanceMessage()` shape gate (`S:`/`SESSION:`/`V:` prefixes or exactly 8 chars —
+  verified superset of every shape `AttendanceViewModel.onPacketReceived` ever accepts; its only
+  consumer, teacher side included). Foreign advertisers and fragments now never allocate a String
+  or post a runnable — the review's "thousands of main-looper posts/sec on a weak device" dies here.
+- `OrbPoppingGame.kt` — pacing gate `delay(16L)` → `withFrameNanos { }` (imports swapped).
+  Game math still uses `System.currentTimeMillis()` — the recorded spawn-times semantic is
+  unchanged; only the *pacing* moved to vsync, so 60 Hz no longer drifts to 2-3 skipped frames
+  and 120 Hz stops double-charging recomposition.
+- `BestFrameAnalyzer.kt` — new `takeBestCandidate()`: detaches the winning candidate under lock
+  WITHOUT recycling its bitmap (ownership transfer — `getBestCandidate()` shares the reference and
+  `reset()` would have recycled a bitmap still needed for encoding).
+- `PassiveFaceCaptureManager.kt` — split `stopAndExtractResult()` into live-callable halves:
+  `stopCameraAndTakeCandidate()` (main-thread CameraX teardown; camera unbind is main-thread-bound
+  and `stopCamera()`→`reset()` recycles the stored bitmap — so teardown stays here, candidate
+  detached FIRST) + `encodeCandidateResult(candidate)` (off-main JPEG+Base64). Source bitmap
+  recycled in both outcomes — same lifecycle the old single method had via teardown, no leak added.
+  Old `stopAndExtractResult()` retained verbatim for the non-critical paths.
+- `StudentSection.kt` — `onComplete` split: `isGameOver = true` (immediate — scorecard swaps in),
+  candidate steal on main, encode `withContext(Dispatchers.Default)` inside `rememberCoroutineScope`
+  (`gameScope`), then ALL remaining state writes + `onNext()` hop back `withContext(Dispatchers.Main)`.
+  The tens-of-ms JPEG encode no longer runs synchronously inside the composition callback.
+- `UltrasonicToneSynthesizer.kt` — `EFFECTIVE_SAMPLE_RATE` (@Volatile var, private set, init 48000) +
+  `resolveEffectiveSampleRate(context)`: queries `AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE` once,
+  accepts exactly 44100|48000, else falls back to 48000 (never worse than before).
+- `UltrasonicProximityManager.kt` — manager `init` calls the resolver (the handshake's only owner →
+  guaranteed earliest hook); all four `DEFAULT_SAMPLE_RATE` sites (diagnostic reader, `emitChirp`,
+  `listenForChirp`, `collectBurstEnsemble`) now read `EFFECTIVE_SAMPLE_RATE`, so a 44.1 kHz-locked
+  old phone no longer dies silently at `AudioRecord` init (`createAudioRecord` retries *sources*,
+  never *rates*); Goertzel coefficients accept either verified rate. Thread priorities corrected:
+  diagnostic reader gets real Linux niceness via `android.os.Process.setThreadPriority` INSIDE the
+  thread body (`THREAD_PRIORITY_URGENT_AUDIO`), while the two sleep-loop emitter threads drop the
+  java-side `Thread.MAX_PRIORITY` (they spend ~99% asleep — max priority bought only contention).
+- `UltrasonicProximityManager.kt` (second fix) — `emitBurstSequence`/`collectBurstEnsemble` return
+  **Boolean**: busy → `false` and, in the ensemble's busy branch, the fabricated emptySummary is
+  GONE (it used to post a fake verdict mediately, marking the pair handled when nothing happened).
+  Permission-missing keeps the empty-summary + `true` shape (not retriable by definition — avoids
+  an un-blacklist loop on a permanently denied mic).
+- `AttendanceViewModel.kt` — handshake consumes the Booleans: on `false`, `testedUltrasonicPeers
+  .remove(peerId)` (hop to `Dispatchers.Main` — every other touch of that set is main-thread;
+  the un-blacklist keeps it that way) + one log line, so the peer retries on its next
+  close-proximity sighting instead of being frozen forever. Wake lock: `powerManager` field +
+  `acquireProbingWakeLock()`/`releaseProbingWakeLock()`; PARTIAL, tag `attendance:peer_probe`,
+  acquired once per discovery window at its start, hard TTL **105_000L** as the crash-safety belt,
+  explicit releases in `stopStudentScanning()` and `resetStudentSession()`.
+- `feature/attendance/build.gradle.kts` — CameraX 1.3.1×4 → 1.4.0 (mirrors what `:feature:library`
+  already resolves; two majors' worth of artifacts no longer double-resolve).
+
+**Notes (honest):**
+
+- **Two build mistakes, both mine, both caught by kotlinc and fixed before the green run:** (1) a
+  botched edit around `stopBeaconEmitter()` that dropped the function's signature lines mid-file —
+  repaired in the same pass, the region was re-read and verified intact afterwards; (2) a plain
+  `.start()` used where a `Thread` VALUE was needed — `Thread { }.start()` returns Unit so
+  `beaconThread = Thread { … }.start()` is a type error; fixed with `.also { it.start() }` on both
+  emitter threads. First build: exit 1 with exactly these two type errors; second build: exit 0.
+- **`takeBestCandidate` needed the inverse of the obvious edit.** Moving "just the encode"
+  off-main with a naive `withContext(Default) { stopAndExtractResult() }` would have been WRONG
+  twice: CameraX `unbindAll()` is main-thread-bound (would throw), and `stopCamera()`→analyzer
+  `reset()` RECYCLES the bitmap while the background encode would still be reading it. The split
+  with an ownership-transfer detach is the only correct shape; recorded why in both doc comments.
+- **Wake-lock TTL is 105 s, deliberately above the 25 s discovery window** — it must cover the
+  BLE window *plus* every device-pair ultrasonic handshake issued while `PROBING_NEIGHBORS`
+  persists (students finishing the game at different speeds), without an ever-growing explicit
+  bookkeeping; timeout = the safety net, explicit release = the fast path.
+- **Un-blacklist on busy keeps a bounded retry loop:** while a burst is airborne, the next sighting
+  re-queues the handshake (one log line each, a few Hz at most); when free, it runs. Perf is
+  bounded because `emitBurstSequence` rejects in O(1) without touching any audio object.
+- **`withFrameNanos { }` returns the frame's time in nanos which we discard on purpose** — the
+  loop re-reads `System.currentTimeMillis()` every iteration; recorded in-code that the game's
+  time SOURCE has not changed, only the sleep mechanism.
+- CameraX alignment kept the APK byte-flat: the module's compiled references stay the same; the
+  runtime now resolves ONE CameraX version instead of two.
+
+---
+
 ## Pending chunks (map as agreed)
 
 - **4b** — R2 finalize lock (stage/pop window; highest backend risk) ← *done*
@@ -420,15 +623,26 @@ through `viewModel.logout()` via AppNavigation.
 - **8** — SessionManager fail-closed (no token in plaintext fallback), permission UX, bridge
   clearing, `realUser` → state ← *done (+ bug R8-B plaintext-JWT shadow-store found & fixed; app
   logout wires the chunk-7 route)*
-- **9** — URL single-source (`ServerConfigManager` only; delete VM:262 filters + LAN quick button) ← *next*
+- **9** — URL single-source (`ServerConfigManager` only; delete VM:262 filters + LAN quick button) ← *done
+  (+ bug R9-A: Log Out silently committing the URL field — fixed; §1.7.3 flagged → see rejected list)*
 - **10** — Infra: Docker non-root/pinned/`--proxy-headers`/close 5432, single-worker warning,
-  **DATABASE_URL placeholder coverage**
+  **DATABASE_URL placeholder coverage** ← *done (docker build unrunnable here — user-side receipt
+  documented)*
 - **11** — P2 perf pack (BLE prefilter, `withFrameNanos`, face-extract off main, 44.1k fallback,
-  wake lock, CameraX alignment)
+  wake lock, CameraX alignment) ← *done (build exit 0; scope-deferred items recorded:
+  scan-mode switching, peerBatchJob rewrite)*
 
 **Rejected remedies (remain rejected):** 401-retry POST→logout (would reintroduce the mid-lecture
 logout bug); rotating salts as P1 (optional P2 — the mesh gate already defeats foreign/remote
 verification and past-session replay is dead).
+
+**Consciously accepted (user decision, §1.7.3 — cleartext HTTP + host rewriting):** the app stays
+permissive on plain `http://`. Reason recorded honestly: self-hosted LAN deployments
+(`SelfHostingGuide.md`, `http://10.x…:53317`) cannot get a real TLS certificate — plain http is
+the only way they work, and full HTTPS-only would kill that feature while stripping the JWT over
+http would break LAN logins. Residual risk accepted: whenever the URL field carries `http://`,
+the `Authorization` token and uploaded face images travel unencrypted on that network
+(default Render URL is `https://`, unaffected). No code change.
 
 **Standing deferrals:** Alembic, de-monolithization, Neon password rotation (→ college-server
 migration), liveness-on-enrollment (needs a product call).

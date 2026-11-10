@@ -201,6 +201,21 @@ async def lifespan(app: FastAPI):
     # Fail fast rather than run with repository-committed secrets
     validate_production_secrets()
 
+    # R10 (review §3.6): codify the single-worker design truth. submission_buffer,
+    # rate limiters, and face_registry are per-process in-memory singletons —
+    # extra workers silently split rate budgets and strand staged submissions on
+    # a worker that does not hold them. A second worker is a data-loss bug, not
+    # capacity; scaling later means moving the structures to Postgres/Redis.
+    web_concurrency = os.environ.get("WEB_CONCURRENCY", "1")
+    if web_concurrency.isdigit() and int(web_concurrency) > 1:
+        logger.warning(
+            f"WEB_CONCURRENCY={web_concurrency}: this backend's staged-submission "
+            "buffer, rate limiters, and face registry are per-process in-memory — "
+            "multiple workers split login budgets and strand staged check-ins. "
+            "Run exactly one worker (this image does); scale by moving those "
+            "structures to Postgres/Redis instead of WEB_CONCURRENCY."
+        )
+
     # Auto-initialize database tables if not already existing
     try:
         async with engine.begin() as conn:

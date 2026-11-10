@@ -1,7 +1,9 @@
 package com.college.feature.attendance.audio
 
+import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Handler
 import android.os.Looper
@@ -17,6 +19,38 @@ object UltrasonicToneSynthesizer {
     const val DEFAULT_SAMPLE_RATE = 48000
     const val DEFAULT_DURATION_MS = 80
     const val DEFAULT_AMPLITUDE_SCALE = 0.85f
+
+    // R11 (review §2.6): device-resolved sample rate for the ENTIRE ultrasonic
+    // chain (emit + detect). The hard-coded 48 kHz killed the handshake on the
+    // old phones this app targets whose audio HAL only supports/locks 44.1 kHz:
+    // AudioRecord init fails at 48 kHz after exhausting its source fallbacks
+    // (createAudioRecord retries SOURCES, never rates) and the mic side
+    // silently reports nothing, so attendance could never confirm.
+    // Resolution happens exactly once — UltrasonicProximityManager's init (the
+    // handshake's only owner) calls resolveEffectiveSampleRate(); until then,
+    // or on any failure, this equals the 48 kHz default, i.e. never worse than
+    // the previous behavior. Only 44100/48000 are accepted: those are the two
+    // rates the Goertzel coefficient set and mic/speaker path are verified
+    // for; odd device property values fall back to 48000.
+    @Volatile
+    var EFFECTIVE_SAMPLE_RATE: Int = DEFAULT_SAMPLE_RATE
+        private set
+
+    fun resolveEffectiveSampleRate(context: Context) {
+        val preferred = try {
+            (context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
+                ?.getProperty(AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)
+                ?.trim()
+                ?.toIntOrNull()
+                ?: DEFAULT_SAMPLE_RATE
+        } catch (_: Exception) {
+            DEFAULT_SAMPLE_RATE
+        }
+        EFFECTIVE_SAMPLE_RATE = when (preferred) {
+            44100, 48000 -> preferred
+            else -> DEFAULT_SAMPLE_RATE
+        }
+    }
 
     // Cached PCM buffer and reusable AudioTrack for default 19.2 kHz chirps
     @Volatile

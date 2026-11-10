@@ -168,6 +168,36 @@ class PassiveFaceCaptureManager(
         return if (bytes != null && b64 != null) FaceCaptureResult(bytes, b64) else null
     }
 
+    // R11 (review §2.3): main-thread half of the challenge-end extraction.
+    // CameraX's unbindAll is main-thread bound and stopCamera()'s analyzer
+    // reset recycles the stored bitmap, so the camera is stopped HERE — after
+    // detaching the candidate via takeBestCandidate() so its bitmap survives —
+    // and only the expensive encode is deferred to encodeCandidateResult() on
+    // a worker thread. Never call the two halves out of order: the encode half
+    // exists precisely because the bitmap ownership transfer must precede
+    // teardown.
+    fun stopCameraAndTakeCandidate(): BestFrameCandidate? {
+        if (!isCapturing.get()) {
+            return null
+        }
+        val taken = analyzer?.takeBestCandidate()
+        stopCamera()
+        return taken
+    }
+
+    // R11 (review §2.3): off-main half — encodes the detached candidate (its
+    // bitmap is owned exclusively by the caller at this point, nobody else may
+    // recycle it) into raw JPEG bytes + Base64. Runs on Dispatchers.Default
+    // from the caller; the source bitmap is recycled in both outcomes, exactly
+    // as the pre-split stopAndExtractResult → stopCamera → reset used to do.
+    fun encodeCandidateResult(candidate: BestFrameCandidate): FaceCaptureResult? {
+        val bytes = FaceImageProcessor.processCandidateToBytes(candidate)
+        candidate.bitmap.recycle()
+        if (bytes == null) return null
+        val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+        return FaceCaptureResult(bytes, b64)
+    }
+
     // Unbinds camera, processes best candidate frame, and returns Base64 encoded payload
     fun stopAndExtract(): String? {
         return stopAndExtractResult()?.base64

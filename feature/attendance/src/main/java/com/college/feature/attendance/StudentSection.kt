@@ -52,6 +52,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -73,8 +74,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.college.core.model.User
 import com.college.core.ui.theme.AppTheme
 import com.college.feature.attendance.camera.PassiveFaceCaptureManager
@@ -107,6 +110,10 @@ internal fun StudentSection(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val faceCaptureManager = remember { PassiveFaceCaptureManager(context, lifecycleOwner) }
+    // R11 (review §2.3): gameScope survives the game leaving composition and
+    // lands the post-encode state writes back on the main thread after the
+    // withContext(Dispatchers.Default) face encode.
+    val gameScope = rememberCoroutineScope()
     var lastCapturedFaceBase64 by remember { mutableStateOf<String?>(null) }
 
     val permissionsLauncher = rememberLauncherForActivityResult(
@@ -253,20 +260,36 @@ internal fun StudentSection(
                         },
                         onComplete = { taps, expired, totalGoal ->
                             isGameOver = true
-                            val faceResult = faceCaptureManager.stopAndExtractResult()
-                            if (faceResult != null) {
-                                lastCapturedFaceBase64 = faceResult.base64
-                                onFaceCaptured(faceResult.base64, faceResult.bytes)
+                            // R11 (review §2.3): challenge-end face extraction
+                            // used to run its JPEG encode + Base64 synchronously
+                            // on the main thread (tens of ms on budget phones,
+                            // dropped frames right when the scorecard swaps in).
+                            // Split halves: the camera teardown + candidate steal
+                            // stay here (CameraX is main-thread bound AND the
+                            // analyzer's reset would recycle the bitmap we still
+                            // need), then the encode runs on Dispatchers.Default
+                            // and every state write + onNext() lands back on Main.
+                            val lockedCandidate = faceCaptureManager.stopCameraAndTakeCandidate()
+                            gameScope.launch {
+                                val faceResult = withContext(Dispatchers.Default) {
+                                    lockedCandidate?.let { faceCaptureManager.encodeCandidateResult(it) }
+                                }
+                                withContext(Dispatchers.Main) {
+                                    if (faceResult != null) {
+                                        lastCapturedFaceBase64 = faceResult.base64
+                                        onFaceCaptured(faceResult.base64, faceResult.bytes)
+                                    }
+                                    val report = GameTelemetryEngine.analyze(
+                                        taps = taps,
+                                        expired = expired,
+                                        totalTargetsGoal = totalGoal
+                                    )
+                                    targetsHit = report.hits
+                                    totalTargetsSpawned = report.totalSpawns
+                                    onChallengeResult(report.hits, report.totalSpawns)
+                                    onNext()
+                                }
                             }
-                            val report = GameTelemetryEngine.analyze(
-                                taps = taps,
-                                expired = expired,
-                                totalTargetsGoal = totalGoal
-                            )
-                            targetsHit = report.hits
-                            totalTargetsSpawned = report.totalSpawns
-                            onChallengeResult(report.hits, report.totalSpawns)
-                            onNext()
                         }
                     )
                 }
