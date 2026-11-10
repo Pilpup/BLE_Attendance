@@ -27,6 +27,11 @@ class User(Base):
     semester: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     section: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # R7: bumped on server-side logout. Every token embeds the account's
+    # version at issue time and is rejected on mismatch; the DDL adds the
+    # column as NOT NULL DEFAULT 0, and a MISSING claim is treated as v0 so
+    # pre-feature tokens keep working after deploy.
+    token_version: Mapped[int] = mapped_column(Integer, default=0, nullable=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

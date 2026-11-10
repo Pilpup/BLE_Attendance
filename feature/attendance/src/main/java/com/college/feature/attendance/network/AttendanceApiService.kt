@@ -35,6 +35,15 @@ interface AttendanceApiService {
         @Path("sessionId") sessionId: String
     ): Response<AttendanceSessionResponse>
 
+    // R8: server-side logout (chunk 7 route) — passes the bearer token
+    // explicitly because the ViewModel calls this AFTER clearing the shared
+    // session, so the AuthInterceptor's lazy token read would be empty.
+    // Best-effort revocation; a dead token here just returns 401 harmlessly.
+    @POST("api/v1/auth/logout")
+    suspend fun logout(
+        @Header("Authorization") authorization: String
+    ): Response<Unit>
+
     @POST("api/v1/attendance/sessions/{sessionId}/audit-and-finalize")
     suspend fun auditAndFinalize(
         @Path("sessionId") sessionId: String,

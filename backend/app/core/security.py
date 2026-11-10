@@ -113,6 +113,24 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or account deactivated",
         )
+
+    # R7: deactivated accounts lose token validity immediately. The message
+    # used to claim this while the column was never read.
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or account deactivated",
+        )
+
+    # R7: token revocation by version. A MISSING claim is treated as version
+    # 0 (deploy-safety: tokens issued before this feature keep working, since
+    # migrated accounts default to 0); an explicit mismatch — e.g. the token
+    # of a user who logged out — is rejected here.
+    if (payload.get("tv") or 0) != (user.token_version or 0):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session revoked. Please sign in again.",
+        )
     return user
 
 # Extract optional user returning None when unauthenticated

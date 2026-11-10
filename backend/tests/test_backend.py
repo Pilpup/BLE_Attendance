@@ -2585,6 +2585,216 @@ async def test_oversized_body_is_rejected_with_413():
         assert "too large" in res.text
 
 
+# ---------------------------------------------------------------------------
+# Auth lifecycle (review §7) — chunk 7: token_version / is_active / logout
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_logout_revokes_token_and_relogin_recovers():
+    # R7: logout must invalidate the token SERVER-SIDE (the old app had no
+    # logout route at all — "logout" was purely local token deletion and the
+    # stolen/expired-adjacent token worked until expiry), and a fresh login
+    # must recover at the bumped version rather than lock the account out.
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base, EmailOTP
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    auth_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with auth_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok = await _register_battery_student(client, auth_db)
+
+        me_res = await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"})
+        assert me_res.status_code == 200, me_res.text
+
+        out = await client.post(
+            "/api/v1/auth/logout",
+            headers={"Authorization": f"Bearer {tok}"},
+        )
+        assert out.status_code == 200, out.text
+
+        dead = await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"})
+        assert dead.status_code == 401, dead.text
+        assert "revoked" in dead.json()["detail"].lower()
+
+        # Fresh login recovers at the bumped version — no account lockout
+        login_email = me_res.json()["email"]
+        login_res = await client.post(
+            "/api/v1/auth/login",
+            json={"email": login_email, "password": "Password123!"},
+        )
+        assert login_res.status_code == 200, login_res.text
+        assert login_res.json()["requires_otp"] is True
+
+        async with auth_db() as s:
+            otp_rec = (
+                await s.execute(
+                    select(EmailOTP).where(
+                        EmailOTP.email == login_email, EmailOTP.purpose == "LOGIN"
+                    )
+                )
+            ).scalars().first()
+            login_otp = otp_rec.otp_code
+
+        verify = await client.post(
+            "/api/v1/auth/login/verify-otp",
+            json={"email": login_email, "otp_code": login_otp},
+        )
+        assert verify.status_code == 200, verify.text
+        fresh_me = await client.get(
+            "/api/v1/auth/me",
+            headers={"Authorization": f"Bearer {verify.json()['access_token']}"},
+        )
+        assert fresh_me.status_code == 200, fresh_me.text
+
+
+@pytest.mark.anyio
+async def test_deactivated_account_token_rejected():
+    # R7: is_active enforcement. The old dependency's 401 message claimed
+    # "account deactivated" while never reading the column — a deactivated
+    # user's token kept working until expiry.
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base, User
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    auth_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with auth_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok = await _register_battery_student(client, auth_db)
+        me = await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"})
+        assert me.status_code == 200, me.text
+
+        async with auth_db() as s:
+            user = (await s.execute(select(User))).scalars().first()  # only user in this DB
+            user.is_active = False
+            await s.commit()
+
+        dead = await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {tok}"})
+        assert dead.status_code == 401, dead.text
+        assert "deactivated" in dead.json()["detail"].lower()
+
+
+@pytest.mark.anyio
+async def test_legacy_token_without_version_claim_is_v0():
+    # R7 DEPLOY-SAFETY CONTRACT: tokens issued before the token_version
+    # feature carry no such claim; combined with the column's server default
+    # of 0 they must KEEP working after this deploy. A regression here would
+    # force-logout every production user on upgrade.
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.core.security import create_access_token
+    from app.database import get_db
+    from app.models.attendance import Base, User
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    auth_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with auth_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await _register_battery_student(client, auth_db)
+
+        async with auth_db() as s:
+            user = (await s.execute(select(User))).scalars().first()
+            legacy = create_access_token(
+                data={
+                    "sub": str(user.id),
+                    "name": user.full_name,
+                    "role": user.role,
+                    "roll_number": user.roll_number,
+                    # NOTE: deliberately NO "tv" claim — the pre-feature shape
+                }
+            )
+
+        ok = await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {legacy}"})
+        assert ok.status_code == 200, ok.text
+
+
+@pytest.mark.anyio
+async def test_stale_version_token_rejected():
+    # R7: an explicit version MISMATCH is rejected — a token minted at
+    # version 0 dies once the account's version is bumped (logout/revocation
+    # semantics). Contrast with the claim-less legacy token above: missing
+    # claim == v0, explicit 0 vs bumped account == revoked.
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.core.security import create_access_token
+    from app.database import get_db
+    from app.models.attendance import Base, User
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    auth_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with auth_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await _register_battery_student(client, auth_db)
+
+        async with auth_db() as s:
+            user = (await s.execute(select(User))).scalars().first()
+            stale = create_access_token(
+                data={
+                    "sub": str(user.id),
+                    "name": user.full_name,
+                    "role": user.role,
+                    "roll_number": user.roll_number,
+                    "tv": 0,
+                }
+            )
+            # Simulate a later revocation: account version moves past the token
+            user.token_version = 1
+            await s.commit()
+
+        dead = await client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {stale}"})
+        assert dead.status_code == 401, dead.text
+        assert "revoked" in dead.json()["detail"].lower()
+
+
 
 
 

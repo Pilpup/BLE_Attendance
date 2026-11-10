@@ -279,16 +279,22 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     /**
-     * SessionManager is now backed by persistent SharedPreferences.
-     * This fallback ensures legacy pref entries are migrated if SessionManager
-     * has not yet been initialized with an active session.
+     * One-time legacy migration (R8-B): very old builds persisted the JWT in
+     * this plaintext prefs file. The encrypted SessionManager store is the only
+     * legitimate token persistence now — a found legacy token is migrated into
+     * the session EXACTLY once, then its plaintext copy is destroyed. If the
+     * Keystore is unavailable, startSession keeps the token RAM-only for this
+     * process (fail-closed persistence, SessionManager R8) — the plaintext
+     * copy is still gone either way. The migrated user record is only partially
+     * faithful (email/id are best-effort from legacy prefs); the next fresh
+     * login replaces it with the real backend profile.
      */
     private fun hydrateSessionFromPrefs() {
         if (SessionManager.default.isLoggedIn) {
             SessionManager.default.currentUser?.rollNumber?.let { currentRollNumber = it }
             return
         }
-        val token = prefs.getString("auth_token", null) ?: return
+        val legacyToken = prefs.getString("auth_token", null) ?: return
         val role = Role.fromBackendName(prefs.getString("user_role", null)) ?: Role.STUDENT
         val roll = prefs.getString("roll_number", null)
         SessionManager.default.startSession(
@@ -299,8 +305,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 roles = setOf(role),
                 rollNumber = roll
             ),
-            token = token
+            token = legacyToken
         )
+        // Destroy the plaintext copy immediately after the one-time migration
+        prefs.edit().remove("auth_token").apply()
     }
 
     // Clear previous audit results or cancel active session to start fresh
@@ -370,7 +378,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             onOtpRequired(body.email)
                             onComplete(true)
                         } else if (token != null && user != null) {
-                            syncLocalSession(user.rollNumber, token, user.name, user.role)
+                            syncLocalSession(user.rollNumber, user.name, user.role)
                             if (isTeacherMode) {
                                 loadCourses()
                             }
@@ -402,7 +410,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 when (result) {
                     is NetworkResult.Success -> {
                         val user = result.data.user
-                        syncLocalSession(user.rollNumber, result.data.accessToken, user.name, user.role)
+                        syncLocalSession(user.rollNumber, user.name, user.role)
                         if (isTeacherMode) {
                             loadCourses()
                         }
@@ -421,10 +429,16 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    private fun syncLocalSession(roll: String?, token: String, name: String, role: String) {
+    private fun syncLocalSession(roll: String?, name: String, role: String) {
+        // R8-B (found during chunk 8): this used to ALSO write the JWT into
+        // this plaintext prefs file — every real login shadow-copied the
+        // bearer token to disk beside the encrypted store (which
+        // AuthRepository.applyAuthenticatedSession had already populated),
+        // keeping an unencrypted token copy alive until logout. Plaintext
+        // prefs keep only display metadata from now on; the encrypted
+        // SessionManager store is the only token persistence.
         roll?.let { currentRollNumber = it }
         prefs.edit()
-            .putString("auth_token", token)
             .putString("user_name", name)
             .putString("user_role", role)
             .putString("roll_number", currentRollNumber)
@@ -466,7 +480,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 when (result) {
                     is NetworkResult.Success -> {
                         val user = result.data.user
-                        syncLocalSession(user.rollNumber, result.data.accessToken, user.name, user.role)
+                        syncLocalSession(user.rollNumber, user.name, user.role)
                         if (isTeacherMode) {
                             loadCourses()
                         }
@@ -507,7 +521,29 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    fun logout() {
+    fun logout(notifyServer: Boolean = true) {
+        // R8: fire-and-forget server-side revocation (chunk 7's route) BEFORE
+        // the local teardown. The token is passed into the request explicitly —
+        // AuthInterceptor reads SessionManager lazily at request time, and
+        // endSession() below clears it before a coroutine would fire, which
+        // would otherwise silently send the logout unauthenticated. Best-effort:
+        // local logout must never depend on network availability, and the
+        // 401-expiry path skips this (the server already revoked that token —
+        // that is why the 401 happened).
+        if (notifyServer) {
+            val token = SessionManager.default.activeToken
+            val hasRealJwt = token != null && token.contains(".") && !token.contains("mock")
+            if (hasRealJwt) {
+                viewModelScope.launch(Dispatchers.IO) {
+                    try {
+                        AttendanceApiClient.service.logout("Bearer $token")
+                    } catch (_: Exception) {
+                        // Server unreachable or token already revoked — local
+                        // logout proceeds either way
+                    }
+                }
+            }
+        }
         SessionManager.default.endSession()
         stopTeacherSession()
         backendSessionId = null
@@ -530,7 +566,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val token = SessionManager.default.activeToken
         val hasRealCloudJwt = token?.contains(".") == true && !token.contains("mock")
         if (hasRealCloudJwt) {
-            logout()
+            // notifyServer = false: the revocation ALREADY happened server-side
+            // (that is what produced this 401); re-calling /logout would only
+            // 401 again on a dead token
+            logout(notifyServer = false)
             authErrorText = message
             cloudStatusMessage = message
             showAuthDialog = true
@@ -1600,6 +1639,15 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         airVerdictJob = null
         auditPollingJob?.cancel()
         auditPollingJob = null
+        // R8 (review §0.2): drop the Activity-wired BLE bridge lambdas. The
+        // cleared ViewModel used to keep referencing lambdas that capture the
+        // scanner bound to the (destroying) Activity — an Activity leak for as
+        // long as the VM lived on. All invoke sites are `?.invoke()`, so the
+        // nulled bridges simply become no-ops.
+        onStartBroadcasting = null
+        onStopBroadcasting = null
+        onStartScanning = null
+        onStopScanning = null
         proximityManager.release()
     }
 }

@@ -250,6 +250,7 @@ async def register_verify_otp(
         "name": new_user.full_name,
         "role": new_user.role,
         "roll_number": new_user.roll_number,
+        "tv": new_user.token_version or 0,
     }
     token = create_access_token(data=token_data)
 
@@ -394,6 +395,7 @@ async def login_verify_otp(
         "name": user.full_name,
         "role": user.role,
         "roll_number": user.roll_number,
+        "tv": user.token_version or 0,
     }
     token = create_access_token(data=token_data)
 
@@ -469,4 +471,20 @@ async def resend_otp(
 @router.get("/me", response_model=UserResponse)
 async def get_my_profile(current_user: User = Depends(get_current_user)):
     return _to_user_response(current_user)
+
+
+# R7: server-side logout. Bumps the account's token_version so EVERY token
+# ever issued for this user — including the caller's — is rejected from the
+# next request on. The next successful login issues a token at the new
+# version, so logout never locks the account out. (Client-side token deletion
+# alone left "logged out" tokens valid until expiry; a stolen device copy of
+# the token keeps a live session today.)
+@router.post("/logout")
+async def logout(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    current_user.token_version = (current_user.token_version or 0) + 1
+    await db.commit()
+    return {"status": "logged_out"}
 

@@ -47,6 +47,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -78,12 +79,21 @@ import com.college.feature.library.LibraryDashboardCard
 @Composable
 fun HomeScreen(
     user: User?,
-    onNavigate: (String) -> Unit
+    onNavigate: (String) -> Unit,
+    // R8: sign-out is routed through the ViewModel logout so the server-side
+    // token revocation (chunk 7 route) actually fires; the direct endSession
+    // fallback keeps the shell usable standalone
+    onRequestSignOut: (() -> Unit)? = null
 ) {
     var showAccountDialog by remember { mutableStateOf(false) }
     var isAboutExpanded by remember { mutableStateOf(false) }
     var showDevActingDialog by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+
+    // R8 (review §3.3): the unmasked account is collected state now — the old
+    // direct getter re-parsed Gson JSON from prefs on every recomposition and
+    // could render a stale developer badge.
+    val realUser by SessionManager.default.realUser.collectAsState()
 
     val colors = AppTheme.colors
     val featureItems = remember(user, colors) {
@@ -296,10 +306,10 @@ fun HomeScreen(
                 onNavigate("auth")
             },
             onSignOut = {
-                SessionManager.default.endSession()
+                onRequestSignOut?.invoke() ?: SessionManager.default.endSession()
                 showAccountDialog = false
             },
-            onRoleClick = if (SessionManager.default.realUser?.isDeveloper() == true) {
+            onRoleClick = if (realUser?.isDeveloper() == true) {
                 { showDevActingDialog = true }
             } else null
         )
@@ -366,8 +376,10 @@ private fun PokemonTrainerCardDialog(
 @Composable
 private fun DevActingDialog(onDismiss: () -> Unit) {
     val colors = AppTheme.colors
-    val acting = SessionManager.default.actingRole
-    val real = SessionManager.default.realUser
+    // R8 (review §3.3): collected — the dialog's role checkmarks stay truthful
+    // while it is open (used to be plain getters read once at composition)
+    val acting by SessionManager.default.actingRole.collectAsState()
+    val real by SessionManager.default.realUser.collectAsState()
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = colors.surface,

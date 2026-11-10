@@ -67,6 +67,7 @@ fun AppNavigation(
                         else -> Destination.HOME
                     }
                 },
+                onRequestSignOut = { viewModel.logout() },
             )
         }
 

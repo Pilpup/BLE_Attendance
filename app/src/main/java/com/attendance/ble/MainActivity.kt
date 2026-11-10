@@ -13,9 +13,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import android.widget.Toast
 import com.attendance.ble.shell.AppNavigation
 import com.college.core.ui.theme.CollegeAppTheme
 import com.college.core.ui.theme.AppTheme
@@ -77,16 +79,57 @@ class MainActivity : ComponentActivity() {
         setContent {
             val context = androidx.compose.ui.platform.LocalContext.current
 
-            val permissionLauncher = rememberLauncherForActivityResult(
-                contract = ActivityResultContracts.RequestMultiplePermissions()
-            ) { }
+            val bluetoothManager = remember(context) {
+                context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+            }
+
+            // R8 (review §1.7.5): the launcher callbacks used to be literal
+            // `{}` — granted/denied permission results and Bluetooth-enable
+            // results were discarded, so denied BLE/camera/mic access failed
+            // with zero feedback. The pending action is retained and replayed
+            // on success; a denial shows an explicit rationale instead of
+            // silently doing nothing.
+            val permissionRationale =
+                "Bluetooth, location and camera permissions are required for attendance. Enable them in Settings."
+            val pendingAction = remember { mutableStateOf<(() -> Unit)?>(null) }
 
             val enableBluetoothLauncher = rememberLauncherForActivityResult(
                 contract = ActivityResultContracts.StartActivityForResult()
-            ) { }
+            ) { result ->
+                val action = pendingAction.value
+                pendingAction.value = null
+                // Permissions were granted before this launch, so replaying the
+                // action after a successful enable is safe
+                if (result.resultCode == android.app.Activity.RESULT_OK) {
+                    action?.invoke()
+                }
+            }
 
-            val bluetoothManager = remember(context) {
-                context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+            val permissionLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.RequestMultiplePermissions()
+            ) { grants ->
+                val action = pendingAction.value
+                pendingAction.value = null
+                if (grants.values.all { it }) {
+                    // Replay through the SAME adapter gate as the normal path —
+                    // invoking directly would let an adapter-off device attempt
+                    // a scan/broadcast that can never succeed. A SecurityException
+                    // cannot legitimately occur right after a fresh grant; we
+                    // toast instead of re-launching the same request (loop guard).
+                    try {
+                        if (bluetoothManager.adapter?.isEnabled == false) {
+                            pendingAction.value = action
+                            val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                            enableBluetoothLauncher.launch(enableBtIntent)
+                        } else {
+                            action?.invoke()
+                        }
+                    } catch (_: SecurityException) {
+                        Toast.makeText(context, permissionRationale, Toast.LENGTH_LONG).show()
+                    }
+                } else {
+                    Toast.makeText(context, permissionRationale, Toast.LENGTH_LONG).show()
+                }
             }
 
             // Checks runtime permissions and bluetooth state before executing action
@@ -96,16 +139,19 @@ class MainActivity : ComponentActivity() {
                         ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
                     }
                     if (!hasPermissions) {
+                        pendingAction.value = action
                         permissionLauncher.launch(BleConstants.neededPermissions)
                     } else {
                         try {
                             if (bluetoothManager.adapter?.isEnabled == false) {
+                                pendingAction.value = action
                                 val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
                                 enableBluetoothLauncher.launch(enableBtIntent)
                             } else {
                                 action()
                             }
                         } catch (_: SecurityException) {
+                            pendingAction.value = action
                             permissionLauncher.launch(BleConstants.neededPermissions)
                         }
                     }

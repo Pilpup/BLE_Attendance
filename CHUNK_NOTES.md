@@ -288,6 +288,125 @@ signing configuration.
 
 ---
 
+## Chunk 7 — Auth lifecycle ✅
+
+**Scope:** tokens become server-controllable — `token_version` claim checked on every request,
+`is_active` actually enforced, and a real `POST /logout` that revokes every token the account has
+ever been issued. Deploy-safe by contract: missing claim == version 0.
+
+**Receipts:**
+
+- **Red-first:** on the un-fixed tree, 3 of 4 new tests failed exactly at the designed loss shapes —
+  logout route **absent** (404), deactivated account's `/me` → **200**, stale-version token → **200**
+  — and the deploy-safety guard **passed before the fix, by design**: "legacy tokens keep working"
+  is the current behavior the chunk must preserve, so its test is expected green on both sides.
+- pytest **70 passed** (+4) in 35.90s · diff: 5 files **+252** (security +18, auth +18 incl. logout
+  route, models +5, DDL +1, tests +210).
+- **Issuance sites exhaustively covered:** grep confirms exactly two `create_access_token` call sites
+  (`register_verify_otp :255`, `login_verify_otp :400`); both now embed `"tv"`.
+- **Kotlin app untouched and unbroken:** the app's `logout()` (`AttendanceViewModel:510`) is local
+  clearing only — no network logout call exists today, so the new `/logout` route is purely additive;
+  app-side wiring is chunk 8's SessionManager work.
+
+**Notes (honest):**
+
+- **The `is_active` finding had a sharper shape than "missing check":** `get_current_user`'s 401 for
+  unknown users *claimed* "User not found or account deactivated" while the `User.is_active` column
+  and its DDL line existed long before this chunk — a message asserting enforcement that never ran.
+  The deactivated test proved a deactivated user's token worked until expiry. The check now sits
+  before the version check with the same honest message.
+- **The deploy-safety semantics is the careful part of the diff.** The boundary is not
+  "token without claim is invalid" — it is `(payload.get("tv") or 0) != (user.token_version or 0)`:
+  a claim-LESS token (pre-deploy mint) vs a migrated account (server default 0) → match → valid; an
+  explicit stale claim (0 vs bumped account) → revoked. Two different tests pin the two sides of that
+  boundary (`legacy_token_without_version_claim_is_v0`, `stale_version_token_rejected`), and the
+  distinction is documented in both code and tests — a naive `payload["tv"] != user.token_version`
+  would have been a mass-logout bomb on deploy day.
+- **Logout is account-wide revocation, not per-device:** bumping `token_version` kills every token
+  the account has ever held, including the caller's. The simplest correct primitive for this
+  codebase's threat model (stolen device copy dies with one tap); per-device session tracking was
+  never in review scope. Chunk 8 wires the app's local `logout()` to call this route.
+- **Re-login equilibrium is tested end-to-end, not assumed:** the lifecycle test proves logout →
+  `/login` (OTP dance reading the LOGIN OTP from the test DB) → `/login/verify-otp` → `/me` 200. This
+  is exactly where revocation implementations fail silently — issue the new token at the OLD version
+  and every subsequent request 401s, discovered in production.
+- **DDL follows the block's house style:** `ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version
+  INTEGER NOT NULL DEFAULT 0;` — idempotent, sibling of `is_active`. This is the chunk's single
+  schema change; Alembic remains the standing deferral.
+- **Mock-token test path untouched:** the `is_test_environment()`-gated shortcut (returns first
+  TEACHER/user without JWT decode) predates this chunk and stays as-is.
+
+---
+
+## Chunk 8 — SessionManager fail-closed + lifecycle polish ✅ (+ bug R8-B found & fixed)
+
+**Scope:** four review findings — encrypted-prefs fail-closed, permission-launcher UX, the
+Activity-bridge `onCleared` leak, `realUser` as state — **plus one P1 bug the second review missed**
+(plaintext JWT shadow-store in the ViewModel), plus the chunk-7 promise: app logout now calls the
+backend route.
+
+**Receipts:**
+
+- `./gradlew :app:assembleRelease` → **exit 0** (final run), APK **3,783,887 bytes**.
+- **Plaintext-token write sweep:** `grep 'putString("auth_token"` across all Kotlin sources →
+  **0 hits**. `college_auth_fallback_prefs` is referenced only as the wipe target.
+- Diff: 6 files **+184/−45** (SessionManager, MainActivity, HomeScreen, AppNavigation,
+  AttendanceViewModel, AttendanceApiService).
+
+**The four review items:**
+
+- **§1.7.2 fail-closed**: `createEncryptedPreferences` no longer returns a plaintext prefs handle on
+  Keystore failure — it returns null after wiping any legacy plaintext data, and every write/read
+  path (already null-safe) yields a RAM-only session for that process. The old branch silently
+  parked JWTs + user JSON in `college_auth_fallback_prefs` on any corrupt-vendor-keystore/OS-upgrade
+  event, with no telemetry and no degradation notice.
+- **§1.7.5 permission UX**: the launchers' callbacks were literal `{}`. Results now flow into a
+  pending-action replay that runs through the **full gate** (permissions → Bluetooth-adapter check);
+  a denial shows an explicit rationale toast instead of silently doing nothing.
+- **§0.2 bridge leak**: `onCleared()` now nulls all four Activity-wired scanning/broadcasting
+  lambdas; verified first that every call site is `?.invoke()` (grep), so a nulled bridge is a
+  safe no-op — the cleared VM no longer pins the Activity.
+- **§3.3 `realUser`**: re-parsed the user JSON from prefs with Gson **on every read** and was not
+  observable — HomeScreen read it during composition (stale developer-badge risk + per-frame
+  deserialization). Now a StateFlow; `actingRole` (same finding class, read in the same dialog) got
+  the same treatment. HomeScreen collects via `collectAsState` following the AppNavigation idiom;
+  side effect: the dev-acting dialog's checkmarks now update live while open.
+
+**Bug R8-B — found during this chunk, unlisted by the review (it audited SessionManager, not the
+ViewModel's own prefs):** `AttendanceViewModel.syncLocalSession` — called after every successful
+login, OTP-verify, and register-verify — wrote the **real backend JWT to plaintext**
+(`ble_attendance_prefs`) as a "legacy fallback", directly beside the encrypted copy that
+`AuthRepository.applyAuthenticatedSession` had already made. Every production login leaked the
+bearer token to unencrypted disk storage until logout. Fix: the token write is gone (plaintext
+prefs keep only display metadata: name/role/roll); `hydrateSessionFromPrefs` is now a **one-time
+migration** that adopts a found legacy token into the session and **destroys the plaintext copy
+immediately**. Honest caveats recorded in code: the migrated user record is best-effort (email
+empty, id from roll), and the next real login replaces it with the backend profile.
+
+**Chunk-7 promise completed:** `logout(notifyServer = true)` fires `POST /api/v1/auth/logout`
+(new endpoint in `AttendanceApiService`) before the local teardown, passing the Authorization
+header **explicitly** — AuthInterceptor reads the session lazily at request time, and `endSession()`
+would have cleared the token before the coroutine fired, silently sending an unauthenticated logout.
+The 401-expiry path calls `logout(notifyServer = false)`: the server already revoked that token —
+that is why the 401 happened. best-effort everywhere: local logout never depends on network. A
+second sign-out path was also found routing around all of this — HomeScreen's account-dialog
+Sign-Out called `SessionManager.endSession()` directly (no VM cleanup, no revocation) — now plumbed
+through `viewModel.logout()` via AppNavigation.
+
+**Honest notes:**
+
+- **Self-caught defect in my own first shape:** the permission-replay initially invoked the pending
+  action directly on grant — skipping the adapter check the normal path would have run — so a
+  Bluetooth-off device would replay into a scan that can never succeed. Fixed by declaring the
+  bluetoothManager remember before the launchers and replaying through the same gate. Record kept
+  because it is exactly the "fix introduces a subtler bug" class worth watching for.
+- Keystore-broken devices now get exactly the review's "stay logged in for this session only":
+  token RAM-only until process death, wipe of the old plaintext file, log the downgrade.
+- `markLoading()` leaves `_realUser`/`_actingRole` stale by design (transient Loading while login UI
+  shows; replaced on next startSession) — noted to avoid confusion, no action.
+
+---
+
 ## Pending chunks (map as agreed)
 
 - **4b** — R2 finalize lock (stage/pop window; highest backend risk) ← *done*
@@ -296,10 +415,12 @@ signing configuration.
 - **6** — Android build security: `BuildConfig.DEBUG` log gate, ProGuard Log strip, CI-only keystore
   fail-fast ← *done (dex-level strip proof + CI exit-1 proof)*
 - **7** — Auth lifecycle: `token_version` + `is_active` + logout (missing claim == v0 for deploy
-  safety; DDL `ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version`) ← *next*
+  safety; DDL `ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version`) ← *done (red-first: 3 designed
+  losses proven; deploy-safety guard green on both sides; 70 passed)*
 - **8** — SessionManager fail-closed (no token in plaintext fallback), permission UX, bridge
-  clearing, `realUser` → state
-- **9** — URL single-source (`ServerConfigManager` only; delete VM:262 filters + LAN quick button)
+  clearing, `realUser` → state ← *done (+ bug R8-B plaintext-JWT shadow-store found & fixed; app
+  logout wires the chunk-7 route)*
+- **9** — URL single-source (`ServerConfigManager` only; delete VM:262 filters + LAN quick button) ← *next*
 - **10** — Infra: Docker non-root/pinned/`--proxy-headers`/close 5432, single-worker warning,
   **DATABASE_URL placeholder coverage**
 - **11** — P2 perf pack (BLE prefilter, `withFrameNanos`, face-extract off main, 44.1k fallback,
