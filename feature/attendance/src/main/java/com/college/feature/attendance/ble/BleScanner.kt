@@ -115,12 +115,12 @@ class BleScanner(
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             super.onScanResult(callbackType, result)
 
-            // R11 (review §2.1): binder-thread gate BEFORE allocating a payload
-            // String or posting to the main looper. A 100-phone room on
-            // LOW_LATENCY previously meant thousands of posts/sec on weak
-            // devices (jank + allocation churn). -95 dBm keeps
-            // classroom-relevant traffic; weaker advertisements could only
-            // ever become a throttled neglect log or false adjacency noise.
+            // R11 + K4: binder-thread gates BEFORE allocating a payload String
+            // or posting to the main looper. Weak signals die first (heap/GC
+            // cut), then a raw-byte shape precheck rejects non-attendance
+            // payloads without ever allocating a String — the VM's accepted
+            // shapes are S:/SESSION: beacons, V: air verdicts, and 8-char peer
+            // probes (length==8 superset; scanner can't know the session id).
             val rssi = result.rssi
             if (rssi < -95) return
 
@@ -135,15 +135,19 @@ class BleScanner(
                     it.key.uuid == BleConstants.TEST_UUID
                 }?.value
 
-            if (serviceDataBytes == null || serviceDataBytes.isEmpty()) {
-                return
-            }
+            if (serviceDataBytes == null || serviceDataBytes.isEmpty()) return
+
+            // Raw-byte shape precheck (allocation-free): pass only S:/SESSION:,
+            // V:, or exact 8-byte probe candidates.
+            val len = serviceDataBytes.size
+            val isBeaconOrVerdict = len >= 2 &&
+                serviceDataBytes[1] == 0x3A.toByte() && // ':'
+                (serviceDataBytes[0] == 0x53.toByte() || // 'S'
+                    serviceDataBytes[0] == 0x56.toByte()) // 'V'
+            if (!isBeaconOrVerdict && len != 8) return
 
             val messageText = String(serviceDataBytes, Charsets.UTF_8)
-            // Second gate: only payloads the ViewModel actually speaks
-            // (teacher beacon / air verdict / 8-char peer probe) bridge to the
-            // main thread. Foreign app instances and truncated fragments used
-            // to cross the bridge only to be throttled-logged there.
+            // Second gate: canonical shape check (trim-aware, SESSION: prefix).
             if (!looksLikeAttendanceMessage(messageText)) return
 
             // Dispatch received packet to the main thread

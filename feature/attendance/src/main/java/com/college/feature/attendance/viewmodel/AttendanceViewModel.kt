@@ -41,23 +41,53 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.UUID
 
+// K4: fixed-size RSSI sample ring — no per-sample List allocation/growth.
+// Kept immutable-at-API (copy-on-write of the small ring array) so existing
+// call sites and the @Immutable contract stay valid; bounded to maxSamples.
 @Immutable
 data class PeerData(
     val peerId: String,
-    val rssiSamples: List<Int> = emptyList(),
+    val rssiSamples: IntArray = IntArray(0),
+    val sampleCount: Int = 0,
     val medianRssi: Int = -99
 ) {
-    val count: Int get() = rssiSamples.size
+    val count: Int get() = sampleCount
 
     fun withSample(rssi: Int, maxSamples: Int = 10): PeerData {
-        val updated = (rssiSamples + rssi).takeLast(maxSamples)
-        val sorted = updated.sorted()
+        val newCount = if (sampleCount < maxSamples) sampleCount + 1 else maxSamples
+        val buf = IntArray(newCount)
+        if (sampleCount < maxSamples) {
+            if (sampleCount > 0) rssiSamples.copyInto(buf, 0, 0, sampleCount)
+            buf[sampleCount] = rssi
+        } else {
+            // drop oldest (index 0), shift left, append newest
+            rssiSamples.copyInto(buf, 0, 1, sampleCount)
+            buf[newCount - 1] = rssi
+        }
+        val sorted = buf.copyOf()
+        sorted.sort()
         val median = sorted[sorted.size / 2]
         return PeerData(
             peerId = peerId,
-            rssiSamples = updated,
+            rssiSamples = buf,
+            sampleCount = newCount,
             medianRssi = median
         )
+    }
+
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is PeerData) return false
+        return peerId == other.peerId && sampleCount == other.sampleCount &&
+            medianRssi == other.medianRssi && rssiSamples.contentEquals(other.rssiSamples)
+    }
+
+    override fun hashCode(): Int {
+        var result = peerId.hashCode()
+        result = 31 * result + rssiSamples.contentHashCode()
+        result = 31 * result + sampleCount
+        result = 31 * result + medianRssi
+        return result
     }
 }
 
@@ -216,6 +246,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     // counter moves. Main-thread writes only (every bump site lives there).
     @Volatile
     private var peerRevision = 0L
+
+    // K4: debounce/coalesce neighbor submits — trailing during discovery
+    // window, immediate on boundary transitions (keepRadioActive=false).
+    // Baseline (instrumented round): 5 submits in ~27s for 1 peer;
+    // batching collapses periodic+event bursts to one trailing push.
+    private var pendingNeighborSubmitJob: Job? = null
 
     // R11 (review §2.8): PARTIAL wake lock for the student probing phase — a
     // 25 s BLE discovery window plus device-to-device ultrasonic handshakes
@@ -766,8 +802,27 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         return sb.toString()
     }
 
-    // Upload student's own top neighbors over Wi-Fi / cellular
+    // Upload student's own top neighbors over Wi-Fi / cellular.
+    // K4: trailing debounce during active window (keepRadioActive=true) to
+    // collapse periodic ticks and first-sight bursts; immediate flush on
+    // boundary calls (keepRadioActive=false) so end-of-window / finalize
+    // snapshots are never delayed. Server grace tolerates trailing delivery.
     fun submitMyNeighborsToCloud(keepRadioActive: Boolean = false) {
+        if (!keepRadioActive) {
+            pendingNeighborSubmitJob?.cancel()
+            pendingNeighborSubmitJob = null
+            submitMyNeighborsToCloudNow(keepRadioActive = false)
+            return
+        }
+        if (pendingNeighborSubmitJob?.isActive == true) return
+        pendingNeighborSubmitJob = viewModelScope.launch {
+            delay(2500L)
+            pendingNeighborSubmitJob = null
+            submitMyNeighborsToCloudNow(keepRadioActive = true)
+        }
+    }
+
+    private fun submitMyNeighborsToCloudNow(keepRadioActive: Boolean) {
         val sessId = detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: return
         val neighborIds = topDeskNeighbours.map { it.peerId }
         val closeNeighborIds = rawDiscoveredPeers.values
@@ -1171,6 +1226,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Student scanning stop
     fun stopStudentScanning() {
+        pendingNeighborSubmitJob?.cancel()
+        pendingNeighborSubmitJob = null
         stopPeerBatchUpdates()
         releaseProbingWakeLock() // R11 (review §2.8): explicit CPU hold release
         studentTimer?.cancel()
@@ -1185,6 +1242,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Reset student attendance session back to standby
     fun resetStudentSession() {
+        pendingNeighborSubmitJob?.cancel()
+        pendingNeighborSubmitJob = null
         stopPeerBatchUpdates()
         releaseProbingWakeLock() // R11 (review §2.8): explicit CPU hold release
         studentTimer?.cancel()

@@ -4,9 +4,6 @@ android {
     compileSdk = 34
     defaultConfig {
         applicationId = "com.attendance.ble"; minSdk = 24; targetSdk = 34; versionCode = 1; versionName = "1.0"
-        // Must match :feature:attendance — filters AAR-provided JNI libs (e.g.
-        // CameraX) to phone ABIs; emulator-only x86/x86_64 are excluded.
-        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
     buildFeatures { compose = true }
     composeOptions { kotlinCompilerExtensionVersion = "1.5.1" }
@@ -56,6 +53,21 @@ android {
             }
         }
     }
+    splits {
+        // K1+#5: per-ABI APKs so v7a-only devices avoid shipping arm64 native
+        // libs (~280KB saving on this app's native footprint). Universal
+        // excluded (signing/signature policy blocked splitting the APK
+        // downstream); versionCode unchanged — APKs differ only by native ABI.
+        // NOTE for future distribution: Play/upgrades require unique
+        // versionCodes per ABI variant; bumping here is a product decision.
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = false
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true

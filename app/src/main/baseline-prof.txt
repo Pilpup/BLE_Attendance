@@ -1,0 +1,48 @@
+# K1+#5 (KAZE_PLAN §5): app-flow baseline profile. AGP merges this with the
+# androidx profileinstaller library profile shipped by Compose into
+# assets/dexopt/baseline.prof, so the listed classes AOT-compile at install
+# time instead of JIT-typing on the first attendance round (old-phone win:
+# first game round, BLE packet path, and DSP boundary run pre-compiled).
+#
+# Bare class rules = every method of the class (androidx-style baseline-prof
+# convention). Method-level lines are used only where signatures are exact.
+
+# Cold-start path: activity + shell navigation
+Lcom/attendance/ble/MainActivity;
+Lcom/attendance/ble/shell/HomeScreen;
+Lcom/attendance/ble/shell/AuthScreen;
+
+# Feature view model: read at composition, touches EncryptedSharedPreferences
+Lcom/college/feature/attendance/viewmodel/AttendanceViewModel;
+
+# BLE radio path — every advertisement and every submit touches these
+Lcom/college/feature/attendance/ble/BleAdvertiser;
+Lcom/college/feature/attendance/ble/BleScanner;
+Lcom/college/feature/attendance/ble/BleConstants;
+
+# Game draw pipeline (K1): frame buffer, video-game loop, telemetry
+Lcom/college/feature/attendance/game/OrbPoppingGame;
+Lcom/college/feature/attendance/game/FrameBuffer;
+Lcom/college/feature/attendance/game/GameCore;
+Lcom/college/feature/attendance/game/GameTelemetryEngine;
+
+# Session + server config (_prefs init and heartbeat token reads)
+Lcom/college/core/network/SessionManager;
+Lcom/college/core/network/ServerConfigManager;
+Lcom/college/core/network/NetworkClient;
+
+# Telemetry events (round reporting path)
+Lcom/college/feature/attendance/telemetry/TapEvent;
+Lcom/college/feature/attendance/telemetry/ExpiredTargetEvent;
+
+# Camera best-frame path (post-game encode, cold on first round)
+Lcom/college/feature/attendance/camera/BestFrameAnalyzer;
+Lcom/college/feature/attendance/camera/FrameQualityScorer;
+Lcom/college/feature/attendance/camera/PassiveFaceCaptureManager;
+Lcom/college/feature/attendance/camera/FaceImageProcessor;
+
+# Audio DSP boundary (ultrasonic proximity handshake)
+Lcom/college/feature/attendance/audio/NativeAcousticEngine;
+Lcom/college/feature/attendance/audio/GoertzelDetector;
+Lcom/college/feature/attendance/audio/UltrasonicProximityManager;
+Lcom/college/feature/attendance/audio/UltrasonicToneSynthesizer;
