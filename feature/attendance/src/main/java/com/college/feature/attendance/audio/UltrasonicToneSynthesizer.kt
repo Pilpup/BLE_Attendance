@@ -69,7 +69,7 @@ object UltrasonicToneSynthesizer {
         amplitudeScale: Float = DEFAULT_AMPLITUDE_SCALE
     ): ShortArray {
         val isDefault = frequencyHz == DEFAULT_FREQUENCY_HZ &&
-            sampleRate == DEFAULT_SAMPLE_RATE &&
+            sampleRate == EFFECTIVE_SAMPLE_RATE && // R11 review: key on the device-resolved rate — a 44.1k device passes EFFECTIVE everywhere, so the cached buffer + reusable track must match it too
             durationMs == DEFAULT_DURATION_MS &&
             amplitudeScale == DEFAULT_AMPLITUDE_SCALE
 
@@ -106,7 +106,7 @@ object UltrasonicToneSynthesizer {
         onComplete: (() -> Unit)? = null
     ) {
         val isDefault = frequencyHz == DEFAULT_FREQUENCY_HZ &&
-            sampleRate == DEFAULT_SAMPLE_RATE &&
+            sampleRate == EFFECTIVE_SAMPLE_RATE && // R11 review: matches emitChirp's EFFECTIVE rate so burst trains reuse the pooled track instead of one-shotting per chirp
             durationMs == DEFAULT_DURATION_MS &&
             amplitudeScale == DEFAULT_AMPLITUDE_SCALE
 

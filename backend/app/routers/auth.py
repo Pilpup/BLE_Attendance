@@ -28,7 +28,12 @@ from app.schemas.auth import (
     VerifyOtpRequest,
 )
 from app.services.email import dispatch_otp_email, generate_otp
-from app.services.rate_limiter import login_email_limiter, login_ip_limiter
+from app.services.rate_limiter import (
+    login_email_limiter,
+    login_ip_limiter,
+    otp_resend_email_limiter,
+    otp_resend_ip_limiter,
+)
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -76,7 +81,8 @@ async def register_send_otp(
 
     # Enforce faculty or staff registration passcode
     if normalized_role in ["TEACHER", "STAFF"]:
-        if payload.faculty_code != settings.FACULTY_SIGNUP_SECRET:
+        # H2/L7 (audit): constant-time compare — matches the OTP pattern.
+        if not secrets.compare_digest(payload.faculty_code or "", settings.FACULTY_SIGNUP_SECRET):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Invalid faculty or staff registration passcode",
@@ -409,6 +415,7 @@ async def login_verify_otp(
 # Resend OTP with cooldown check
 @router.post("/otp/resend", response_model=OtpSentResponse)
 async def resend_otp(
+    request: Request,
     payload: ResendOtpRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
@@ -416,6 +423,27 @@ async def resend_otp(
     email = payload.email.strip().lower()
     purpose = payload.purpose.strip().upper()
     now = datetime.now(timezone.utc)
+
+    # M1 (security audit): purpose is client-supplied — an arbitrary string
+    # would open a fresh (email, purpose) row, bypassing the 45s cooldown and
+    # dispatching free SMTP to any address. Only the two real purposes may pass.
+    if purpose not in ("REGISTER", "LOGIN"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid OTP purpose.",
+        )
+
+    # M1 (audit): the endpoint is unauthenticated, so budgets live here —
+    # per-mailbox cap (inbox bombing / Brevo plan burning on one victim) and a
+    # generous per-IP floor calibrated like login's: a shared campus NAT must
+    # survive a burst of legitimate resends, so the IP layer only stops
+    # distributed spraying. Rejected 429 attempts do not consume budget.
+    client_ip = request.client.host if request.client else "unknown"
+    if not await otp_resend_email_limiter.check(email) or not await otp_resend_ip_limiter.check(client_ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many code requests. Please try again later.",
+        )
 
     # Check recent OTP to enforce 45s cooldown
     recent = await db.execute(
@@ -440,7 +468,10 @@ async def resend_otp(
     # Update existing OTP record or create new one
     if last_otp:
         last_otp.otp_code = otp_code
-        last_otp.attempts = 0
+        # M1: do NOT zero attempts here — the 5-wrong-tries budget must survive
+        # resends, otherwise an attacker refreshes it every 45s cooldown tick.
+        # A user who mistyped still gets a fresh correct code with the
+        # remaining budget until expiry.
         last_otp.expires_at = expires_at
         last_otp.created_at = now
     else:

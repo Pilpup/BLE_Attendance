@@ -33,6 +33,7 @@ import com.college.feature.attendance.audio.EnsembleVerdict
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
 import kotlin.math.roundToInt
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -625,12 +626,18 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             val token = SessionManager.default.activeToken
             val hasRealJwt = token != null && token.contains(".") && !token.contains("mock")
             if (hasRealJwt) {
-                viewModelScope.launch(Dispatchers.IO) {
-                    try {
-                        AttendanceApiClient.service.logout("Bearer $token")
-                    } catch (_: Exception) {
-                        // Server unreachable or token already revoked — local
-                        // logout proceeds either way
+                // Audit review (Low): revocation must survive VM teardown —
+                // logout can clear the ViewModel while the HTTP call is still
+                // in flight. NonCancellable lets the request finish even if
+                // viewModelScope is cancelled right after logout() returns.
+                viewModelScope.launch {
+                    withContext(NonCancellable + Dispatchers.IO) {
+                        try {
+                            AttendanceApiClient.service.logout("Bearer $token")
+                        } catch (_: Exception) {
+                            // Server unreachable or token already revoked — local
+                            // logout proceeds either way
+                        }
                     }
                 }
             }

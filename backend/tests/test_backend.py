@@ -1938,11 +1938,20 @@ async def test_flagged_faces_owner_only():
 def test_insecure_secret_reason_catalogue():
     from app import config
 
-    # 1. The two committed defaults are always refused
-    #    (the faculty default is exactly 32 chars — equality catches it,
-    #     a length floor alone would let it through)
-    assert config.insecure_secret_reason("JWT_SECRET_KEY", config.settings.JWT_SECRET_KEY)
-    assert config.insecure_secret_reason("FACULTY_SIGNUP_SECRET", config.settings.FACULTY_SIGNUP_SECRET)
+    # 1. The pinned git-history denylist values are always refused
+    #    (the old faculty default is exactly 32 chars — equality catches it,
+    #     a length floor alone would let it through). The settings instance
+    #     itself now carries rotated/random values and must PASS.
+    assert config.insecure_secret_reason(
+        "JWT_SECRET_KEY", config.INSECURE_DEFAULT_SECRETS["JWT_SECRET_KEY"]
+    )
+    assert config.insecure_secret_reason(
+        "FACULTY_SIGNUP_SECRET", config.INSECURE_DEFAULT_SECRETS["FACULTY_SIGNUP_SECRET"]
+    )
+    assert config.insecure_secret_reason("JWT_SECRET_KEY", config.settings.JWT_SECRET_KEY) is None
+    assert config.insecure_secret_reason(
+        "FACULTY_SIGNUP_SECRET", config.settings.FACULTY_SIGNUP_SECRET
+    ) is None
 
     # 2. compose JWT placeholder and BOTH eras of faculty placeholder
     assert config.insecure_secret_reason("JWT_SECRET_KEY", "change_this_to_a_random_hex_key_32_bytes")

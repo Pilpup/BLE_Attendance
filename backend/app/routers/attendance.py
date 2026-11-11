@@ -709,7 +709,9 @@ async def create_attendance_session(
 
     await _populate_course_metadata(session, db)
 
-    logger.info(f"[Session Created] ID: {session.id}, Token: {session.session_token}, Salt: {session.session_salt}, Course: {session.course_code}")
+    # M9 (audit): never log gate material — token/salt in container logs
+    # defeats the BLE-range assumption (anyone with log access gets the gate).
+    logger.info(f"[Session Created] ID: {session.id}, Course: {session.course_code}")
     return session
 
 
@@ -1367,13 +1369,11 @@ async def submit_student_neighbors(
                 bridge = None
                 remarks = "Zero desk neighbors detected (isolated seat)"
 
+            # M5 (audit): identity is the JWT account ONLY. The old ilike
+            # substring fallback could bind a crafted id prefix to another
+            # student's row. user_id is always set for an authenticated
+            # caller, so no fallback resolution is permitted.
             resolved_student_id = user_id
-            if not resolved_student_id:
-                user_stmt = select(User).where(User.roll_number.ilike(f"%{student_key}")).limit(1)
-                user_res = await db.execute(user_stmt)
-                matched_user = user_res.scalar_one_or_none()
-                if matched_user:
-                    resolved_student_id = matched_user.id
 
             new_record = AttendanceRecord(
                 id=uuid.uuid4(),

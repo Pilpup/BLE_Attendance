@@ -72,3 +72,11 @@ submit_rate_limiter = SubmitRateLimiter()
 # effectively caps total login bursts globally — still far above classroom scale.
 login_email_limiter = SlidingWindowRateLimiter(max_events=10, window_seconds=300.0)
 login_ip_limiter = SlidingWindowRateLimiter(max_events=150, window_seconds=300.0)
+
+# OTP resend budgets (audit M1): the endpoint is unauthenticated, so a strict
+# per-MAILBOX cap is the primary defense — it directly bounds inbox flooding
+# and Brevo plan burn on any single victim address. The per-IP layer stays
+# generous (classroom-sized NAT burst headroom) and only stops distributed
+# spraying from many addresses at once.
+otp_resend_email_limiter = SlidingWindowRateLimiter(max_events=3, window_seconds=1800.0)
+otp_resend_ip_limiter = SlidingWindowRateLimiter(max_events=60, window_seconds=1800.0)

@@ -5,6 +5,7 @@ import uuid
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.security import hash_password
 from app.database import AsyncSessionLocal, engine
 from app.models.attendance import Base, Course, User
@@ -103,6 +104,17 @@ async def seed_library_demo_books(db: AsyncSession) -> int:
 
 # Seeds initial faculty and student attendance accounts and demo course
 async def seed_attendance_demo_data(db: AsyncSession) -> None:
+    # M8 (audit): demo accounts carry committed weak passwords — never seed
+    # them outside an explicitly development environment. A production- or
+    # staging-postured DB (APP_ENV != "development", incl. this repo's .env
+    # today) skips them; local dev wanting demo data sets APP_ENV=development.
+    if settings.APP_ENV != "development":
+        logging.getLogger(__name__).warning(
+            "Attendance demo seeding skipped: APP_ENV=%s (demo creds are committed "
+            "and weak — they must only land in isolated dev databases)",
+            settings.APP_ENV,
+        )
+        return
     t_check = await db.execute(select(User).where(User.email == "teacher@university.edu"))
     teacher = t_check.scalars().first()
     if not teacher:

@@ -119,25 +119,36 @@ AcousticDetectionResult evaluate_chirp_native(
     return result;
 }
 
-// JNI entrypoint for high-speed acoustic chirp evaluation
-extern "C" JNIEXPORT jdoubleArray JNICALL
-Java_com_college_feature_attendance_audio_NativeAcousticEngine_evaluateChirpNative(
+// K3 (golden-gated port): zero-allocation entry — pins the caller's sample
+// buffer (no GetShortArrayElements copy) and writes the six result doubles
+// straight into a caller-reusable Kotlin DoubleArray (no NewDoubleArray per
+// chunk). Math is UNCHANGED: this shim calls the untouched
+// evaluate_chirp_native above, so old and new paths are bit-identical by
+// construction; the replay gate proves it per chunk on real captures.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_college_feature_attendance_audio_NativeAcousticEngine_evaluateChirpNativeInto(
     JNIEnv* env,
     jobject /* this */,
     jshortArray samples_array,
     jint sample_rate,
     jdouble target_freq_hz,
     jdouble snr_threshold_db,
-    jdouble ref_power_db
+    jdouble ref_power_db,
+    jdoubleArray out_array
 ) {
-    if (samples_array == nullptr) {
-        return nullptr;
+    if (samples_array == nullptr || out_array == nullptr) {
+        return JNI_FALSE;
     }
 
     const jsize len = env->GetArrayLength(samples_array);
-    jshort* samples = env->GetShortArrayElements(samples_array, nullptr);
+    if (env->GetArrayLength(out_array) < 6) {
+        return JNI_FALSE;
+    }
+
+    // Critical pinning: no copy, no per-chunk allocation on the DSP thread.
+    jshort* samples = static_cast<jshort*>(env->GetPrimitiveArrayCritical(samples_array, nullptr));
     if (samples == nullptr) {
-        return nullptr;
+        return JNI_FALSE;
     }
 
     AcousticDetectionResult res = evaluate_chirp_native(
@@ -149,12 +160,7 @@ Java_com_college_feature_attendance_audio_NativeAcousticEngine_evaluateChirpNati
         ref_power_db
     );
 
-    env->ReleaseShortArrayElements(samples_array, samples, JNI_ABORT);
-
-    jdoubleArray out_arr = env->NewDoubleArray(6);
-    if (out_arr == nullptr) {
-        return nullptr;
-    }
+    env->ReleasePrimitiveArrayCritical(samples_array, samples, JNI_ABORT);
 
     jdouble buf[6] = {
         res.is_detected,
@@ -164,6 +170,6 @@ Java_com_college_feature_attendance_audio_NativeAcousticEngine_evaluateChirpNati
         res.estimated_distance_cm,
         res.noise_power
     };
-    env->SetDoubleArrayRegion(out_arr, 0, 6, buf);
-    return out_arr;
+    env->SetDoubleArrayRegion(out_array, 0, 6, buf);
+    return JNI_TRUE;
 }

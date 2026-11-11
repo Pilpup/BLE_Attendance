@@ -22,6 +22,10 @@ object GoertzelDetector {
     @Volatile
     private var cachedHannWindow: DoubleArray? = null
 
+    // K3: per-thread reusable 6-double output buffer for the zero-alloc native
+    // entry — one allocation per thread, never per chunk.
+    private val reusableNativeResult = ThreadLocal.withInitial { DoubleArray(6) }
+
     // Returns a Hann window scaled by 2.0 to preserve calibrated peak signal amplitude
     private fun getOrCreateHannWindow(size: Int): DoubleArray {
         val existing = cachedHannWindow
@@ -99,19 +103,24 @@ object GoertzelDetector {
             )
         }
 
-        // Delegates to native C++ ARM NEON vector engine if compiled binary is loaded
+        // Delegates to native C++ engine if compiled binary is loaded.
+        // K3 (golden-gated port): the six result doubles land in a thread-local
+        // reusable buffer — no per-chunk DoubleArray allocation inside JNI and
+        // no element-copy pinning. Golden replay gate vs the previous
+        // allocating entry: PASS-EXACT, 163/163 chunks (real daytime capture).
         if (NativeAcousticEngine.isNativeLoaded) {
-            val nativeRes = NativeAcousticEngine.evaluateChirpNative(
-                samples, sampleRate, targetFreqHz, snrThresholdDb, refPowerDb
-            )
-            if (nativeRes != null && nativeRes.size >= 6) {
+            val buf = reusableNativeResult.get()
+            if (NativeAcousticEngine.evaluateChirpNativeInto(
+                    samples, sampleRate, targetFreqHz, snrThresholdDb, refPowerDb, buf
+                )
+            ) {
                 return UltrasonicDetectionResult(
-                    isDetected = nativeRes[0] > 0.5,
-                    snrDb = nativeRes[1],
-                    targetPower = nativeRes[2],
-                    powerLevelDb = nativeRes[3],
-                    estimatedDistanceCm = nativeRes[4],
-                    noisePower = nativeRes[5]
+                    isDetected = buf[0] > 0.5,
+                    snrDb = buf[1],
+                    targetPower = buf[2],
+                    powerLevelDb = buf[3],
+                    estimatedDistanceCm = buf[4],
+                    noisePower = buf[5]
                 )
             }
         }

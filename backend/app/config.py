@@ -1,5 +1,8 @@
 from typing import Optional
 
+import secrets
+
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -8,10 +11,15 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/ble_attendance"
     APP_ENV: str = "development"
     API_V1_STR: str = "/api/v1"
-    JWT_SECRET_KEY: str = "7f9d8a4b2c1e6f0a3e5b7c9d1a3f5b7c9e1d3a5b7c9f1a3e5b7c9d1a3f5b7c9e"
+    # C1 residue (audit): NO tracked secret literals. When the env var is
+    # absent the fallback is random per boot — a fresh fork never runs a
+    # git-public secret. Dev restarts force re-login (cheap: OTP re-login);
+    # real deployments set both via environment variables and the production
+    # guard refuses anything weak.
+    JWT_SECRET_KEY: str = Field(default_factory=lambda: secrets.token_urlsafe(48))
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 h — stolen tokens must age out; OTP re-login is cheap
-    FACULTY_SIGNUP_SECRET: str = "fff791e68ec68434901e256c293f0724"
+    FACULTY_SIGNUP_SECRET: str = Field(default_factory=lambda: secrets.token_urlsafe(24))
 
     # Email configuration for OTP verification and two-factor authentication
     BREVO_API_KEY: str = ""
@@ -34,12 +42,13 @@ class Settings(BaseSettings):
 # Global application configuration instance
 settings = Settings()
 
-# These literals are COMMITTED in this public repository and must never
-# protect a production deployment. Deployments override them via environment
-# variables; the startup guard below refuses to boot otherwise.
+# Historical values once COMMITTED to this public repository (recoverable
+# from git history). Pinned here purely as a denylist: pasting them back
+# cannot pass the production guard. Rotation moved live deployments to
+# env-provided secrets; these strings authorize nothing anymore.
 INSECURE_DEFAULT_SECRETS = {
-    "JWT_SECRET_KEY": settings.JWT_SECRET_KEY,
-    "FACULTY_SIGNUP_SECRET": settings.FACULTY_SIGNUP_SECRET,
+    "JWT_SECRET_KEY": "7f9d8a4b2c1e6f0a3e5b7c9d1a3f5b7c9e1d3a5b7c9f1a3e5b7c9d1a3f5b7c9e",
+    "FACULTY_SIGNUP_SECRET": "fff791e68ec68434901e256c293f0724",
 }
 
 # Fragments that cannot occur in a genuine production secret — operators set
