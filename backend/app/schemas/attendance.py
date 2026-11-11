@@ -148,11 +148,11 @@ class SessionCreateRequest(BaseModel):
     course_code: Optional[str] = Field(None, max_length=50)
     course_name: Optional[str] = Field(None, max_length=200)
     session_token: str = Field(..., max_length=32, description="Ephemeral token for this class")
-    session_salt: str = Field(
-        ...,
-        min_length=4,
-        max_length=8,
-        description="4-char salt distributed ONLY via the teacher's BLE beacon (S:<ID>:<SALT>)",
+    # H5: server-generated; client-supplied value is ignored.
+    session_salt: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="Ignored on create (server generates the canonical salt).",
     )
     total_enrolled: int = Field(default=0, ge=0)
     # Teacher-declared class identity for the eligibility gate. Preferred over
@@ -254,6 +254,10 @@ class AttendanceSessionResponse(BaseModel):
     course_id: UUID
     teacher_id: UUID
     session_token: str
+    # H5: canonical salt (server-generated, high entropy) — teacher keeps it
+    # to derive/refresh wire tokens. Wire token = current BLE beacon salt.
+    session_salt: Optional[str] = None
+    session_wire_salt: Optional[str] = None
     status: str
     started_at: datetime
     ended_at: Optional[datetime] = None

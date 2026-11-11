@@ -87,6 +87,9 @@ data class AttendanceSessionResponse(
     val id: String,
     @SerializedName("course_id") val courseId: String,
     @SerializedName("session_token") val sessionToken: String,
+    // H5: canonical (server-generated) and derived wire salt for BLE beacon.
+    @SerializedName("session_salt") val sessionSalt: String? = null,
+    @SerializedName("session_wire_salt") val sessionWireSalt: String? = null,
     val status: String,
     @SerializedName("total_verified") val totalVerified: Int,
     @SerializedName("total_spoofers") val totalSpoofers: Int,

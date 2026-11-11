@@ -19,19 +19,17 @@ class BleScanner(
     companion object {
         private const val TAG = "BleScanner"
 
-        // R11 (review §2.1): the full set of payload shapes AttendanceViewModel
-        // actually consumes (trim + startsWith checks at :1315/:1341/:1368) —
-        // teacher beacon "S:"/"SESSION:", air verdict "V:", and the 8-char peer
-        // probe "<4-char session><4-char peer id>". The VM additionally
-        // constrains probes to the latched session id, which the scanner cannot
-        // know — so length==8 here must stay the looser superset. Everything
-        // else (foreign advertisers, garbled fragments) previously crossed the
-        // thread bridge only to be throttled-logged; now it never allocates or
-        // posts at all.
+        // R11 + H5: payload shapes the VM consumes — teacher beacon (legacy
+        // S:/SESSION: and H5 compact '/'+token+wire[+sem]), air verdict (legacy
+        // V: and H5 compact '\'+id), and 8-char peer probe "<session4><peer4>".
+        // VM further constrains probes to the latched session; length==8 stays
+        // the looser superset here. Legacy prefixes kept for mixed-version safety.
         fun looksLikeAttendanceMessage(messageText: String): Boolean {
             val msg = messageText.trim()
             if (msg.isEmpty()) return false
-            return msg.startsWith("S:") ||
+            return msg.startsWith("/") ||      // H5 beacon: /TTTTssss[sem]
+                    msg.startsWith("\\") ||    // H5 verdict: \IIII
+                    msg.startsWith("S:") ||
                     msg.startsWith("SESSION:") ||
                     msg.startsWith("V:") ||
                     msg.length == 8
@@ -115,12 +113,12 @@ class BleScanner(
         override fun onScanResult(callbackType: Int, result: ScanResult) {
             super.onScanResult(callbackType, result)
 
-            // R11 + K4: binder-thread gates BEFORE allocating a payload String
-            // or posting to the main looper. Weak signals die first (heap/GC
-            // cut), then a raw-byte shape precheck rejects non-attendance
-            // payloads without ever allocating a String — the VM's accepted
-            // shapes are S:/SESSION: beacons, V: air verdicts, and 8-char peer
-            // probes (length==8 superset; scanner can't know the session id).
+            // R11 + K4 + H5: binder-thread gates BEFORE allocating a payload
+            // String or posting to the main looper. Weak signals die first
+            // (heap/GC cut), then raw-byte shape precheck rejects non-
+            // attendance payloads without String alloc. Accepted shapes:
+            // beacon '/' (H5) or S:/SESSION: (legacy), verdict '\' (H5) or V:
+            // (legacy), and 8-char peer probe (length==8 superset).
             val rssi = result.rssi
             if (rssi < -95) return
 
@@ -137,14 +135,15 @@ class BleScanner(
 
             if (serviceDataBytes == null || serviceDataBytes.isEmpty()) return
 
-            // Raw-byte shape precheck (allocation-free): pass only S:/SESSION:,
-            // V:, or exact 8-byte probe candidates.
+            // Raw-byte shape precheck (allocation-free): pass beacons, verdicts,
+            // or exact 8-byte probe candidates.
             val len = serviceDataBytes.size
-            val isBeaconOrVerdict = len >= 2 &&
-                serviceDataBytes[1] == 0x3A.toByte() && // ':'
-                (serviceDataBytes[0] == 0x53.toByte() || // 'S'
-                    serviceDataBytes[0] == 0x56.toByte()) // 'V'
-            if (!isBeaconOrVerdict && len != 8) return
+            val b0 = serviceDataBytes[0]
+            val isBeacon = b0 == 0x2F.toByte() || // '/' H5 beacon
+                (b0 == 0x53.toByte() && len >= 2 && serviceDataBytes[1] == 0x3A.toByte()) // 'S:'
+            val isVerdict = b0 == 0x5C.toByte() || // '\' H5 verdict
+                (b0 == 0x56.toByte() && len >= 2 && serviceDataBytes[1] == 0x3A.toByte()) // 'V:'
+            if (!isBeacon && !isVerdict && len != 8) return
 
             val messageText = String(serviceDataBytes, Charsets.UTF_8)
             // Second gate: canonical shape check (trim-aware, SESSION: prefix).

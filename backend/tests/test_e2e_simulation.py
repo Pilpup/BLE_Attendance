@@ -99,15 +99,16 @@ async def test_30_student_classroom_mesh_simulation():
         )
         spoofer_headers = {"Authorization": f"Bearer {spoofer_token}"}
 
-        # Phase 3: Teacher starts Attendance Session (salt registered, then broadcast ONLY via BLE)
+        # Phase 3: Teacher starts Attendance Session (H5: server generates salt)
         session_create_res = await client.post(
             "/api/v1/attendance/sessions",
             headers=teacher_headers,
-            json={"session_token": "89F2", "session_salt": "Y7Q9", "total_enrolled": 30},
+            json={"session_token": "89F2", "total_enrolled": 30},
         )
         assert session_create_res.status_code in [200, 201]
         session_data = session_create_res.json()
         session_id = session_data["id"]
+        wire_salt = session_data["session_wire_salt"]
         assert session_data["session_token"] == "89F2"
         assert session_data["status"] == "ACTIVE"
 
@@ -139,40 +140,44 @@ async def test_30_student_classroom_mesh_simulation():
         # Cluster 4 (ST13-ST17)
         # Cluster 5 (ST18-ST21 with OF04)
         # Cluster 6 (ST22-ST25)
+        # H3: mesh must form one enrollment-anchored component (25/30, no face
+        # evidence required when face set unknown). Cross-cluster mutual bridges
+        # (ST05<->ST06, ST09<->ST10, ST12<->ST13, ST17<->ST18, ST21<->ST22)
+        # connect desk clusters into a single classroom mesh.
         cluster_reports = {
             "ST01": (["ST02", "ST03"], None),
             "ST02": (["ST01", "ST03"], None),
-            "ST03": (["ST01", "ST02"], None),
+            "ST03": (["ST01", "ST02", "ST04"], None),
             "ST04": (["ST03", "ST05"], None),
-            "ST05": (["ST04"], None),
-            "ST06": (["ST07", "OF01"], {"OF01": ["ST06", "ST07"]}),
-            "ST07": (["ST06", "OF01"], None),
+            "ST05": (["ST04", "ST06"], None),
+            "ST06": (["ST05", "ST07", "OF01"], {"OF01": ["ST06", "ST07"]}),
+            "ST07": (["ST06", "OF01", "ST08"], None),
             "ST08": (["ST07", "ST09"], None),
-            "ST09": (["ST08"], None),
-            "ST10": (["OF02", "ST11", "ST12"], None),
+            "ST09": (["ST08", "ST10"], None),
+            "ST10": (["ST09", "OF02", "ST11", "ST12"], None),
             "ST11": (["ST10", "OF02", "OF03"], None),
-            "ST12": (["OF03", "ST11", "ST10"], None),
-            "ST13": (["ST14", "ST15"], None),
+            "ST12": (["OF03", "ST11", "ST10", "ST13"], None),
+            "ST13": (["ST12", "ST14", "ST15"], None),
             "ST14": (["ST13", "ST15"], None),
-            "ST15": (["ST13", "ST14"], None),
+            "ST15": (["ST13", "ST14", "ST16"], None),
             "ST16": (["ST15", "ST17"], None),
-            "ST17": (["ST16"], None),
-            "ST18": (["OF04", "ST19"], {"OF04": ["ST18", "ST19"]}),
+            "ST17": (["ST16", "ST18"], None),
+            "ST18": (["ST17", "OF04", "ST19"], {"OF04": ["ST18", "ST19"]}),
             "ST19": (["ST18", "OF04", "ST20"], None),
             "ST20": (["ST19", "ST21"], None),
-            "ST21": (["ST20"], None),
-            "ST22": (["ST23", "ST24"], None),
+            "ST21": (["ST20", "ST22"], None),
+            "ST22": (["ST21", "ST23", "ST24"], None),
             "ST23": (["ST22", "ST24"], None),
             "ST24": (["ST22", "ST23", "ST25"], None),
             "ST25": (["ST24"], None),
         }
 
-        # Online students upload reports ( Beacon salt "Y7Q9" heard in-room from teacher's S: beacon )
+        # Online students upload reports (beacon wire salt heard in-room)
         # (the offline-voucher channel relayed_reports was removed as the C1
         # forgery fix; offline students now verify through the >=2-witness rule)
         for sid, (nbrs, _relayed) in cluster_reports.items():
             headers = {"Authorization": f"Bearer {student_tokens[sid]}"}
-            payload = {"neighbors": nbrs, "session_salt": "Y7Q9"}
+            payload = {"neighbors": nbrs, "session_salt": wire_salt}
             sub_res = await client.post(
                 "/api/v1/attendance/sessions/89F2/submit-neighbors",
                 headers=headers,
@@ -186,7 +191,7 @@ async def test_30_student_classroom_mesh_simulation():
         spoofer_sub = await client.post(
             "/api/v1/attendance/sessions/89F2/submit-neighbors",
             headers=spoofer_headers,
-            json={"neighbors": ["ST01"], "session_salt": "Y7Q9"},
+            json={"neighbors": ["ST01"], "session_salt": wire_salt},
         )
         assert spoofer_sub.status_code == 200
 

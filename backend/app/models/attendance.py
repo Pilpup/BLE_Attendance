@@ -121,7 +121,9 @@ class AttendanceSession(Base):
     course_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("courses.id"))
     teacher_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     session_token: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    session_salt: Mapped[Optional[str]] = mapped_column(String(8), nullable=True)
+    # H5: canonical salt is server-generated (high entropy). Wire salt for the
+    # BLE beacon is derived deterministically; widened from 8 to hold canonical.
+    session_salt: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     # Eligibility snapshot ("what class is this session FOR") set once at
     # creation from the teacher's selection or the course row. The student
     # gate compares in-memory at submit — no per-check-in joins.

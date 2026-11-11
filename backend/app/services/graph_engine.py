@@ -1,8 +1,14 @@
 from collections import deque
+from math import ceil
 
 
 # Audits classroom BLE discovery reports to verify attendance using mesh graph topology
-def audit_classroom_mesh(reports: dict[str, list[str]]) -> list[dict]:
+def audit_classroom_mesh(
+    reports: dict[str, list[str]],
+    *,
+    total_enrolled: int | None = None,
+    face_verified_keys: set[str] | None = None,
+) -> list[dict]:
     direct_mutuals: dict[str, list[str]] = {}
     results: list[dict] = []
     reports_sets: dict[str, set[str]] = {k: set(v) for k, v in reports.items()}
@@ -82,11 +88,70 @@ def audit_classroom_mesh(reports: dict[str, list[str]]) -> list[dict]:
             else:
                 verified_set.update(comp)
 
+    # H3 (audit): a mutual component must be ANCHORED to reality before its
+    # members become VERIFIED_PRESENT. Enrollment-anchored mode activates only
+    # when the caller knows the expected class size (total_enrolled > 0) —
+    # that is the production finalize path. Pure-topology callers/tests that
+    # omit anchors keep legacy shape-based verdicts. This closes the
+    # colluder-only-clique self-verify: 5 mutual reporters in a 40-seat class
+    # fail enroll_ratio and fall to NEEDS_REVIEW instead of auto-verified.
+    needs_review_components: dict[str, set[str]] = {}
+    enrollment_anchored = isinstance(total_enrolled, int) and total_enrolled > 0
+    face_set = {k.upper() for k in face_verified_keys} if face_verified_keys is not None else None
+    if enrollment_anchored and verified_set:
+        expected = total_enrolled
+        component_index = {node: comp for comp in components for node in comp}
+        candidate_comps: dict[int, set[str]] = {}
+        for node in list(verified_set):
+            comp = component_index.get(node)
+            if comp is not None:
+                candidate_comps[id(comp)] = comp
+
+        for comp in candidate_comps.values():
+            comp_size = len(comp)
+            enroll_ratio = comp_size / expected if expected > 0 else 0.0
+            # Face anchor: enforce only when meaningful evidence exists (a
+            # non-empty set). Unknown/empty evidence can't prove or disprove
+            # biometric coverage — requiring it would break sessions where
+            # face capture wasn't active.
+            if face_set:
+                face_count = len({n for n in comp if n.upper() in face_set})
+                face_ok = face_count >= ceil(0.5 * comp_size)
+            else:
+                face_ok = True
+
+            anchored = (
+                comp_size >= max(4, ceil(0.35 * expected))
+                and enroll_ratio >= 0.5
+                and face_ok
+            )
+            if not anchored:
+                for node in comp:
+                    needs_review_components[node] = comp
+                verified_set.difference_update(comp)
+
     # Evaluates presence status and calculates affinity scores for all reporting devices
     for student_id, claimed_neighbors in reports.items():
         mutuals = direct_mutuals.get(student_id, [])
 
-        if student_id in satellite_clusters:
+        if student_id in needs_review_components:
+            # H3: mutual component exists but cannot be anchored to the enrolled
+            # class / biometric evidence — hold for instructor review instead of
+            # auto-verifying. Never a spoofer verdict, never auto-present.
+            comp_nodes = sorted(list(needs_review_components[student_id]))
+            comp = needs_review_components[student_id]
+            face_count = len({n for n in comp if n.upper() in face_set}) if face_set else 0
+            status = "NEEDS_REVIEW"
+            method = "MESH_UNANCHORED"
+            affinity = 0.25
+            bridge = None
+            remarks = (
+                f"Mutual cluster [{', '.join(comp_nodes)}] not anchored to enrolled class "
+                f"(cluster {len(comp)}/{total_enrolled} enrolled, face evidence {face_count}) "
+                "- instructor review required"
+            )
+
+        elif student_id in satellite_clusters:
             # Flags disconnected satellite cluster detected outside classroom
             comp_nodes = sorted(list(satellite_clusters[student_id]))
             status = "ISOLATED_FLAGGED"

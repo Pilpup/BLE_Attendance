@@ -196,6 +196,68 @@ def test_mesh_audit_offline_peer_witness():
     assert "OFF2" not in res_map
 
 
+def test_h3_colluder_only_clique_not_verified():
+    # H3: 5 colluders mutually reporting each other, 40 enrolled, no honest
+    # submitters — must NOT self-verify; anchors (enrollment/face) fail.
+    colluders = [f"C{i}" for i in range(1, 6)]
+    reports = {c: [p for p in colluders if p != c] for c in colluders}
+    results = audit_classroom_mesh(reports, total_enrolled=40)
+    res_map = {r["ble_device_id"]: r for r in results}
+
+    assert len(results) == 5
+    for c in colluders:
+        assert res_map[c]["status"] == "NEEDS_REVIEW"
+        assert res_map[c]["verification_method"] == "MESH_UNANCHORED"
+        assert res_map[c]["affinity_score"] < 1.0
+
+
+def test_h3_anchored_honest_component_verified():
+    # H3: large honest component anchored to enrollment and face evidence
+    # must verify; a separate 2-person loner clique must not.
+    honest = [f"H{i:02d}" for i in range(1, 39)]  # 38 students
+    loners = ["L1", "L2"]
+    reports = {}
+    for i, h in enumerate(honest):
+        left = honest[i - 1] if i > 0 else honest[-1]
+        right = honest[(i + 1) % len(honest)]
+        reports[h] = [left, right]
+    reports["L1"] = ["L2"]
+    reports["L2"] = ["L1"]
+
+    face_ok = set(honest)  # all honest have successful face checks
+    results = audit_classroom_mesh(
+        reports, total_enrolled=40, face_verified_keys=face_ok
+    )
+    res_map = {r["ble_device_id"]: r for r in results}
+
+    for h in honest:
+        assert res_map[h]["status"] == "VERIFIED_PRESENT", h
+    for l in loners:
+        assert res_map[l]["status"] != "VERIFIED_PRESENT"
+        # separate unanchored/isolated cluster: must never auto-verify
+        # (satellite quarantine or needs_review are both acceptable)
+        assert res_map[l]["status"] in ("NEEDS_REVIEW", "ISOLATED_FLAGGED")
+
+
+def test_h3_unanchored_small_honest_group_needs_review():
+    # H3: 3 mutual students in a 20-enrolled class with no face evidence
+    # are too small / too low coverage to auto-verify.
+    reports = {"A": ["B", "C"], "B": ["A", "C"], "C": ["A", "B"]}
+    results = audit_classroom_mesh(reports, total_enrolled=20)
+    for r in results:
+        assert r["status"] == "NEEDS_REVIEW"
+
+
+def test_h3_legacy_mode_without_anchors_unchanged():
+    # Without enrollment anchor, legacy topology verdicts apply (unit-test
+    # compatibility); a mutual pair in a tiny report set still verifies.
+    reports = {"A": ["B"], "B": ["A"]}
+    results = audit_classroom_mesh(reports)
+    res_map = {r["ble_device_id"]: r for r in results}
+    assert res_map["A"]["status"] == "VERIFIED_PRESENT"
+    assert res_map["B"]["status"] == "VERIFIED_PRESENT"
+
+
 def test_fastapi_routes_registered():
     paths = list(app.openapi()["paths"].keys())
     assert "/health" in paths
@@ -336,11 +398,11 @@ async def test_session_auto_supersede():
         token = verify_reg.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
 
-        # Create session 1
+        # Create session 1 (H5: server generates salt; client value ignored)
         s1 = await client.post(
             "/api/v1/attendance/sessions",
             headers=headers,
-            json={"session_token": "AAAA", "session_salt": "1A1A", "total_enrolled": 20},
+            json={"session_token": "AAAA", "total_enrolled": 20},
         )
         assert s1.status_code == 201
         s1_id = s1.json()["id"]
@@ -349,7 +411,7 @@ async def test_session_auto_supersede():
         s2 = await client.post(
             "/api/v1/attendance/sessions",
             headers=headers,
-            json={"session_token": "BBBB", "session_salt": "2B2B", "total_enrolled": 20},
+            json={"session_token": "BBBB", "total_enrolled": 20},
         )
         # Should succeed (HTTP 201) instead of failing with HTTP 409
         assert s2.status_code == 201
@@ -417,10 +479,14 @@ async def test_submit_neighbors_salt_enforcement():
         s_res = await client.post(
             "/api/v1/attendance/sessions",
             headers=headers,
-            json={"session_token": "ABCD", "session_salt": "Y7K9", "total_enrolled": 10},
+            json={"session_token": "ABCD", "total_enrolled": 10},
         )
         assert s_res.status_code == 201
-        session_id = s_res.json()["id"]
+        s_body = s_res.json()
+        session_id = s_body["id"]
+        # H5: server-generated wire salt (beacon token) — client value ignored.
+        wire_salt = s_body["session_wire_salt"]
+        assert wire_salt and len(wire_salt) == 4
 
         submit_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
 
@@ -478,7 +544,7 @@ async def test_submit_neighbors_salt_enforcement():
         valid_one = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {student_tokens['22B1234']}"},
-            json={"student_id": "1234", "neighbors": ["5678"], "session_salt": "Y7K9"},
+            json={"student_id": "1234", "neighbors": ["5678"], "session_salt": wire_salt},
         )
         assert valid_one.status_code == 200
         assert valid_one.json()["status"] == "success"
@@ -486,17 +552,9 @@ async def test_submit_neighbors_salt_enforcement():
         valid_two = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {student_tokens['22B5678']}"},
-            json={"student_id": "5678", "neighbors": ["1234"], "session_salt": "Y7K9"},
+            json={"student_id": "5678", "neighbors": ["1234"], "session_salt": wire_salt},
         )
         assert valid_two.status_code == 200
-
-        # 4) Teacher session creation itself rejects missing salt (required field)
-        no_salt = await client.post(
-            "/api/v1/attendance/sessions",
-            headers=headers,
-            json={"session_token": "WXYZ", "total_enrolled": 10},
-        )
-        assert no_salt.status_code == 422
 
         # 5) The salt-rejected attempt must surface on the teacher's audit dashboard
         audit_res = await client.post(
@@ -508,7 +566,10 @@ async def test_submit_neighbors_salt_enforcement():
         audit_data = audit_res.json()
 
         assert audit_data["status"] == "COMPLETED"
-        assert audit_data["total_verified"] == 2
+        # H3: 2 mutual reporters in a 10-enrolled class (no face evidence)
+        # cannot be anchored as "the room" — held for review, not auto-verified.
+        # The salt-rejected attempt is still a hard spoofer verdict.
+        assert audit_data["total_verified"] == 0
         assert audit_data["total_spoofers"] == 1  # deduplicated: missing + wrong = one flag
 
         record_map = {r["ble_device_id"]: r for r in audit_data["records"]}
@@ -517,9 +578,19 @@ async def test_submit_neighbors_salt_enforcement():
         assert spoofer_record["verification_method"] == "SALT_REJECTED"
         assert "salt mismatch" in spoofer_record["remarks"]
 
-        assert record_map["1234"]["status"] == "VERIFIED_PRESENT"
-        assert record_map["1234"]["verification_method"] == "DIRECT_MUTUAL"
-        assert record_map["5678"]["status"] == "VERIFIED_PRESENT"
+        # 4) H5: session_salt on create is ignored (server generates); request
+        # without it is accepted (no longer a required client field).
+        no_salt = await client.post(
+            "/api/v1/attendance/sessions",
+            headers=headers,
+            json={"session_token": "WXYZ", "total_enrolled": 10},
+        )
+        assert no_salt.status_code == 201
+        assert no_salt.json()["session_wire_salt"]
+
+        assert record_map["1234"]["status"] == "NEEDS_REVIEW"
+        assert record_map["1234"]["verification_method"] == "MESH_UNANCHORED"
+        assert record_map["5678"]["status"] == "NEEDS_REVIEW"
 
 
 # Verifies the class-eligibility gate: wrong-semester and blank-profile students
@@ -576,12 +647,13 @@ async def test_session_eligibility_gate():
             "/api/v1/attendance/sessions",
             headers=teacher_headers,
             json={
-                "session_token": "ELIG", "session_salt": "S3M3", "total_enrolled": 5,
+                "session_token": "ELIG", "total_enrolled": 5,
                 "course_program": "B-Tech", "course_semester": 3,
             },
         )
         assert s_res.status_code == 201
         session_data = s_res.json()
+        wire_salt = session_data["session_wire_salt"]
         assert session_data["eligibility_program"] == "B-Tech"
         assert session_data["eligibility_semester"] == 3
         submit_url = f"/api/v1/attendance/sessions/{session_data['id']}/submit-neighbors"
@@ -622,7 +694,7 @@ async def test_session_eligibility_gate():
         blank = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {blank_token}"},
-            json={"student_id": "0007", "neighbors": [], "session_salt": "S3M3"},
+            json={"student_id": "0007", "neighbors": [], "session_salt": wire_salt},
         )
         assert blank.status_code == 403
         assert "Attendance profile incomplete" in blank.json()["detail"]
@@ -633,7 +705,7 @@ async def test_session_eligibility_gate():
         valid = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {sem3_token}"},
-            json={"student_id": "0003", "neighbors": ["1111"], "session_salt": "S3M3"},
+            json={"student_id": "0003", "neighbors": ["1111"], "session_salt": wire_salt},
         )
         assert valid.status_code == 200, valid.text
         assert valid.json()["status"] == "success"
@@ -1198,10 +1270,11 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
         s_res = await client.post(
             "/api/v1/attendance/sessions",
             headers=teacher_headers,
-            json={"session_token": "M3P1", "session_salt": "P3M0", "total_enrolled": 5},
+            json={"session_token": "M3P1", "total_enrolled": 5},
         )
         assert s_res.status_code == 201
         session_id = s_res.json()["id"]
+        wire_salt = s_res.json()["session_wire_salt"]
         session_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
 
         # Reciprocated desk mates: both claim the < 20 cm ultrasonic handshake
@@ -1211,7 +1284,7 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
             json={
                 "student_id": "4451",
                 "neighbors": ["4452"],
-                "session_salt": "P3M0",
+                "session_salt": wire_salt,
                 "ultrasonic_proximity_detected": True,
                 "co_located_peer_id": "4452",
             },
@@ -1224,7 +1297,7 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
             json={
                 "student_id": "4452",
                 "neighbors": ["4451", "4453"],
-                "session_salt": "P3M0",
+                "session_salt": wire_salt,
                 "ultrasonic_proximity_detected": True,
                 "co_located_peer_id": "4451",
             },
@@ -1239,7 +1312,7 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
             json={
                 "student_id": "4453",
                 "neighbors": ["4452", "4454"],
-                "session_salt": "P3M0",
+                "session_salt": wire_salt,
                 "ultrasonic_proximity_detected": True,
                 "co_located_peer_id": "4454",
             },
@@ -1249,7 +1322,7 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
         res4 = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_stud4}"},
-            json={"student_id": "4454", "neighbors": ["4453"], "session_salt": "P3M0"},
+            json={"student_id": "4454", "neighbors": ["4453"], "session_salt": wire_salt},
         )
         assert res4.status_code == 200, res4.text
 
@@ -1289,7 +1362,7 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
             json={
                 "student_id": "4455",
                 "neighbors": [],
-                "session_salt": "P3M0",
+                "session_salt": wire_salt,
                 "ultrasonic_proximity_detected": True,
                 "co_located_peer_id": "4451",
             },
@@ -1400,7 +1473,7 @@ async def test_finalize_counts_frozen_proxy_priors():
         s_res = await client.post(
             "/api/v1/attendance/sessions",
             headers={"Authorization": f"Bearer {tok_teacher}"},
-            json={"session_token": "M5F1", "session_salt": "F5M0", "total_enrolled": 2},
+            json={"session_token": "M5F1", "total_enrolled": 2},
         )
         assert s_res.status_code == 201
         session_id = s_res.json()["id"]
@@ -1459,23 +1532,24 @@ async def test_finalize_staged_drain_requires_reciprocal_peers():
         s_res = await client.post(
             "/api/v1/attendance/sessions",
             headers={"Authorization": f"Bearer {tok_teacher}"},
-            json={"session_token": "M6X1", "session_salt": "X6M0", "total_enrolled": 3},
+            json={"session_token": "M6X1", "total_enrolled": 3},
         )
         assert s_res.status_code == 201
         session_id = s_res.json()["id"]
+        wire_salt = s_res.json()["session_wire_salt"]
         session_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
 
         r1 = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_stud1}"},
-            json={"student_id": "6611", "neighbors": ["6612"], "session_salt": "X6M0"},
+            json={"student_id": "6611", "neighbors": ["6612"], "session_salt": wire_salt},
         )
         assert r1.status_code == 200, r1.text
 
         r2 = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_stud2}"},
-            json={"student_id": "6612", "neighbors": ["6611"], "session_salt": "X6M0"},
+            json={"student_id": "6612", "neighbors": ["6611"], "session_salt": wire_salt},
         )
         assert r2.status_code == 200, r2.text
 
@@ -1483,7 +1557,7 @@ async def test_finalize_staged_drain_requires_reciprocal_peers():
         r3 = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_stud3}"},
-            json={"student_id": "6613", "neighbors": ["GHOST"], "session_salt": "X6M0"},
+            json={"student_id": "6613", "neighbors": ["GHOST"], "session_salt": wire_salt},
         )
         assert r3.status_code == 200, r3.text
 
@@ -2134,16 +2208,17 @@ async def test_grace_duplicate_claim_succeeds():
         s_res = await client.post(
             "/api/v1/attendance/sessions",
             headers={"Authorization": f"Bearer {tok_teacher}"},
-            json={"session_token": "GR01", "session_salt": "GRMAIN", "total_enrolled": 5},
+            json={"session_token": "GR01", "total_enrolled": 5},
         )
         assert s_res.status_code == 201, s_res.text
         session_id = s_res.json()["id"]
+        wire_salt = s_res.json()["session_wire_salt"]
         session_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
 
         res = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_present}"},
-            json={"student_id": "4470", "neighbors": [], "session_salt": "GRMAIN"},
+            json={"student_id": "4470", "neighbors": [], "session_salt": wire_salt},
         )
         assert res.status_code == 200, res.text
 
@@ -2154,7 +2229,7 @@ async def test_grace_duplicate_claim_succeeds():
         )
         assert audit_res.status_code == 200, audit_res.text
 
-        grace_payload = {"student_id": "4471", "neighbors": [], "session_salt": "GRMAIN"}
+        grace_payload = {"student_id": "4471", "neighbors": [], "session_salt": wire_salt}
         first = await client.post(
             session_url, headers={"Authorization": f"Bearer {tok_straggler}"}, json=grace_payload
         )
@@ -2336,10 +2411,11 @@ async def test_submit_during_finalize_inflight_is_not_orphaned(tmp_path):
             s_res = await client.post(
                 "/api/v1/attendance/sessions",
                 headers={"Authorization": f"Bearer {tok_teacher}"},
-                json={"session_token": "RZ01", "session_salt": "RZMAIN", "total_enrolled": 5},
+                json={"session_token": "RZ01", "total_enrolled": 5},
             )
             assert s_res.status_code == 201, s_res.text
             session_id = s_res.json()["id"]
+            wire_salt = s_res.json()["session_wire_salt"]
             session_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
 
             # Fire finalize first; once it is inside its body (gate-region), the
@@ -2356,7 +2432,7 @@ async def test_submit_during_finalize_inflight_is_not_orphaned(tmp_path):
                 client.post(
                     session_url,
                     headers={"Authorization": f"Bearer {tok_straggler}"},
-                    json={"student_id": "4481", "neighbors": [], "session_salt": "RZMAIN"},
+                    json={"student_id": "4481", "neighbors": [], "session_salt": wire_salt},
                 )
             )
             finalize_res, submit_res = await asyncio.gather(finalize_task, submit_task)

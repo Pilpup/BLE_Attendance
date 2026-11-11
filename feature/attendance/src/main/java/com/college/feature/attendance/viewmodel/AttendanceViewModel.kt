@@ -171,13 +171,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     private fun selectedClassSemester(): Int? =
         selectedCourse?.semester?.filter { it.isDigit() }?.toIntOrNull()
 
-    // Beacon broadcast payload: "S:<ID>:<SALT>[:<SEMESTER>]" — the optional 4th
-    // field tags the class semester so student phones can skip foreign-class
-    // beacons locally (UX only; the server eligibility gate is authoritative).
+    // H5 beacon: "/"+token(4)+wireSalt(4)+[semester(1)] — fixed positions,
+    // '/' distinguishes from 8-char peer probes and legacy S:/V: frames.
     val currentBroadcastToken: String
         get() = if (isSessionActive) {
             val sem = selectedClassSemester()
-            if (sem != null) "S:$sessionId:$sessionSalt:$sem" else "S:$sessionId:$sessionSalt"
+            if (sem != null) "/$sessionId$sessionSalt$sem" else "/$sessionId$sessionSalt"
         } else "IDLE"
 
     // Radio advertising configuration
@@ -980,6 +979,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     when (result) {
                         is NetworkResult.Success -> {
                             backendSessionId = result.data.id
+                            // H5: server generates canonical salt and returns the
+                            // wire token for the BLE beacon — adopt it so broadcasts
+                            // and check-ins agree.
+                            result.data.sessionWireSalt?.takeIf { it.isNotBlank() }?.let { sessionSalt = it }
                             cloudStatusMessage = "Cloud session active: $sessionId"
                             onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
                         }
@@ -1078,7 +1081,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // Option 2: Sequentially broadcast BLE air verdicts (V:<ID>:OK) for verified students
+    // Option 2: Sequentially broadcast BLE air verdicts (\<ID>) for verified students
     fun broadcastAirVerdicts(records: List<AttendanceRecordItem>) {
         val verified = records.filter { it.status == "VERIFIED_PRESENT" }
         if (verified.isEmpty()) return
@@ -1097,7 +1100,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     for (id in ids) {
                         if (!isActive) break
                         withContext(Dispatchers.Main) {
-                            onStartBroadcasting?.invoke("V:$id:OK", teacherTxPower)
+                            onStartBroadcasting?.invoke("\\$id", teacherTxPower)
                         }
                         delay(350L)
                     }
@@ -1149,7 +1152,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             }
         }
 
-        // Option 2: Blast air verdict over BLE for manually confirmed student
+        // Option 2: Blast air verdict over BLE for manually confirmed student (\<ID>)
         val idsToBroadcast = mutableListOf(recordOrDeviceId)
         target?.bleDeviceId?.let { if (it !in idsToBroadcast) idsToBroadcast.add(it) }
         target?.rollNumber?.let { if (it.isNotBlank() && it !in idsToBroadcast) idsToBroadcast.add(it) }
@@ -1160,7 +1163,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 for (id in idsToBroadcast) {
                     if (!isActive) break
                     withContext(Dispatchers.Main) {
-                        onStartBroadcasting?.invoke("V:$id:OK", teacherTxPower)
+                        onStartBroadcasting?.invoke("\\$id", teacherTxPower)
                     }
                     delay(350L)
                 }
@@ -1446,10 +1449,15 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         if (isTeacherMode) return
 
         // Process teacher air verdict packets with offline/online gating
-        if (cleanMsg.startsWith("V:")) {
-            val parts = cleanMsg.split(":")
-            if (parts.size >= 3 && parts[2] == "OK") {
-                val targetId = parts[1].trim()
+        // H5: '\'+targetId (compact), legacy V:<id>:OK
+        if (cleanMsg.startsWith("\\") || cleanMsg.startsWith("V:")) {
+            val targetId = if (cleanMsg.startsWith("\\")) {
+                cleanMsg.substring(1).trim()
+            } else {
+                val parts = cleanMsg.split(":")
+                if (parts.size >= 3 && parts[2] == "OK") parts[1].trim() else ""
+            }
+            if (targetId.isNotEmpty()) {
                 val isMatch = targetId.equals(studentShortId, ignoreCase = true) ||
                         targetId.equals(currentRollNumber, ignoreCase = true) ||
                         (targetId.isNotEmpty() && currentRollNumber.endsWith(targetId, ignoreCase = true))
@@ -1467,25 +1475,35 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     return
                 }
             }
+            if (cleanMsg.startsWith("\\")) return
         }
 
-        // Teacher beacon format (S:<SessionID>:<Salt>[:<Semester>]). Beacons are
-        // POOLED, not latched: see the latch-hardening block above. The first
-        // beacon opens the decision window; the strongest candidate wins.
-        val isBeacon = cleanMsg.startsWith("S:") || cleanMsg.startsWith("SESSION:")
+        // Teacher beacon: H5 '/'+token(4)+wireSalt(4)+[semester], legacy S:/SESSION:
+        val isBeacon = cleanMsg.startsWith("/") || cleanMsg.startsWith("S:") || cleanMsg.startsWith("SESSION:")
         if (isBeacon && studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
-            val parts = cleanMsg.split(":")
-            if (parts.size >= 2) {
+            var bToken = ""
+            var bSalt = ""
+            var bSem: Int? = null
+            if (cleanMsg.startsWith("/") && cleanMsg.length >= 9) {
+                bToken = cleanMsg.substring(1, 5)
+                bSalt = cleanMsg.substring(5, 9)
+                bSem = if (cleanMsg.length >= 10) cleanMsg.substring(9, 10).toIntOrNull() else null
+            } else {
+                val parts = cleanMsg.split(":")
+                if (parts.size >= 2) {
+                    bToken = parts[1]
+                    bSalt = if (parts.size >= 3) parts[2] else ""
+                    bSem = parts.getOrNull(3)?.toIntOrNull()
+                }
+            }
+            if (bToken.isNotEmpty()) {
                 // Local class pre-filter (UX only — server gate is authoritative):
-                // a beacon tagged with a different semester is skipped WITHOUT
-                // latching, so the phone keeps listening for its own class.
-                val beaconSemester = parts.getOrNull(3)?.toIntOrNull()
                 val profileSemester = SessionManager.default.currentUser?.semester
-                if (beaconSemester != null && profileSemester != null && beaconSemester != profileSemester) {
-                    studentStatusMessage = "Nearby class is Semester $beaconSemester — your profile says Semester $profileSemester"
+                if (bSem != null && profileSemester != null && bSem != profileSemester) {
+                    studentStatusMessage = "Nearby class is Semester $bSem — your profile says Semester $profileSemester"
                     return
                 }
-                collectBeaconCandidate(parts[1], if (parts.size >= 3) parts[2] else "", rssi)
+                collectBeaconCandidate(bToken, bSalt, rssi)
             }
             return
         }
@@ -1500,7 +1518,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val sessionLen = detectedSessionId.length
         val isPeerProbe = cleanMsg.length == sessionLen + 4 &&
                 cleanMsg.startsWith(detectedSessionId) &&
-                !cleanMsg.startsWith("S:") && !cleanMsg.startsWith("SESSION:")
+                !cleanMsg.startsWith("S:") && !cleanMsg.startsWith("SESSION:") &&
+                !cleanMsg.startsWith("/") && !cleanMsg.startsWith("\\")
 
         if (isPeerProbe && canReceiveProbe && detectedSessionId != "----") {
             val peerId = cleanMsg.substring(sessionLen).uppercase()
