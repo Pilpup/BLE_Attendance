@@ -110,6 +110,14 @@ class SubmissionBuffer:
             self._last_accessed.pop(session_id, None)
             return self._buffers.pop(session_id, {})
 
+    # Returns staged submissions WITHOUT removing them. Finalize reads the
+    # buffer early and drains it only AFTER its DB commit, so a failure between
+    # read and commit can never permanently lose staged check-ins.
+    async def peek_submissions(self, session_id: str) -> dict[str, StagedSubmission]:
+        async with self._lock:
+            self._last_accessed[session_id] = time.time()
+            return dict(self._buffers.get(session_id, {}))
+
     # Clears staged submissions for a session upon cancellation
     async def clear_session(self, session_id: str) -> None:
         async with self._lock:

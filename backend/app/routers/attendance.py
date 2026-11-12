@@ -15,7 +15,7 @@ from typing import AsyncGenerator, Dict, List, Optional, Union
 logger = logging.getLogger("uvicorn.error")
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -93,13 +93,17 @@ def derive_wire_salt(canonical_salt: str, session_token: str, epoch: int = 0) ->
     return hmac.new(canonical_salt.encode(), msg, hashlib.sha256).hexdigest()[:4].upper()
 
 
-# M4: collision-resistant 4-char BLE/device key derived from canonical identity.
+# M4: collision-resistant 6-char BLE/device key derived from canonical identity.
 # Must match Android (full roll preferred, else full user UUID string).
+# 6 hex chars = 16.7M space: birthday collision odds drop from ~3.7% per
+# 70-student class (4 chars = 65,536) to ~0.015% — two honest students can no
+# longer share one attendance row. Key travels in JSON/neighbors only, never
+# in the beacon payload, so the widened format costs no wire budget.
 def derive_short_device_key(canonical: str) -> str:
     src = (canonical or "").strip().upper()
     if not src:
-        return "0000"
-    return hashlib.sha256(src.encode("utf-8")).hexdigest()[:4].upper()
+        return "000000"
+    return hashlib.sha256(src.encode("utf-8")).hexdigest()[:6].upper()
 
 
 def user_device_key(user: User) -> str:
@@ -803,7 +807,26 @@ async def create_attendance_session(
         started_at=datetime.now(timezone.utc),
     )
     db.add(session)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # R-concurrency: a concurrent create committed the same ACTIVE token
+        # between our pre-insert SELECT and this commit — the partial unique
+        # index rejected us. Re-check to confirm the collision (any other
+        # IntegrityError re-raises): same 409 the pre-insert check produces.
+        await db.rollback()
+        conflict_res = await db.execute(
+            select(AttendanceSession).where(
+                AttendanceSession.session_token == payload.session_token,
+                AttendanceSession.status == "ACTIVE",
+            )
+        )
+        if conflict_res.scalars().first():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Session ID '{payload.session_token}' is already in use by an active session — pick a new session ID",
+            )
+        raise
     await db.refresh(session)
     session.records = []
 
@@ -965,6 +988,12 @@ async def finalize_attendance_session(
             prior_rec.affinity_score = item.affinity_score
             prior_rec.remarks = item.remarks
             prior_rec.reported_neighbors = item.reported_neighbors
+            new_score = item.game_score
+            if new_score is not None:
+                prior_rec.game_score = (
+                    new_score if prior_rec.game_score is None
+                    else max(prior_rec.game_score, new_score)
+                )
             continue
 
         if device_id in seen_devices or (item.student_id and item.student_id in seen_students):
@@ -990,12 +1019,15 @@ async def finalize_attendance_session(
                 bridge_device_id=item.bridge_device_id.upper() if item.bridge_device_id else None,
                 reported_neighbors=item.reported_neighbors,
                 remarks=item.remarks,
+                game_score=item.game_score,
                 recorded_at=datetime.now(timezone.utc),
             )
         )
 
-    # Drain cloud-staged submissions to avoid dropping internet check-ins
-    staged = await submission_buffer.pop_submissions(str(session_obj.id))
+    # Read cloud-staged submissions (PEEK, not pop): the buffer is drained
+    # only AFTER the durable commit below, so a failure between read and
+    # commit leaves the staged check-ins intact for a finalize retry.
+    staged = await submission_buffer.peek_submissions(str(session_obj.id))
 
     # M3-lite: materialize RECIPROCATED ultrasonic desk claims into the staged
     # drain — both parties must claim each other; one-sided claims are ignored.
@@ -1086,9 +1118,23 @@ async def finalize_attendance_session(
                 affinity_score=rec_affinity,
                 reported_neighbors=staged_sub.reported_neighbors,
                 remarks=rec_remarks,
+                game_score=staged_sub.game_score,
                 recorded_at=datetime.now(timezone.utc),
             )
         )
+
+    # Score gate at verdict time (parity with audit-and-finalize): a VERIFIED
+    # verdict without a passing chimp score can never stand — the legacy path
+    # previously produced VERIFIED rows with a NULL game_score, silently
+    # bypassing the challenge gate.
+    for rec in [*prior_records, *records_to_create]:
+        if rec.status == "VERIFIED_PRESENT" and (rec.game_score is None or rec.game_score < 15):
+            rec.status = "COGNITIVE_CHALLENGE_FAILED"
+            rec.verification_method = "COGNITIVE_CHALLENGE"
+            rec.remarks = (
+                f"Chimp challenge failed: score "
+                f"{rec.game_score if rec.game_score is not None else 'missing'} < 15"
+            )
 
     # Batch inserts all records and cleans staged submissions
     if records_to_create:
@@ -1122,9 +1168,12 @@ async def finalize_attendance_session(
     )
     session_obj.total_spoofers = spoofer_res.scalar() or 0
 
-    await submission_buffer.clear_session(str(session_obj.id))
     await db.commit()
     await db.refresh(session_obj)
+    # Staged buffer drained only now (it was peeked, never popped mid-flight):
+    # a failure before this commit left the check-ins staged for a finalize
+    # retry instead of losing them permanently.
+    await submission_buffer.pop_submissions(str(session_obj.id))
     # H2: clear face biometrics only AFTER the commit (final grace-window dedup
     # must keep its registry until the records are durable) — see finalize path.
     face_registry.clear_session(str(session_obj.id))
@@ -1217,8 +1266,12 @@ async def submit_student_neighbors(
             if (datetime.now(timezone.utc) - grace_ended_at).total_seconds() > 90:
                 raise HTTPException(status_code=400, detail="Attendance session has expired")
 
-    # TTL check: Auto-expire active sessions older than 5 minutes
-    if _is_session_stale(session_obj.started_at, minutes=5):
+    # TTL check: Auto-expire ACTIVE sessions older than 5 minutes. Status
+    # guard: without it, a straggler submit during the grace window of a
+    # COMPLETED session whose started_at is > 5 min old rewrote the committed
+    # COMPLETED status to EXPIRED — status corruption plus a dead grace path
+    # for long-running classes.
+    if session_obj.status == "ACTIVE" and _is_session_stale(session_obj.started_at, minutes=5):
         session_obj.status = "EXPIRED"
         session_obj.ended_at = datetime.now(timezone.utc)
         await db.commit()
@@ -1245,7 +1298,7 @@ async def submit_student_neighbors(
             remarks=eligibility_detail,
             student_id=current_user.id,
             reported_neighbors=[
-                n.strip().upper()[-4:] if len(n.strip()) >= 4 else n.strip().upper() for n in payload.neighbors
+                n.strip().upper()[-6:] if len(n.strip()) >= 6 else n.strip().upper() for n in payload.neighbors
             ],
         )
         await _commit_proxy_violation(db)
@@ -1294,7 +1347,7 @@ async def submit_student_neighbors(
             remarks="Remote check-in blocked: in-room beacon salt mismatch",
             student_id=current_user.id,
             reported_neighbors=[
-                n.strip().upper()[-4:] if len(n.strip()) >= 4 else n.strip().upper() for n in payload.neighbors
+                n.strip().upper()[-6:] if len(n.strip()) >= 6 else n.strip().upper() for n in payload.neighbors
             ],
         )
         await _commit_proxy_violation(db)
@@ -1311,8 +1364,8 @@ async def submit_student_neighbors(
     # (hash of full roll/UUID). Client-chosen keys cannot select another node.
     student_key = user_device_key(current_user)
 
-    normalized_neighbors = [n.strip().upper()[-4:] if len(n.strip()) >= 4 else n.strip().upper() for n in payload.neighbors]
-    normalized_close = [n.strip().upper()[-4:] if len(n.strip()) >= 4 else n.strip().upper() for n in (payload.close_neighbors or [])]
+    normalized_neighbors = [n.strip().upper()[-6:] if len(n.strip()) >= 6 else n.strip().upper() for n in payload.neighbors]
+    normalized_close = [n.strip().upper()[-6:] if len(n.strip()) >= 6 else n.strip().upper() for n in (payload.close_neighbors or [])]
 
     # Observability-only: payload fingerprint, logged BEFORE the face/ultrasonic
     # gates so even rejected attempts are tracked. If the same fingerprint ever
@@ -1382,7 +1435,7 @@ async def submit_student_neighbors(
         cluster_peers = set(normalized_close)
         cluster_peers.update(normalized_neighbors)
         if payload.co_located_peer_id:
-            co_key = payload.co_located_peer_id[-4:].upper() if len(payload.co_located_peer_id) >= 4 else payload.co_located_peer_id.upper()
+            co_key = payload.co_located_peer_id[-6:].upper() if len(payload.co_located_peer_id) >= 6 else payload.co_located_peer_id.upper()
             cluster_peers.add(co_key)
 
         # Run facial biometric matching in background thread pool
@@ -1453,7 +1506,7 @@ async def submit_student_neighbors(
         raw_claim = (payload.co_located_peer_id or "").strip()
         # Keys are already last-4-normalized everywhere on this route — mirror it
         # so the claim can pair against the partner's staged device key.
-        normalized_claim = raw_claim[-4:].upper() if len(raw_claim) >= 4 else raw_claim.upper()
+        normalized_claim = raw_claim[-6:].upper() if len(raw_claim) >= 6 else raw_claim.upper()
         if not normalized_claim or normalized_claim == "UNKNOWN" or normalized_claim == student_key:
             logger.warning(f"[Layer 4] Ultrasonic claim from {student_key} dropped: invalid co-located peer '{raw_claim}'")
         else:
@@ -1549,7 +1602,17 @@ async def submit_student_neighbors(
                     existing_record.remarks = (
                         f"In-flight check-in verified via mutual desk neighbor (score {challenge_score})"
                     )
-                    session_obj.total_verified = (session_obj.total_verified or 0) + 1
+                    # Atomic in-DB increment: two concurrent grace rescues
+                    # racing a read-modify-write on the ORM attribute lost one
+                    # increment (READ COMMITTED sees the old value twice).
+                    await db.execute(
+                        update(AttendanceSession)
+                        .where(AttendanceSession.id == target_session_id)
+                        .values(
+                            total_verified=func.coalesce(AttendanceSession.total_verified, 0) + 1
+                        )
+                        .execution_options(synchronize_session=False)
+                    )
                     logger.info(
                         f"[In-Flight Grace Audit] Rescued late arrival {student_key} "
                         f"-> VERIFIED_PRESENT (score {challenge_score}, mutual neighbor)"
@@ -1588,7 +1651,15 @@ async def submit_student_neighbors(
                 affinity = 1.00
                 bridge = None
                 remarks = f"In-flight check-in verified via mutual desk neighbor [{', '.join(verified_neighbors)}]"
-                session_obj.total_verified = (session_obj.total_verified or 0) + 1
+                # Atomic in-DB increment (see rescue path comment).
+                await db.execute(
+                    update(AttendanceSession)
+                    .where(AttendanceSession.id == target_session_id)
+                    .values(
+                        total_verified=func.coalesce(AttendanceSession.total_verified, 0) + 1
+                    )
+                    .execution_options(synchronize_session=False)
+                )
             elif normalized_neighbors:
                 rec_status = "ISOLATED_FLAGGED"
                 verif_method = "IN_FLIGHT_GRACE"
@@ -1697,8 +1768,11 @@ async def audit_and_finalize_session(
         await _populate_record_student_details(session_obj, db)
         return _attach_wire_salt(session_obj)
 
-    # Fetch all cloud-submitted student and relay reports from memory buffer and fallback database
-    staged = await submission_buffer.pop_submissions(str(session_obj.id))
+    # Fetch all cloud-submitted student and relay reports from memory buffer and
+    # fallback database. PEEK, not pop: the buffer is drained only AFTER the
+    # durable commit below, so a failure between read and commit (DB blip,
+    # flush error) leaves the staged check-ins intact for a finalize retry.
+    staged = await submission_buffer.peek_submissions(str(session_obj.id))
 
     sub_stmt = select(SessionSubmission).where(SessionSubmission.session_id == session_obj.id)
     sub_res = await db.execute(sub_stmt)
@@ -1810,29 +1884,12 @@ async def audit_and_finalize_session(
     seen_devices = set(prior_device_map.keys())
     seen_students = set(prior_student_map.keys())
 
-    # Batch resolve unmatched student roll numbers with ambiguity protection
-    unresolved_keys = [
-        item["ble_device_id"].upper()
-        for item in audit_results
-        if item["ble_device_id"].upper() not in user_map
-    ]
-    if unresolved_keys:
-        conditions = [User.roll_number.ilike(f"%{k}") for k in unresolved_keys]
-        matched_res = await db.execute(select(User).where(or_(*conditions)))
-        key_matches: dict[str, list[User]] = {}
-        for u in matched_res.scalars().all():
-            if u.roll_number:
-                u_roll = u.roll_number.upper()
-                for k in unresolved_keys:
-                    if u_roll.endswith(k):
-                        key_matches.setdefault(k, []).append(u)
-
-        # Bind student ID only if single candidate matches key
-        for k, matches in key_matches.items():
-            if len(matches) == 1:
-                user_map[k] = matches[0].id
-            else:
-                logger.warning(f"[Identity Collision] Key {k} matched multiple users: {[m.roll_number for m in matches]}")
+    # M5-consistent identity: only AUTHENTICATED submissions bind identities
+    # (user_map is filled exclusively from staged/DB submissions that carried a
+    # JWT account). The old ilike roll-suffix fallback tried to match 4-hex
+    # device keys against roll numbers ending in those hex chars — it almost
+    # never matched a real roll, and when it did it could bind an audit node to
+    # the WRONG account. Unresolvable keys now simply keep student_id NULL.
 
     verified_count = 0
     spoofer_count = 0
@@ -1936,6 +1993,10 @@ async def audit_and_finalize_session(
 
     await db.commit()
     await db.refresh(session_obj)
+    # Staged buffer drained only now (it was peeked, never popped mid-flight):
+    # a failure before this commit left the check-ins staged for a finalize
+    # retry instead of losing them permanently.
+    await submission_buffer.pop_submissions(str(session_obj.id))
     # H2: clear face biometrics only AFTER the commit — clearing before commit
     # left a blind window during the 90s grace period where a duplicate-face
     # resubmission hit an empty registry and slipped past dedup.
@@ -1977,14 +2038,17 @@ async def get_session_details(
                     r.roll_number = u.roll_number
                     r.student_name = u.full_name
 
-        # Filter records for student callers to protect classmate privacy
+        # Filter records for student callers to protect classmate privacy.
+        # Own-key match uses the hashed device key derived from the JWT account
+        # (the old roll[-4:] comparison never matched hashed keys, so rows with
+        # an unbound student_id were invisible to the student they belonged to).
         user_role = (current_user.role or "").upper() if current_user else ""
         if user_role == "STUDENT":
-            student_roll = (current_user.roll_number or "").upper()
+            own_key = user_device_key(current_user)
             session_obj.records = [
                 r for r in session_obj.records
                 if r.student_id == current_user.id
-                or (student_roll and r.ble_device_id.upper() == student_roll[-4:])
+                or r.ble_device_id.upper() == own_key
             ]
 
     return _attach_wire_salt(session_obj)

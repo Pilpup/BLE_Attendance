@@ -2853,6 +2853,7 @@ async def test_finalize_counts_are_recounted_from_db():
                 affinity_score=1.0,
                 reported_neighbors=[],
                 remarks="Prior verified row (grace-path style)",
+                game_score=20,
                 recorded_at=datetime.now(timezone.utc),
             )
             s.add(prior_row)
@@ -2870,6 +2871,7 @@ async def test_finalize_counts_are_recounted_from_db():
                         "verification_method": "DIRECT_MUTUAL",
                         "affinity_score": 1.0,
                         "reported_neighbors": [],
+                        "game_score": 20,
                     }
                 ]
             },
@@ -3169,11 +3171,152 @@ def test_compose_publishes_no_postgres_port():
     assert db.get("expose") is not None, "db must expose 5432 internally only"
 
 
+# Verifies the 5-minute TTL auto-expire applies ONLY to ACTIVE sessions: a
+# straggler submit during the grace window of a COMPLETED session whose
+# started_at is minutes old must NOT rewrite the committed status to EXPIRED
+# (the old TTL path corrupted finalized sessions in the DB).
+@pytest.mark.anyio
+async def test_ttl_expire_does_not_corrupt_completed_sessions():
+    import uuid
+    from datetime import datetime, timedelta, timezone
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import AttendanceRecord, AttendanceSession, Base
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with test_session_factory() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_teacher = await _register_test_teacher(client, test_session_factory, "Prof. TTL Guard", "ttl.teacher@univ.edu")
+        tok_stud = await _register_roll_student(client, test_session_factory, "TTL Student", "ttl.stud@univ.edu", "22B7781")
+
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"session_token": "TTLG", "total_enrolled": 1},
+        )
+        assert s_res.status_code == 201
+        session_data = s_res.json()
+        session_id = session_data["id"]
+        wire_salt = session_data["session_wire_salt"]
+
+        # Backdate: class ran long, finalize already committed, straggler
+        # submits during grace well past the 5-minute TTL from started_at
+        async with test_session_factory() as s:
+            row = (await s.execute(
+                select(AttendanceSession).where(AttendanceSession.id == uuid.UUID(session_id))
+            )).scalars().first()
+            row.started_at = datetime.now(timezone.utc) - timedelta(minutes=6)
+            row.status = "COMPLETED"
+            row.ended_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+            await s.commit()
+
+        submit_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
+        r = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {tok_stud}"},
+            json={"student_id": "7781", "neighbors": [], "session_salt": wire_salt},
+        )
+        # Grace path accepted (NOT the TTL 400 that used to fire here)
+        assert r.status_code == 200, r.text
+
+        async with test_session_factory() as s:
+            row = (await s.execute(
+                select(AttendanceSession).where(AttendanceSession.id == uuid.UUID(session_id))
+            )).scalars().first()
+            assert row.status == "COMPLETED", row.status  # never rewritten to EXPIRED
+            recs = (await s.execute(
+                select(AttendanceRecord).where(AttendanceRecord.session_id == uuid.UUID(session_id))
+            )).scalars().all()
+            assert len(recs) == 1
+            assert recs[0].status == "ISOLATED_FLAGGED"
+            assert recs[0].verification_method == "NONE"
 
 
+# Verifies the legacy /finalize verdict-time score gate (parity with
+# audit-and-finalize): a staged mutual-pair student whose score is below the
+# threshold must land COGNITIVE_CHALLENGE_FAILED — never VERIFIED_PRESENT with
+# a NULL game_score silently bypassing the challenge gate.
+@pytest.mark.anyio
+async def test_legacy_finalize_enforces_score_gate():
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
+    from app.database import get_db
+    from app.models.attendance import Base
 
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
+    test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
 
+    async def override_get_db():
+        async with test_session_factory() as s:
+            yield s
 
+    app.dependency_overrides[get_db] = override_get_db
 
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        from app.routers.attendance import derive_short_device_key
+
+        tok_teacher = await _register_test_teacher(client, test_session_factory, "Prof. Legacy Gate", "legacy.gate@univ.edu")
+        tok_a = await _register_roll_student(client, test_session_factory, "Gate Alpha", "gate.a@univ.edu", "22B6611")
+        tok_b = await _register_roll_student(client, test_session_factory, "Gate Beta", "gate.b@univ.edu", "22B6612")
+
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"session_token": "LGF1", "total_enrolled": 2},
+        )
+        assert s_res.status_code == 201
+        session_data = s_res.json()
+        session_id = session_data["id"]
+        wire_salt = session_data["session_wire_salt"]
+        k_a = derive_short_device_key("22B6611")
+        k_b = derive_short_device_key("22B6612")
+        submit_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
+
+        # Mutual pair: A passes the challenge gate (20), B's score is
+        # sub-threshold (8) — both stage cleanly (no face, no submit-time gate)
+        r_a = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {tok_a}"},
+            json={"game_score": 20, "student_id": k_a, "neighbors": [k_b], "session_salt": wire_salt},
+        )
+        assert r_a.status_code == 200, r_a.text
+        r_b = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {tok_b}"},
+            json={"game_score": 8, "student_id": k_b, "neighbors": [k_a], "session_salt": wire_salt},
+        )
+        assert r_b.status_code == 200, r_b.text
+
+        fin = await client.post(
+            f"/api/v1/attendance/sessions/{session_id}/finalize",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"records": []},
+        )
+        assert fin.status_code == 200, fin.text
+        fin_data = fin.json()
+        assert fin_data["total_verified"] == 1  # only A clears the gate
+        record_map = {r["ble_device_id"]: r for r in fin_data["records"]}
+        assert record_map[k_a]["status"] == "VERIFIED_PRESENT"
+        assert record_map[k_a]["game_score"] == 20
+        assert record_map[k_b]["status"] == "COGNITIVE_CHALLENGE_FAILED"
+        assert record_map[k_b]["game_score"] == 8
+        assert "score 8 < 15" in record_map[k_b]["remarks"]

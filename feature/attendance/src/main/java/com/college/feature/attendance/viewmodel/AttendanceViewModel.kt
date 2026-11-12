@@ -127,12 +127,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         get() = SessionManager.default.currentUser?.primaryRole?.name ?: "STUDENT"
 
     // Device roll number used for BLE broadcast packets
-    val defaultLocalId: String = UUID.randomUUID().toString().replace("-", "").take(4).uppercase()
+    val defaultLocalId: String = UUID.randomUUID().toString().replace("-", "").take(6).uppercase()
     var currentRollNumber: String by mutableStateOf(defaultLocalId)
     val studentId: String get() = currentRollNumber
-    // M4: collision-resistant 4-char BLE/device key derived from canonical identity
+    // M4: collision-resistant 6-char BLE/device key derived from canonical identity
     // (full roll preferred, else user UUID, else local id). Deterministic so Android
-    // and backend derive the same key; 4-char wire format preserved.
+    // and backend derive the same key; 6-hex = 16.7M space, ~0.015% birthday
+    // collision odds in a 70-student class (4-char was ~3.7%).
     val studentShortId: String get() = deriveShortDeviceId(canonicalDeviceIdentity())
 
     private fun canonicalDeviceIdentity(): String {
@@ -147,12 +148,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val src = canonical.trim().uppercase().ifEmpty { defaultLocalId }
         val digest = java.security.MessageDigest.getInstance("SHA-256")
             .digest(src.toByteArray(Charsets.UTF_8))
-        return digest.take(2).joinToString("") { "%02X".format(it) }
+        return digest.take(3).joinToString("") { "%02X".format(it) }
     }
 
-    // Valid neighbor short id: 4 chars of A–Z / 0–9 / '-' (roll-derived ids like
-    // "-001" or hex-like default ids). Anything outside this alphabet is wire junk.
-    private val peerIdPattern = Regex("[0-9A-Z-]{4}")
+    // Valid neighbor short id: 6 chars of A–Z / 0–9 / '-' (hex device keys).
+    // Anything outside this alphabet is wire junk.
+    private val peerIdPattern = Regex("[0-9A-Z-]{6}")
 
     var isAuthLoading: Boolean by mutableStateOf(false)
     var authErrorText: String? by mutableStateOf(null)

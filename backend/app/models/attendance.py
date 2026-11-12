@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -143,6 +143,19 @@ class AttendanceSession(Base):
     __table_args__ = (
         Index("ix_attendance_sessions_teacher_started", "teacher_id", "started_at"),
         Index("ix_attendance_sessions_course_started", "course_id", "started_at"),
+        # R-concurrency: the M2 pre-insert token-conflict check is
+        # SELECT-then-INSERT — two simultaneous creates with the same token
+        # both passed the SELECT and both committed, leaving two ACTIVE
+        # sessions that newest-wins resolution cross-routes. The partial
+        # unique index makes the DB the referee; the create route maps the
+        # resulting IntegrityError to the same 409.
+        Index(
+            "uq_active_session_token",
+            "session_token",
+            unique=True,
+            sqlite_where=text("status = 'ACTIVE'"),
+            postgresql_where=text("status = 'ACTIVE'"),
+        ),
     )
 
     # One-to-many relationship linking session to audited student records
