@@ -94,6 +94,7 @@ BEGIN
     CREATE INDEX IF NOT EXISTS ix_attendance_sessions_session_token ON attendance_sessions(session_token);
     CREATE INDEX IF NOT EXISTS ix_attendance_sessions_teacher_started ON attendance_sessions(teacher_id, started_at);
     CREATE INDEX IF NOT EXISTS ix_attendance_sessions_course_started ON attendance_sessions(course_id, started_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_active_session_token ON attendance_sessions (session_token) WHERE status = 'ACTIVE';
 
     -- attendance_records
     ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS session_id UUID;
