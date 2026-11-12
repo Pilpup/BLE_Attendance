@@ -93,6 +93,20 @@ def derive_wire_salt(canonical_salt: str, session_token: str, epoch: int = 0) ->
     return hmac.new(canonical_salt.encode(), msg, hashlib.sha256).hexdigest()[:4].upper()
 
 
+# M4: collision-resistant 4-char BLE/device key derived from canonical identity.
+# Must match Android (full roll preferred, else full user UUID string).
+def derive_short_device_key(canonical: str) -> str:
+    src = (canonical or "").strip().upper()
+    if not src:
+        return "0000"
+    return hashlib.sha256(src.encode("utf-8")).hexdigest()[:4].upper()
+
+
+def user_device_key(user: User) -> str:
+    canonical = user.roll_number if getattr(user, "roll_number", None) else str(user.id)
+    return derive_short_device_key(canonical)
+
+
 def current_wire_epoch() -> int:
     # Rotation hook: when WIRE_SALT_EPOCH_SECONDS > 0, derive per epoch and
     # accept current + previous in valid_wire_salts during the grace window.
@@ -1160,8 +1174,7 @@ async def submit_student_neighbors(
     # the attempt stays visible on the teacher's audit dashboard.
     eligibility_detail = student_eligibility_detail(session_obj, current_user)
     if eligibility_detail:
-        raw_key = current_user.roll_number or str(current_user.id).replace("-", "")[:4]
-        claimed_key = raw_key[-4:].upper() if len(raw_key) >= 4 else raw_key.upper()
+        claimed_key = user_device_key(current_user)
         logger.warning(
             f"[Eligibility Gate] Session {session_obj.id}: submit rejected for key {claimed_key} "
             f"(authenticated) — {eligibility_detail}"
@@ -1175,7 +1188,7 @@ async def submit_student_neighbors(
             remarks=eligibility_detail,
             student_id=current_user.id,
             reported_neighbors=[
-                n[-4:].upper() if len(n) >= 4 else n.upper() for n in payload.neighbors
+                n.strip().upper()[-4:] if len(n.strip()) >= 4 else n.strip().upper() for n in payload.neighbors
             ],
         )
         await _commit_proxy_violation(db)
@@ -1208,8 +1221,7 @@ async def submit_student_neighbors(
         # JWT identity only (auth is mandatory on submit): rejected keys always
         # belong to a real enrolled account — client-chosen keys are impossible,
         # so spoofer flags can no longer be framed onto honest classmates.
-        raw_key = current_user.roll_number or str(current_user.id).replace("-", "")[:4]
-        claimed_key = raw_key[-4:].upper() if len(raw_key) >= 4 else raw_key.upper()
+        claimed_key = user_device_key(current_user)
         logger.warning(
             f"[Salt Gate] Session {session_obj.id}: submit rejected for key {claimed_key} "
             f"(authenticated) — beacon salt mismatch"
@@ -1225,7 +1237,7 @@ async def submit_student_neighbors(
             remarks="Remote check-in blocked: in-room beacon salt mismatch",
             student_id=current_user.id,
             reported_neighbors=[
-                n[-4:].upper() if len(n) >= 4 else n.upper() for n in payload.neighbors
+                n.strip().upper()[-4:] if len(n.strip()) >= 4 else n.strip().upper() for n in payload.neighbors
             ],
         )
         await _commit_proxy_violation(db)
@@ -1238,14 +1250,12 @@ async def submit_student_neighbors(
     target_session_id = session_obj.id
     user_id = current_user.id
 
-    # Bind submission identity to the JWT account: client-chosen keys can no
-    # longer select someone else's graph node or merge accounts. Roll number
-    # when set; UUID prefix keeps record keys stable for users without one.
-    raw_key = current_user.roll_number or str(current_user.id).replace("-", "")[:4]
-    student_key = raw_key[-4:].upper() if len(raw_key) >= 4 else raw_key.upper()
+    # M4: bind submission identity to JWT account via collision-resistant key
+    # (hash of full roll/UUID). Client-chosen keys cannot select another node.
+    student_key = user_device_key(current_user)
 
-    normalized_neighbors = [n[-4:].upper() if len(n) >= 4 else n.upper() for n in payload.neighbors]
-    normalized_close = [n[-4:].upper() if len(n) >= 4 else n.upper() for n in (payload.close_neighbors or [])]
+    normalized_neighbors = [n.strip().upper()[-4:] if len(n.strip()) >= 4 else n.strip().upper() for n in payload.neighbors]
+    normalized_close = [n.strip().upper()[-4:] if len(n.strip()) >= 4 else n.strip().upper() for n in (payload.close_neighbors or [])]
 
     # Observability-only: payload fingerprint, logged BEFORE the face/ultrasonic
     # gates so even rejected attempts are tracked. If the same fingerprint ever

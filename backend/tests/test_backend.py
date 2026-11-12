@@ -491,7 +491,8 @@ async def test_submit_neighbors_salt_enforcement():
         submit_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
 
         # JWT is now mandatory on submit: register the three in-room students.
-        # Rolls are chosen so the audit's last-4 record keys stay 1234/3456/5678.
+        # M4: device keys are collision-resistant hashes of canonical roll/UUID.
+        from app.routers.attendance import derive_short_device_key
         student_tokens = {}
         for s_name, s_email, s_roll in [
             ("Gate Spoofer", "gate.spoofer@univ.edu", "22B3456"),
@@ -522,12 +523,15 @@ async def test_submit_neighbors_salt_enforcement():
             )
             assert s_verify.status_code == 201, s_verify.text
             student_tokens[s_roll] = s_verify.json()["access_token"]
+        k_spoofer = derive_short_device_key("22B3456")
+        k_alpha = derive_short_device_key("22B1234")
+        k_beta = derive_short_device_key("22B5678")
 
         # 1) Missing salt (absent student replaying only the session token from chat)
         missing = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {student_tokens['22B3456']}"},
-            json={"student_id": "3456", "neighbors": ["1234", "2345"]},
+            json={"student_id": k_spoofer, "neighbors": [k_alpha, "2345"]},
         )
         assert missing.status_code == 403
 
@@ -535,7 +539,7 @@ async def test_submit_neighbors_salt_enforcement():
         wrong = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {student_tokens['22B3456']}"},
-            json={"student_id": "3456", "neighbors": ["1234", "2345"], "session_salt": "WRNG"},
+            json={"student_id": k_spoofer, "neighbors": [k_alpha, "2345"], "session_salt": "WRNG"},
         )
         assert wrong.status_code == 403
         assert "Nice try" in wrong.json()["detail"]
@@ -544,7 +548,7 @@ async def test_submit_neighbors_salt_enforcement():
         valid_one = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {student_tokens['22B1234']}"},
-            json={"student_id": "1234", "neighbors": ["5678"], "session_salt": wire_salt},
+            json={"student_id": k_alpha, "neighbors": [k_beta], "session_salt": wire_salt},
         )
         assert valid_one.status_code == 200
         assert valid_one.json()["status"] == "success"
@@ -552,7 +556,7 @@ async def test_submit_neighbors_salt_enforcement():
         valid_two = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {student_tokens['22B5678']}"},
-            json={"student_id": "5678", "neighbors": ["1234"], "session_salt": wire_salt},
+            json={"student_id": k_beta, "neighbors": [k_alpha], "session_salt": wire_salt},
         )
         assert valid_two.status_code == 200
 
@@ -573,7 +577,7 @@ async def test_submit_neighbors_salt_enforcement():
         assert audit_data["total_spoofers"] == 1  # deduplicated: missing + wrong = one flag
 
         record_map = {r["ble_device_id"]: r for r in audit_data["records"]}
-        spoofer_record = record_map["3456"]
+        spoofer_record = record_map[k_spoofer]
         assert spoofer_record["status"] == "SPOOFER_REJECTED"
         assert spoofer_record["verification_method"] == "SALT_REJECTED"
         assert "salt mismatch" in spoofer_record["remarks"]
@@ -588,9 +592,9 @@ async def test_submit_neighbors_salt_enforcement():
         assert no_salt.status_code == 201
         assert no_salt.json()["session_wire_salt"]
 
-        assert record_map["1234"]["status"] == "NEEDS_REVIEW"
-        assert record_map["1234"]["verification_method"] == "MESH_UNANCHORED"
-        assert record_map["5678"]["status"] == "NEEDS_REVIEW"
+        assert record_map[k_alpha]["status"] == "NEEDS_REVIEW"
+        assert record_map[k_alpha]["verification_method"] == "MESH_UNANCHORED"
+        assert record_map[k_beta]["status"] == "NEEDS_REVIEW"
 
 
 # Verifies the class-eligibility gate: wrong-semester and blank-profile students
@@ -677,13 +681,15 @@ async def test_session_eligibility_gate():
             assert verified.status_code == 201, verified.text
             return verified.json()["access_token"]
 
+        from app.routers.attendance import derive_short_device_key
         # 1) Wrong-semester student (Sem 6, adjacent-room scenario) — WRONG salt too:
         #    eligibility gate must fire FIRST and its reason must be the class binding
         sem6_token = await register_student("elig.sem6@univ.edu", "22B0006", 6)
+        k0006 = derive_short_device_key("22B0006")
         wrong_class = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {sem6_token}"},
-            json={"student_id": "0006", "neighbors": [], "session_salt": "WRNG"},
+            json={"student_id": k0006, "neighbors": [], "session_salt": "WRNG"},
         )
         assert wrong_class.status_code == 403, wrong_class.text
         assert "Semester 3" in wrong_class.json()["detail"]
@@ -691,10 +697,11 @@ async def test_session_eligibility_gate():
 
         # 2) Blank-profile student (no semester) — rejected with fix-your-profile hint
         blank_token = await register_student("elig.blank@univ.edu", "22B0007", None)
+        k0007 = derive_short_device_key("22B0007")
         blank = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {blank_token}"},
-            json={"student_id": "0007", "neighbors": [], "session_salt": wire_salt},
+            json={"student_id": k0007, "neighbors": [], "session_salt": wire_salt},
         )
         assert blank.status_code == 403
         assert "Attendance profile incomplete" in blank.json()["detail"]
@@ -702,10 +709,11 @@ async def test_session_eligibility_gate():
         # 3) Matching Sem-3 student with the correct salt passes the gate and
         #    proceeds into the normal peer flow
         sem3_token = await register_student("elig.sem3@univ.edu", "22B0003", 3)
+        k0003 = derive_short_device_key("22B0003")
         valid = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {sem3_token}"},
-            json={"student_id": "0003", "neighbors": ["1111"], "session_salt": wire_salt},
+            json={"student_id": k0003, "neighbors": ["1111"], "session_salt": wire_salt},
         )
         assert valid.status_code == 200, valid.text
         assert valid.json()["status"] == "success"
@@ -746,10 +754,10 @@ async def test_session_eligibility_gate():
         assert audit_res.status_code == 200
         audit_data = audit_res.json()
         record_map = {r["ble_device_id"]: r for r in audit_data["records"]}
-        assert record_map["0006"]["verification_method"] == "ELIGIBILITY_REJECTED"
-        assert record_map["0006"]["status"] == "SPOOFER_REJECTED"
-        assert "Semester 3" in record_map["0006"]["remarks"]
-        assert record_map["0007"]["verification_method"] == "ELIGIBILITY_REJECTED"
+        assert record_map[k0006]["verification_method"] == "ELIGIBILITY_REJECTED"
+        assert record_map[k0006]["status"] == "SPOOFER_REJECTED"
+        assert "Semester 3" in record_map[k0006]["remarks"]
+        assert record_map[k0007]["verification_method"] == "ELIGIBILITY_REJECTED"
 
 
 # Verifies expired OTP cleanup behavior and purge on invalid submission
@@ -1260,12 +1268,17 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
+        from app.routers.attendance import derive_short_device_key
         tok_teacher = await _register_test_teacher(client, pair_db, "Prof. Desk Pair", "desk.pair@univ.edu")
         teacher_headers = {"Authorization": f"Bearer {tok_teacher}"}
         tok_stud1 = await _register_roll_student(client, pair_db, "Pair Alpha", "pair.alpha1@univ.edu", "22B4451")
         tok_stud2 = await _register_roll_student(client, pair_db, "Pair Beta", "pair.beta2@univ.edu", "22B4452")
         tok_stud3 = await _register_roll_student(client, pair_db, "Pair Gamma", "pair.gamma3@univ.edu", "22B4453")
         tok_stud4 = await _register_roll_student(client, pair_db, "Pair Delta", "pair.delta4@univ.edu", "22B4454")
+        k1 = derive_short_device_key("22B4451")
+        k2 = derive_short_device_key("22B4452")
+        k3 = derive_short_device_key("22B4453")
+        k4 = derive_short_device_key("22B4454")
 
         s_res = await client.post(
             "/api/v1/attendance/sessions",
@@ -1282,11 +1295,11 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
             session_url,
             headers={"Authorization": f"Bearer {tok_stud1}"},
             json={
-                "student_id": "4451",
-                "neighbors": ["4452"],
+                "student_id": k1,
+                "neighbors": [k2],
                 "session_salt": wire_salt,
                 "ultrasonic_proximity_detected": True,
-                "co_located_peer_id": "4452",
+                "co_located_peer_id": k2,
             },
         )
         assert res1.status_code == 200, res1.text  # staged normally — no instant 403
@@ -1295,11 +1308,11 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
             session_url,
             headers={"Authorization": f"Bearer {tok_stud2}"},
             json={
-                "student_id": "4452",
-                "neighbors": ["4451", "4453"],
+                "student_id": k2,
+                "neighbors": [k1, k3],
                 "session_salt": wire_salt,
                 "ultrasonic_proximity_detected": True,
-                "co_located_peer_id": "4451",
+                "co_located_peer_id": k1,
             },
         )
         assert res2.status_code == 200, res2.text
@@ -1310,11 +1323,11 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
             session_url,
             headers={"Authorization": f"Bearer {tok_stud3}"},
             json={
-                "student_id": "4453",
-                "neighbors": ["4452", "4454"],
+                "student_id": k3,
+                "neighbors": [k2, k4],
                 "session_salt": wire_salt,
                 "ultrasonic_proximity_detected": True,
-                "co_located_peer_id": "4454",
+                "co_located_peer_id": k4,
             },
         )
         assert res3.status_code == 200, res3.text
@@ -1322,7 +1335,8 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
         res4 = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_stud4}"},
-            json={"student_id": "4454", "neighbors": ["4453"], "session_salt": wire_salt},
+            json={"student_id": k4,
+             "neighbors": [k3], "session_salt": wire_salt},
         )
         assert res4.status_code == 200, res4.text
 
@@ -1339,16 +1353,16 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
         record_map = {r["ble_device_id"]: r for r in audit_data["records"]}
 
         # Reciprocated pair: both verdict rows transformed into the proxy violation
-        assert record_map["4451"]["status"] == "CO_LOCATED_SAME_DESK_PROXY"
-        assert record_map["4451"]["verification_method"] == "ULTRASONIC_ACOUSTIC_MATCH"
-        assert "with 4452" in record_map["4451"]["remarks"]
-        assert record_map["4452"]["status"] == "CO_LOCATED_SAME_DESK_PROXY"
-        assert record_map["4452"]["verification_method"] == "ULTRASONIC_ACOUSTIC_MATCH"
-        assert "with 4451" in record_map["4452"]["remarks"]
+        assert record_map[k1]["status"] == "CO_LOCATED_SAME_DESK_PROXY"
+        assert record_map[k1]["verification_method"] == "ULTRASONIC_ACOUSTIC_MATCH"
+        assert f"with {k2}" in record_map[k1]["remarks"]
+        assert record_map[k2]["status"] == "CO_LOCATED_SAME_DESK_PROXY"
+        assert record_map[k2]["verification_method"] == "ULTRASONIC_ACOUSTIC_MATCH"
+        assert f"with {k1}" in record_map[k2]["remarks"]
 
         # Unreciprocated claim: the benign BLE mesh verdict stands untouched
-        assert record_map["4453"]["status"] == "VERIFIED_PRESENT"
-        assert record_map["4454"]["status"] == "VERIFIED_PRESENT"
+        assert record_map[k3]["status"] == "VERIFIED_PRESENT"
+        assert record_map[k4]["status"] == "VERIFIED_PRESENT"
 
         assert audit_data["total_verified"] == 2
         assert audit_data["total_spoofers"] == 2  # ignored claim is not counted
@@ -1356,15 +1370,16 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
         # Post-finalize grace claim: mutuality is unevaluable (buffer already
         # popped) — the straggler gets a normal grace record, NOT a proxy row.
         tok_stud5 = await _register_roll_student(client, pair_db, "Pair Epsilon", "pair.epsilon5@univ.edu", "22B4455")
+        k5 = derive_short_device_key("22B4455")
         grace = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_stud5}"},
             json={
-                "student_id": "4455",
+                "student_id": k5,
                 "neighbors": [],
                 "session_salt": wire_salt,
                 "ultrasonic_proximity_detected": True,
-                "co_located_peer_id": "4451",
+                "co_located_peer_id": k1,
             },
         )
         assert grace.status_code == 200, grace.text
@@ -1374,7 +1389,7 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
                 await s.execute(
                     select(AttendanceRecord).where(
                         AttendanceRecord.session_id == uuid.UUID(session_id),
-                        AttendanceRecord.ble_device_id == "4455",
+                        AttendanceRecord.ble_device_id == k5,
                     )
                 )
             ).scalars().all()
@@ -1524,10 +1539,14 @@ async def test_finalize_staged_drain_requires_reciprocal_peers():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
+        from app.routers.attendance import derive_short_device_key
         tok_teacher = await _register_test_teacher(client, seal_db, "Prof. Reciprocity", "reciprocity@univ.edu")
         tok_stud1 = await _register_roll_student(client, seal_db, "Mutual One", "mutual.one@univ.edu", "22B6611")
         tok_stud2 = await _register_roll_student(client, seal_db, "Mutual Two", "mutual.two@univ.edu", "22B6612")
         tok_stud3 = await _register_roll_student(client, seal_db, "Fake Claimer", "fake.claimer@univ.edu", "22B6613")
+        k1 = derive_short_device_key("22B6611")
+        k2 = derive_short_device_key("22B6612")
+        k3 = derive_short_device_key("22B6613")
 
         s_res = await client.post(
             "/api/v1/attendance/sessions",
@@ -1542,14 +1561,14 @@ async def test_finalize_staged_drain_requires_reciprocal_peers():
         r1 = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_stud1}"},
-            json={"student_id": "6611", "neighbors": ["6612"], "session_salt": wire_salt},
+            json={"student_id": k1, "neighbors": [k2], "session_salt": wire_salt},
         )
         assert r1.status_code == 200, r1.text
 
         r2 = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_stud2}"},
-            json={"student_id": "6612", "neighbors": ["6611"], "session_salt": wire_salt},
+            json={"student_id": k2, "neighbors": [k1], "session_salt": wire_salt},
         )
         assert r2.status_code == 200, r2.text
 
@@ -1557,7 +1576,7 @@ async def test_finalize_staged_drain_requires_reciprocal_peers():
         r3 = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_stud3}"},
-            json={"student_id": "6613", "neighbors": ["GHOST"], "session_salt": wire_salt},
+            json={"student_id": k3, "neighbors": ["GHOST"], "session_salt": wire_salt},
         )
         assert r3.status_code == 200, r3.text
 
@@ -1573,28 +1592,28 @@ async def test_finalize_staged_drain_requires_reciprocal_peers():
         assert fin_data["total_spoofers"] == 0
         record_map = {r["ble_device_id"]: r for r in fin_data["records"]}
 
-        assert record_map["6611"]["status"] == "VERIFIED_PRESENT"
-        assert record_map["6611"]["verification_method"] == "BLE_MESH"
-        assert record_map["6611"]["affinity_score"] == 1.00
-        assert "mutual desk neighbor [6612]" in record_map["6611"]["remarks"]
+        assert record_map[k1]["status"] == "VERIFIED_PRESENT"
+        assert record_map[k1]["verification_method"] == "BLE_MESH"
+        assert record_map[k1]["affinity_score"] == 1.00
+        assert f"mutual desk neighbor [{k2}]" in record_map[k1]["remarks"]
 
         # R11-B: the finalize payload must carry users-joined names and rolls —
         # the teacher's live post-class screen renders from exactly this
         # response, and the "Student 20" fallback previously meant
         # student_name arrived NULL here (finalize never joined users).
-        assert record_map["6611"]["student_name"] == "Mutual One"
-        assert record_map["6611"]["roll_number"] == "22B6611"
-        assert record_map["6613"]["student_name"] == "Fake Claimer"
-        assert record_map["6613"]["roll_number"] == "22B6613"
+        assert record_map[k1]["student_name"] == "Mutual One"
+        assert record_map[k1]["roll_number"] == "22B6611"
+        assert record_map[k3]["student_name"] == "Fake Claimer"
+        assert record_map[k3]["roll_number"] == "22B6613"
 
-        assert record_map["6612"]["status"] == "VERIFIED_PRESENT"
-        assert "mutual desk neighbor [6611]" in record_map["6612"]["remarks"]
+        assert record_map[k2]["status"] == "VERIFIED_PRESENT"
+        assert f"mutual desk neighbor [{k1}]" in record_map[k2]["remarks"]
 
-        assert record_map["6613"]["status"] == "ISOLATED_FLAGGED"
-        assert record_map["6613"]["verification_method"] == "NONE"
-        assert record_map["6613"]["affinity_score"] == 0.50
-        assert "without confirmed desk neighbor" in record_map["6613"]["remarks"]
-        assert "HOST" in record_map["6613"]["remarks"]  # 'GHOST' -> last-4 key
+        assert record_map[k3]["status"] == "ISOLATED_FLAGGED"
+        assert record_map[k3]["verification_method"] == "NONE"
+        assert record_map[k3]["affinity_score"] == 0.50
+        assert "without confirmed desk neighbor" in record_map[k3]["remarks"]
+        assert "HOST" in record_map[k3]["remarks"]  # 'GHOST' -> last-4 key
 
 
 # Verifies hygiene guards: strict status whitelists on the TEACHER-OVERWRITE
@@ -2201,9 +2220,12 @@ async def test_grace_duplicate_claim_succeeds():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
+        from app.routers.attendance import derive_short_device_key
         tok_teacher = await _register_test_teacher(client, grace_db, "Prof. Grace Replay", "grace.replay@univ.edu")
         tok_present = await _register_roll_student(client, grace_db, "Grace Punctual", "grace.punctual@univ.edu", "22B4470")
         tok_straggler = await _register_roll_student(client, grace_db, "Grace Straggler", "grace.strag@univ.edu", "22B4471")
+        k_present = derive_short_device_key("22B4470")
+        k_straggler = derive_short_device_key("22B4471")
 
         s_res = await client.post(
             "/api/v1/attendance/sessions",
@@ -2218,7 +2240,7 @@ async def test_grace_duplicate_claim_succeeds():
         res = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_present}"},
-            json={"student_id": "4470", "neighbors": [], "session_salt": wire_salt},
+            json={"student_id": k_present, "neighbors": [], "session_salt": wire_salt},
         )
         assert res.status_code == 200, res.text
 
@@ -2229,7 +2251,7 @@ async def test_grace_duplicate_claim_succeeds():
         )
         assert audit_res.status_code == 200, audit_res.text
 
-        grace_payload = {"student_id": "4471", "neighbors": [], "session_salt": wire_salt}
+        grace_payload = {"student_id": k_straggler, "neighbors": [], "session_salt": wire_salt}
         first = await client.post(
             session_url, headers={"Authorization": f"Bearer {tok_straggler}"}, json=grace_payload
         )
@@ -2246,7 +2268,7 @@ async def test_grace_duplicate_claim_succeeds():
                 await s.execute(
                     select(AttendanceRecord).where(
                         AttendanceRecord.session_id == uuid.UUID(session_id),
-                        AttendanceRecord.ble_device_id == "4471",
+                        AttendanceRecord.ble_device_id == k_straggler,
                     )
                 )
             ).scalars().all()
@@ -2405,8 +2427,10 @@ async def test_submit_during_finalize_inflight_is_not_orphaned(tmp_path):
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
+            from app.routers.attendance import derive_short_device_key
             tok_teacher = await _register_test_teacher(client, race_db, "Prof. Race Gate", "race.gate@univ.edu")
             tok_straggler = await _register_roll_student(client, race_db, "Race Straggler", "race.strag@univ.edu", "22B4481")
+            k_straggler = derive_short_device_key("22B4481")
 
             s_res = await client.post(
                 "/api/v1/attendance/sessions",
@@ -2432,7 +2456,7 @@ async def test_submit_during_finalize_inflight_is_not_orphaned(tmp_path):
                 client.post(
                     session_url,
                     headers={"Authorization": f"Bearer {tok_straggler}"},
-                    json={"student_id": "4481", "neighbors": [], "session_salt": wire_salt},
+                    json={"student_id": k_straggler, "neighbors": [], "session_salt": wire_salt},
                 )
             )
             finalize_res, submit_res = await asyncio.gather(finalize_task, submit_task)
@@ -2445,7 +2469,7 @@ async def test_submit_during_finalize_inflight_is_not_orphaned(tmp_path):
                     await s.execute(
                         select(AttendanceRecord).where(
                             AttendanceRecord.session_id == uuid.UUID(session_id),
-                            AttendanceRecord.ble_device_id == "4481",
+                            AttendanceRecord.ble_device_id == k_straggler,
                         )
                     )
                 ).scalars().all()

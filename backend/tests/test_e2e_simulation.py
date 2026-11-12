@@ -99,6 +99,12 @@ async def test_30_student_classroom_mesh_simulation():
         )
         spoofer_headers = {"Authorization": f"Bearer {spoofer_token}"}
 
+        # M4: map logical ids (rolls) to collision-resistant device keys.
+        from app.routers.attendance import derive_short_device_key
+        k = {sid: derive_short_device_key(sid) for sid in online_student_ids + [spoofer_id]}
+        for of in ["OF01", "OF02", "OF03", "OF04"]:
+            k[of] = derive_short_device_key(of)
+
         # Phase 3: Teacher starts Attendance Session (H5: server generates salt)
         session_create_res = await client.post(
             "/api/v1/attendance/sessions",
@@ -177,7 +183,7 @@ async def test_30_student_classroom_mesh_simulation():
         # forgery fix; offline students now verify through the >=2-witness rule)
         for sid, (nbrs, _relayed) in cluster_reports.items():
             headers = {"Authorization": f"Bearer {student_tokens[sid]}"}
-            payload = {"neighbors": nbrs, "session_salt": wire_salt}
+            payload = {"neighbors": [k[n] for n in nbrs], "session_salt": wire_salt}
             sub_res = await client.post(
                 "/api/v1/attendance/sessions/89F2/submit-neighbors",
                 headers=headers,
@@ -191,7 +197,7 @@ async def test_30_student_classroom_mesh_simulation():
         spoofer_sub = await client.post(
             "/api/v1/attendance/sessions/89F2/submit-neighbors",
             headers=spoofer_headers,
-            json={"neighbors": ["ST01"], "session_salt": wire_salt},
+            json={"neighbors": [k["ST01"]], "session_salt": wire_salt},
         )
         assert spoofer_sub.status_code == 200
 
@@ -213,25 +219,28 @@ async def test_30_student_classroom_mesh_simulation():
 
         # Verify all 25 online students are marked present
         for sid in online_student_ids:
-            assert sid in record_map
-            assert record_map[sid]["status"] == "VERIFIED_PRESENT"
-            assert record_map[sid]["affinity_score"] >= 0.50
+            kid = k[sid]
+            assert kid in record_map, sid
+            assert record_map[kid]["status"] == "VERIFIED_PRESENT"
+            assert record_map[kid]["affinity_score"] >= 0.50
 
         # Verify the 4 offline students are FLAGGED_WITNESSED (each claimed by
         # two verified in-room reporters). Peer witnessing is hearsay, so they
         # surface for instructor confirmation instead of auto-verifying — two
         # colluding friends must not be able to ghost an absent classmate in.
         for off_id in ["OF01", "OF02", "OF03", "OF04"]:
-            assert off_id in record_map
-            assert record_map[off_id]["status"] == "FLAGGED_WITNESSED"
-            assert record_map[off_id]["affinity_score"] == 0.00
-            assert "Instructor confirmation required" in record_map[off_id]["remarks"]
+            kid = k[off_id]
+            assert kid in record_map, off_id
+            assert record_map[kid]["status"] == "FLAGGED_WITNESSED"
+            assert record_map[kid]["affinity_score"] == 0.00
+            assert "Instructor confirmation required" in record_map[kid]["remarks"]
 
         # Verify Hallway Spoofer is rejected
-        assert "SPOF" in record_map
-        assert record_map["SPOF"]["status"] == "SPOOFER_REJECTED"
-        assert record_map["SPOF"]["affinity_score"] == 0.00
-        assert "Hallway Spoofer" in record_map["SPOF"]["remarks"]
+        kid_sp = k["SPOF"]
+        assert kid_sp in record_map
+        assert record_map[kid_sp]["status"] == "SPOOFER_REJECTED"
+        assert record_map[kid_sp]["affinity_score"] == 0.00
+        assert "Hallway Spoofer" in record_map[kid_sp]["remarks"]
 
         # Phase 6: Simulate Air Verdict Bursts
         # Teacher sequentially broadcasts: V:<ID>:OK

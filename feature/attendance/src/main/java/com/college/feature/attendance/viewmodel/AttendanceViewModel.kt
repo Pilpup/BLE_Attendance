@@ -130,7 +130,25 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     val defaultLocalId: String = UUID.randomUUID().toString().replace("-", "").take(4).uppercase()
     var currentRollNumber: String by mutableStateOf(defaultLocalId)
     val studentId: String get() = currentRollNumber
-    val studentShortId: String get() = currentRollNumber.takeLast(4).padStart(4, '0').uppercase()
+    // M4: collision-resistant 4-char BLE/device key derived from canonical identity
+    // (full roll preferred, else user UUID, else local id). Deterministic so Android
+    // and backend derive the same key; 4-char wire format preserved.
+    val studentShortId: String get() = deriveShortDeviceId(canonicalDeviceIdentity())
+
+    private fun canonicalDeviceIdentity(): String {
+        val user = SessionManager.default.currentUser
+        return user?.rollNumber?.takeIf { it.isNotBlank() }
+            ?: user?.id?.takeIf { it.isNotBlank() }
+            ?: currentRollNumber.takeIf { it.isNotBlank() }
+            ?: defaultLocalId
+    }
+
+    fun deriveShortDeviceId(canonical: String): String {
+        val src = canonical.trim().uppercase().ifEmpty { defaultLocalId }
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(src.toByteArray(Charsets.UTF_8))
+        return digest.take(2).joinToString("") { "%02X".format(it) }
+    }
 
     // Valid neighbor short id: 4 chars of A–Z / 0–9 / '-' (roll-derived ids like
     // "-001" or hex-like default ids). Anything outside this alphabet is wire junk.
