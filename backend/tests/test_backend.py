@@ -892,23 +892,23 @@ async def test_cognitive_challenge_score_gate():
         )
         assert res_missing.status_code == 403, res_missing.text
         assert "Cognitive challenge failed" in res_missing.json()["detail"]
-        assert res_missing.json()["detail"].endswith("score missing < 12")
+        assert res_missing.json()["detail"].endswith("score missing < 15")
 
-        # 3) Face-bearing check-in scoring 11 (< 12) -> 403, score stored on the row
+        # 3) Face-bearing check-in scoring 9 (< 15) -> 403, score stored on the row
         res_low = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {tok_d}"},
-            json={"game_score": 11, "student_id": k_d, "neighbors": [],
+            json={"game_score": 9, "student_id": k_d, "neighbors": [],
                   "session_salt": wire_salt, "face_image_base64": face_b64},
         )
         assert res_low.status_code == 403, res_low.text
-        assert "score 11 < 12" in res_low.json()["detail"]
+        assert "score 9 < 15" in res_low.json()["detail"]
 
-        # 4) Threshold score (12) passes the face-bearing check-in
+        # 4) Threshold score (15) passes the face-bearing check-in
         res_ok = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {tok_b}"},
-            json={"game_score": 12, "student_id": k_b, "neighbors": [k_a],
+            json={"game_score": 15, "student_id": k_b, "neighbors": [k_a],
                   "session_salt": wire_salt, "face_image_base64": face_b64},
         )
         assert res_ok.status_code == 200, res_ok.text
@@ -922,7 +922,7 @@ async def test_cognitive_challenge_score_gate():
             )).scalars().all()
             by_dev = {r.ble_device_id: r for r in rows}
             assert by_dev[k_d].status == "COGNITIVE_CHALLENGE_FAILED"
-            assert by_dev[k_d].game_score == 11
+            assert by_dev[k_d].game_score == 9
 
         # 5) Finalize: mutual pair (2 of 3 enrolled, tiny-class bypass) auto-verifies,
         #    B's final score (12) arrived before the audit so its verdict stands;
@@ -935,12 +935,12 @@ async def test_cognitive_challenge_score_gate():
         assert fin.status_code == 200, fin.text
         rec_map = {r["ble_device_id"]: r for r in fin.json()["records"]}
         assert rec_map[k_b]["status"] == "VERIFIED_PRESENT"
-        assert rec_map[k_b]["game_score"] == 12
+        assert rec_map[k_b]["game_score"] == 15
         assert rec_map[k_a]["status"] == "COGNITIVE_CHALLENGE_FAILED"
         assert rec_map[k_a]["game_score"] is None
         # Sub-threshold rejection rows stay frozen at finalize
         assert rec_map[k_d]["status"] == "COGNITIVE_CHALLENGE_FAILED"
-        assert rec_map[k_d]["game_score"] == 11
+        assert rec_map[k_d]["game_score"] == 9
 
         # 6) Late arrival (game finished after the teacher's timer): A's final
         #    check-in carries score 18 and rescues the pending-score failure via
@@ -962,7 +962,7 @@ async def test_cognitive_challenge_score_gate():
         assert final_map[k_a]["status"] == "VERIFIED_PRESENT"
         assert final_map[k_a]["verification_method"] == "IN_FLIGHT_GRACE_PEER"
         assert final_map[k_a]["game_score"] == 18
-        assert final_map[k_b]["game_score"] == 12
+        assert final_map[k_b]["game_score"] == 15
         assert detail.json()["total_verified"] == 2
 
 

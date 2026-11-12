@@ -363,7 +363,7 @@ internal fun StudentSection(
                                 modifier = Modifier.width(26.dp)
                             )
                             Text(
-                                text = "Stay in class and allow your device to be discovered.",
+                                text = "Play the memory game: memorize the numbers, then tap them in order.",
                                 fontSize = 15.5.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = AppTheme.colors.textPrimary,

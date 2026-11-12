@@ -1331,7 +1331,7 @@ async def submit_student_neighbors(
         f"FP: {hashlib.sha256(fingerprint_material.encode()).hexdigest()[:12]}"
     )
 
-    # Challenge score gate (security): chimp score < 12 => unverified.
+    # Challenge score gate (security): chimp score < 15 => unverified.
     challenge_score = payload.game_score
     if challenge_score is None and payload.challenge_report:
         for k in ("chimp_score", "score", "game_score"):
@@ -1353,7 +1353,7 @@ async def submit_student_neighbors(
     # COGNITIVE_CHALLENGE_FAILED, and the 90 s grace path re-evaluates late
     # arrivals that do carry a score.
     face_present = bool(payload.face_image_base64) or raw_face_bytes is not None
-    if face_present and (challenge_score is None or challenge_score < 12):
+    if face_present and (challenge_score is None or challenge_score < 15):
         score_val = challenge_score if challenge_score is not None else "missing"
         await _record_proxy_violation(
             db=db,
@@ -1361,7 +1361,7 @@ async def submit_student_neighbors(
             device_id=student_key,
             status="COGNITIVE_CHALLENGE_FAILED",
             verification_method="COGNITIVE_CHALLENGE",
-            remarks=f"Chimp challenge failed: score {score_val} < 12",
+            remarks=f"Chimp challenge failed: score {score_val} < 15",
             student_id=current_user.id if current_user else None,
             reported_neighbors=normalized_neighbors,
             game_score=challenge_score,
@@ -1370,7 +1370,7 @@ async def submit_student_neighbors(
         detail_score = challenge_score if challenge_score is not None else "missing"
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Cognitive challenge failed: score {detail_score} < 12",
+            detail=f"Cognitive challenge failed: score {detail_score} < 15",
         )
 
     # Face deduplication check (Layer 3: Camera Face Biometric Deduplication)
@@ -1519,7 +1519,7 @@ async def submit_student_neighbors(
             if (
                 existing_record.status == "COGNITIVE_CHALLENGE_FAILED"
                 and prev_score is None
-                and challenge_score >= 12
+                and challenge_score >= 15
             ):
                 partner_stmt = select(AttendanceRecord).where(
                     AttendanceRecord.session_id == target_session_id,
@@ -1781,11 +1781,11 @@ async def audit_and_finalize_session(
     # 90 s grace path rescues late arrivals that do carry a legitimate score.
     for item in audit_results:
         score = item.get("game_score")
-        if item["status"] == "VERIFIED_PRESENT" and (score is None or score < 12):
+        if item["status"] == "VERIFIED_PRESENT" and (score is None or score < 15):
             item["status"] = "COGNITIVE_CHALLENGE_FAILED"
             item["verification_method"] = "COGNITIVE_CHALLENGE"
             item["remarks"] = (
-                f"Chimp challenge failed: score {score if score is not None else 'missing'} < 12"
+                f"Chimp challenge failed: score {score if score is not None else 'missing'} < 15"
             )
 
     # Log the verdict so manual classroom tests are self-explaining in server logs

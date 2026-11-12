@@ -304,9 +304,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     fun recordChimpChallengeScore(score: Int) {
         chimpScore = score
         // Verification threshold: 12 (server enforces the same gate)
-        chimpChallengeFailed = score < 12
+        chimpChallengeFailed = score < 15
         if (chimpChallengeFailed) {
-            studentStatusMessage = "Cognitive challenge failed: score $score < 12"
+            studentStatusMessage = "Cognitive challenge failed: score $score < 15"
         }
     }
 
@@ -1952,7 +1952,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                         )
                                     } else if (
                                         myRecord.status == "COGNITIVE_CHALLENGE_FAILED" &&
-                                        chimpScore != null && (chimpScore as Int) >= 12
+                                        chimpScore != null && (chimpScore as Int) >= 15
                                     ) {
                                         // Teacher finalized while this game was still running;
                                         // the server stamped a pending-score failure and our
@@ -2091,7 +2091,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                     )
                                 } else if (
                                     myRecord.status == "COGNITIVE_CHALLENGE_FAILED" &&
-                                    chimpScore != null && (chimpScore as Int) >= 12
+                                    chimpScore != null && (chimpScore as Int) >= 15
                                 ) {
                                     applyOrDeferStudentPhase(StudentPhase.WAITING_FOR_AUDIT, null)
                                 } else {
