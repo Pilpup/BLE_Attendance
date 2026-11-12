@@ -2211,6 +2211,16 @@ private fun SessionDetailScreen(
                                     modifier = Modifier.weight(1f)
                                 )
 
+                                // Chimp challenge score (blank when absent)
+                                rec.gameScore?.let { score ->
+                                    Text(
+                                        text = "Score $score",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = AppTheme.colors.textSecondary
+                                    )
+                                }
+
                                 // Present or Absent status pill
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),

@@ -74,7 +74,9 @@ data class AttendanceRecordItem(
     val remarks: String? = null,
     @SerializedName("roll_number") val rollNumber: String? = null,
     @SerializedName("student_name") val studentName: String? = null,
-    @SerializedName("student_id") val studentId: String? = null
+    @SerializedName("student_id") val studentId: String? = null,
+    // Chimp cognitive challenge score (client-attested, server-gated)
+    @SerializedName("game_score") val gameScore: Int? = null
 )
 
 data class RecordOverrideRequest(

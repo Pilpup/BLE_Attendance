@@ -101,6 +101,9 @@ class BLEAuditRecordItem(BaseModel):
         default_factory=list, description="Top-3 observed peer IDs from BLE discovery"
     )
     remarks: Optional[str] = Field(None, description="Human-readable audit note")
+    game_score: Optional[int] = Field(
+        None, description="Chimp cognitive challenge score (client-attested, gated at submit)"
+    )
     roll_number: Optional[str] = None
     student_name: Optional[str] = None
 

@@ -353,6 +353,7 @@ async def _record_proxy_violation(
     remarks: str,
     student_id: Optional[uuid.UUID] = None,
     reported_neighbors: Optional[List[str]] = None,
+    game_score: Optional[int] = None,
 ) -> Optional[AttendanceRecord]:
     stmt = select(AttendanceRecord).where(
         AttendanceRecord.session_id == session_id,
@@ -364,6 +365,8 @@ async def _record_proxy_violation(
         rec.status = status
         rec.verification_method = verification_method
         rec.remarks = remarks
+        if game_score is not None:
+            rec.game_score = game_score if rec.game_score is None else max(rec.game_score, game_score)
         if student_id and not rec.student_id:
             rec.student_id = student_id
         if reported_neighbors is not None:
@@ -380,6 +383,7 @@ async def _record_proxy_violation(
         affinity_score=0.00,
         reported_neighbors=reported_neighbors or [],
         remarks=remarks,
+        game_score=game_score,
         recorded_at=datetime.now(timezone.utc),
     )
     try:
@@ -394,6 +398,8 @@ async def _record_proxy_violation(
             rec.status = status
             rec.verification_method = verification_method
             rec.remarks = remarks
+            if game_score is not None:
+                rec.game_score = game_score if rec.game_score is None else max(rec.game_score, game_score)
     return rec
 
 
@@ -725,6 +731,24 @@ async def create_attendance_session(
     eligibility_semester = payload.course_semester if payload.course_semester is not None else (course_obj.semester if course_obj else None)
     eligibility_department = course_obj.department if course_obj else None
 
+    # Roster anchor: the audit engine weights collusion clusters against the
+    # enrolled class size (graph_engine only anchors when total_enrolled > 0).
+    # The teacher app sends no roster count, so derive it from the same
+    # eligibility snapshot the student check-in gate uses (semester + program).
+    roster_enrolled = payload.total_enrolled
+    if (not roster_enrolled) and eligibility_semester is not None and (eligibility_program or "").strip():
+        candidates = await db.execute(
+            select(User).where(
+                User.semester == eligibility_semester,
+                User.is_active.is_(True),
+                User.role == "STUDENT",
+            )
+        )
+        roster_enrolled = sum(
+            1 for u in candidates.scalars().all()
+            if _program_key(u.program) == _program_key(eligibility_program)
+        )
+
     # Expire previous active sessions for this course created by current teacher
     active_check = await db.execute(
         select(AttendanceSession).where(
@@ -772,7 +796,7 @@ async def create_attendance_session(
         eligibility_department=eligibility_department,
         eligibility_semester=eligibility_semester,
         status="ACTIVE",
-        total_enrolled=payload.total_enrolled,
+        total_enrolled=roster_enrolled,
         started_at=datetime.now(timezone.utc),
     )
     db.add(session)
@@ -1292,7 +1316,7 @@ async def submit_student_neighbors(
         f"FP: {hashlib.sha256(fingerprint_material.encode()).hexdigest()[:12]}"
     )
 
-    # Challenge score gate (security): chimp score < 15 => unverified.
+    # Challenge score gate (security): chimp score < 12 => unverified.
     challenge_score = payload.game_score
     if challenge_score is None and payload.challenge_report:
         for k in ("chimp_score", "score", "game_score"):
@@ -1307,7 +1331,7 @@ async def submit_student_neighbors(
             f"[Challenge Telemetry] Session: {target_session_id} Key: {student_key} "
             f"Report: {payload.challenge_report} Score: {challenge_score}"
         )
-    if challenge_score is None or challenge_score < 15:
+    if challenge_score is None or challenge_score < 12:
         score_val = challenge_score if challenge_score is not None else "missing"
         await _record_proxy_violation(
             db=db,
@@ -1315,15 +1339,16 @@ async def submit_student_neighbors(
             device_id=student_key,
             status="COGNITIVE_CHALLENGE_FAILED",
             verification_method="COGNITIVE_CHALLENGE",
-            remarks=f"Chimp challenge failed: score {score_val} < 15",
+            remarks=f"Chimp challenge failed: score {score_val} < 12",
             student_id=current_user.id if current_user else None,
             reported_neighbors=normalized_neighbors,
+            game_score=challenge_score,
         )
         await _commit_proxy_violation(db)
         detail_score = challenge_score if challenge_score is not None else "missing"
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Cognitive challenge failed: score {detail_score} < 15",
+            detail=f"Cognitive challenge failed: score {detail_score} < 12",
         )
 
     # Face deduplication check (Layer 3: Camera Face Biometric Deduplication)
@@ -1426,6 +1451,7 @@ async def submit_student_neighbors(
             student_id=user_id,
             reported_neighbors=normalized_neighbors,
             claimed_ultrasonic=ultrasonic_claim,
+            game_score=challenge_score,
         )
 
         # Re-read session status after staging: if finalize committed while this submission was in
@@ -1456,6 +1482,12 @@ async def submit_student_neighbors(
         )
         rec_res = await db.execute(rec_stmt)
         existing_record = rec_res.scalars().first()
+
+        if existing_record and challenge_score is not None:
+            existing_record.game_score = (
+                challenge_score if existing_record.game_score is None
+                else max(existing_record.game_score, challenge_score)
+            )
 
         if not existing_record:
             verified_neighbors = []
@@ -1505,6 +1537,7 @@ async def submit_student_neighbors(
                 bridge_device_id=bridge,
                 reported_neighbors=normalized_neighbors,
                 remarks=remarks,
+                game_score=challenge_score,
                 recorded_at=datetime.now(timezone.utc),
             )
             db.add(new_record)
@@ -1648,6 +1681,18 @@ async def audit_and_finalize_session(
                 item["verification_method"] = "ULTRASONIC_ACOUSTIC_MATCH"
                 item["remarks"] = f"Ultrasonic proximity rejected: Co-located on same desk (< 20 cm) with {pair_peer}"
 
+    # Attach client-attested chimp challenge scores (best seen per device) so the
+    # finalized attendance records carry them for instructor review.
+    challenge_scores: dict[str, int] = {}
+    for sub_key, staged_sub in staged.items():
+        if staged_sub.game_score is not None:
+            k = sub_key.upper()
+            challenge_scores[k] = max(challenge_scores.get(k, 0), staged_sub.game_score)
+    for item in audit_results:
+        k = item["ble_device_id"].upper()
+        if k in challenge_scores:
+            item["game_score"] = challenge_scores[k]
+
     # Log the verdict so manual classroom tests are self-explaining in server logs
     verdict_counts: dict[str, int] = {}
     for item in audit_results:
@@ -1724,6 +1769,12 @@ async def audit_and_finalize_session(
             prior_rec.affinity_score = item["affinity_score"]
             prior_rec.remarks = item["remarks"]
             prior_rec.reported_neighbors = item["reported_neighbors"]
+            new_score = item.get("game_score")
+            if new_score is not None:
+                prior_rec.game_score = (
+                    new_score if prior_rec.game_score is None
+                    else max(prior_rec.game_score, new_score)
+                )
             if resolved_student_id and not prior_rec.student_id:
                 prior_rec.student_id = resolved_student_id
             continue
@@ -1751,6 +1802,7 @@ async def audit_and_finalize_session(
                 bridge_device_id=item["bridge_device_id"].upper() if item["bridge_device_id"] else None,
                 reported_neighbors=item["reported_neighbors"],
                 remarks=item["remarks"],
+                game_score=item.get("game_score"),
                 recorded_at=datetime.now(timezone.utc),
             )
         )

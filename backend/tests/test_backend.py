@@ -760,6 +760,160 @@ async def test_session_eligibility_gate():
         assert record_map[k0007]["verification_method"] == "ELIGIBILITY_REJECTED"
 
 
+# Verifies the chimp cognitive-challenge score gate: a missing or sub-threshold
+# score is rejected 403 with a COGNITIVE_CHALLENGE_FAILED violation row; the
+# threshold score (12) and higher pass; the passing score is stored on the record
+@pytest.mark.anyio
+async def test_cognitive_challenge_score_gate():
+    import base64
+    import io
+    import uuid
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+    from sqlalchemy import select
+    from PIL import Image
+    from app.database import get_db
+    from app.models.attendance import AttendanceRecord, Base, EmailOTP
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with test_session_factory() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        t_reg = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "name": "Prof. ChimpGate",
+                "email": "chimp.teacher@univ.edu",
+                "password": "Password123!",
+                "role": "TEACHER",
+                "roll_number": "EMP888",
+                "department": "CSE",
+                "faculty_code": settings.FACULTY_SIGNUP_SECRET,
+            },
+        )
+        assert t_reg.status_code == 200
+        async with test_session_factory() as s:
+            otp_row = (await s.execute(select(EmailOTP).where(EmailOTP.email == "chimp.teacher@univ.edu"))).scalars().first()
+            otp_code = otp_row.otp_code
+        t_verify = await client.post(
+            "/api/v1/auth/register/verify-otp",
+            json={"email": "chimp.teacher@univ.edu", "otp_code": otp_code},
+        )
+        assert t_verify.status_code == 201
+        teacher_headers = {"Authorization": f"Bearer {t_verify.json()['access_token']}"}
+
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers=teacher_headers,
+            json={
+                "session_token": "CHMP", "total_enrolled": 5,
+                "course_program": "B-Tech", "course_semester": 3,
+            },
+        )
+        assert s_res.status_code == 201
+        session_data = s_res.json()
+        wire_salt = session_data["session_wire_salt"]
+        submit_url = f"/api/v1/attendance/sessions/{session_data['id']}/submit-neighbors"
+
+        async def register_student(email, roll):
+            s_reg = await client.post(
+                "/api/v1/auth/register",
+                json={
+                    "name": f"Student {roll}", "email": email, "password": "Password123!",
+                    "role": "STUDENT", "roll_number": roll, "department": "CSE",
+                    "program": "B-Tech", "semester": 3, "section": "A",
+                },
+            )
+            assert s_reg.status_code == 200, s_reg.text
+            async with test_session_factory() as s:
+                s_otp_row = (await s.execute(select(EmailOTP).where(EmailOTP.email == email))).scalars().first()
+            verified = await client.post(
+                "/api/v1/auth/register/verify-otp",
+                json={"email": email, "otp_code": s_otp_row.otp_code},
+            )
+            assert verified.status_code == 201, verified.text
+            return verified.json()["access_token"]
+
+        from app.routers.attendance import derive_short_device_key
+
+        img = Image.new("RGB", (64, 64), color=(200, 180, 160))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG")
+        face_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+        # 1) Missing score -> 403 COGNITIVE_CHALLENGE_FAILED (server never trusts absence)
+        tok_missing = await register_student("chimp.missing@univ.edu", "22B1001")
+        k_missing = derive_short_device_key("22B1001")
+        res_missing = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {tok_missing}"},
+            json={"student_id": k_missing, "neighbors": [], "session_salt": wire_salt,
+                  "face_image_base64": face_b64},
+        )
+        assert res_missing.status_code == 403, res_missing.text
+        assert "Cognitive challenge failed" in res_missing.json()["detail"]
+        assert res_missing.json()["detail"].endswith("score missing < 12")
+
+        # 2) Score below threshold (11 < 12) -> 403
+        tok_low = await register_student("chimp.low@univ.edu", "22B1002")
+        k_low = derive_short_device_key("22B1002")
+        res_low = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {tok_low}"},
+            json={"game_score": 11, "student_id": k_low, "neighbors": [],
+                  "session_salt": wire_salt, "face_image_base64": face_b64},
+        )
+        assert res_low.status_code == 403, res_low.text
+        assert "score 11 < 12" in res_low.json()["detail"]
+
+        # Violation rows carry the failed score for instructor review
+        async with test_session_factory() as s:
+            rows = (await s.execute(
+                select(AttendanceRecord).where(
+                    AttendanceRecord.session_id == uuid.UUID(session_data["id"])
+                )
+            )).scalars().all()
+            by_dev = {r.ble_device_id: r for r in rows}
+            assert by_dev[k_missing].status == "COGNITIVE_CHALLENGE_FAILED"
+            assert by_dev[k_missing].game_score is None
+            assert by_dev[k_low].status == "COGNITIVE_CHALLENGE_FAILED"
+            assert by_dev[k_low].game_score == 11
+
+        # 3) Threshold score (12) passes the gate
+        tok_ok = await register_student("chimp.ok@univ.edu", "22B1003")
+        k_ok = derive_short_device_key("22B1003")
+        res_ok = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {tok_ok}"},
+            json={"game_score": 12, "student_id": k_ok, "neighbors": [],
+                  "session_salt": wire_salt, "face_image_base64": face_b64},
+        )
+        assert res_ok.status_code == 200, res_ok.text
+        assert res_ok.json()["status"] == "success"
+
+        # 4) Finalize stores the passing score on the attendance record
+        fin = await client.post(
+            f"/api/v1/attendance/sessions/{session_data['id']}/audit-and-finalize",
+            headers=teacher_headers,
+            json={"reports": {}},
+        )
+        assert fin.status_code == 200, fin.text
+        rec_map = {r["ble_device_id"]: r for r in fin.json()["records"]}
+        assert rec_map[k_ok]["game_score"] == 12
+        assert rec_map[k_missing]["game_score"] is None
+        assert rec_map[k_low]["game_score"] == 11
+
+
 # Verifies expired OTP cleanup behavior and purge on invalid submission
 @pytest.mark.anyio
 async def test_expired_otp_purging_and_cleanup():

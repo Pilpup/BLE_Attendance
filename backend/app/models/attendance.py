@@ -171,6 +171,8 @@ class AttendanceRecord(Base):
         JSON().with_variant(JSONB, "postgresql"), default=list
     )
     remarks: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # Chimp cognitive challenge score (client-attested, gated at submit)
+    game_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

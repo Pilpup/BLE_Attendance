@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 # Staged check-in submission record
 class StagedSubmission:
-    __slots__ = ("device_key", "student_id", "reported_neighbors", "claimed_ultrasonic")
+    __slots__ = ("device_key", "student_id", "reported_neighbors", "claimed_ultrasonic", "game_score")
 
     def __init__(
         self,
@@ -16,6 +16,7 @@ class StagedSubmission:
         student_id: Optional[uuid.UUID],
         reported_neighbors: list[str],
         claimed_ultrasonic: Optional[str] = None,
+        game_score: Optional[int] = None,
     ) -> None:
         self.device_key = device_key
         self.student_id = student_id
@@ -24,6 +25,9 @@ class StagedSubmission:
         # never persisted — so aborted/restarted claims leave no DB footprint and a
         # one-sided claim can never vandalize a record on its own.
         self.claimed_ultrasonic = claimed_ultrasonic
+        # Client-attested chimp challenge score; rides the buffer into finalize
+        # so the attendance record can store the best score seen for the student.
+        self.game_score = game_score
 
 
 # In-memory staging buffer for active session student check-ins
@@ -66,6 +70,7 @@ class SubmissionBuffer:
         student_id: Optional[uuid.UUID],
         reported_neighbors: list[str],
         claimed_ultrasonic: Optional[str] = None,
+        game_score: Optional[int] = None,
     ) -> None:
         now = time.time()
         async with self._lock:
@@ -85,12 +90,18 @@ class SubmissionBuffer:
                 existing.reported_neighbors = merged_claims
                 existing.student_id = existing.student_id or student_id
                 existing.claimed_ultrasonic = existing.claimed_ultrasonic or claimed_ultrasonic
+                if game_score is not None:
+                    existing.game_score = (
+                        game_score if existing.game_score is None
+                        else max(existing.game_score, game_score)
+                    )
             else:
                 session_buf[device_key] = StagedSubmission(
                     device_key=device_key,
                     student_id=student_id,
                     reported_neighbors=reported_neighbors,
                     claimed_ultrasonic=claimed_ultrasonic,
+                    game_score=game_score,
                 )
 
     # Extracts and removes all staged submissions for a session upon final audit

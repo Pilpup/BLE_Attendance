@@ -104,6 +104,7 @@ BEGIN
     ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS verification_method VARCHAR(50) DEFAULT 'NONE';
     ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS affinity_score NUMERIC(3, 2) DEFAULT 0.00;
     ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS bridge_device_id VARCHAR(50);
+    ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS game_score INTEGER;
     ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS reported_neighbors JSONB DEFAULT '[]'::jsonb;
     ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS remarks TEXT;
     ALTER TABLE attendance_records ADD COLUMN IF NOT EXISTS recorded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
