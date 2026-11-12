@@ -1331,7 +1331,14 @@ async def submit_student_neighbors(
             f"[Challenge Telemetry] Session: {target_session_id} Key: {student_key} "
             f"Report: {payload.challenge_report} Score: {challenge_score}"
         )
-    if challenge_score is None or challenge_score < 12:
+    # Hard gate: real check-ins (face-bearing) must carry a passing score.
+    # Scoreless mid-window neighbor syncs (no face) are telemetry only — they
+    # stage claims for the finalize audit but can never self-verify: finalize
+    # marks any VERIFIED verdict whose best score is missing/below threshold
+    # COGNITIVE_CHALLENGE_FAILED, and the 90 s grace path re-evaluates late
+    # arrivals that do carry a score.
+    face_present = bool(payload.face_image_base64) or raw_face_bytes is not None
+    if face_present and (challenge_score is None or challenge_score < 12):
         score_val = challenge_score if challenge_score is not None else "missing"
         await _record_proxy_violation(
             db=db,
@@ -1484,10 +1491,70 @@ async def submit_student_neighbors(
         existing_record = rec_res.scalars().first()
 
         if existing_record and challenge_score is not None:
+            prev_score = existing_record.game_score
             existing_record.game_score = (
-                challenge_score if existing_record.game_score is None
-                else max(existing_record.game_score, challenge_score)
+                challenge_score if prev_score is None else max(prev_score, challenge_score)
             )
+            # Rescue (finalize-after-game race): the audit stamped this record
+            # COGNITIVE_CHALLENGE_FAILED because no score had arrived when the
+            # teacher's timer ended. A late legitimate score upgrades a
+            # missing-score failure only — a stored sub-threshold score stays
+            # frozen. Reciprocity reads the partner's claimed neighbors, not its
+            # current status, so rescue order never matters.
+            if (
+                existing_record.status == "COGNITIVE_CHALLENGE_FAILED"
+                and prev_score is None
+                and challenge_score >= 12
+            ):
+                partner_stmt = select(AttendanceRecord).where(
+                    AttendanceRecord.session_id == target_session_id,
+                    AttendanceRecord.ble_device_id.in_(normalized_neighbors or []),
+                )
+                partner_res = await db.execute(partner_stmt)
+                mutual = False
+                hard_violations = {
+                    "DUPLICATE_FACE_PROXY",
+                    "CO_LOCATED_SAME_DESK_PROXY",
+                    "DIVIDED_ATTENTION_PROXY",
+                    "SPOOFER_REJECTED",
+                    "NO_FACE_DETECTED",
+                    "ELIGIBILITY_REJECTED",
+                }
+                for partner in partner_res.scalars().all():
+                    if partner.status in hard_violations:
+                        continue
+                    partner_neighbors = partner.reported_neighbors or []
+                    if student_key.upper() in {str(n).upper() for n in partner_neighbors}:
+                        mutual = True
+                        break
+                if mutual:
+                    existing_record.status = "VERIFIED_PRESENT"
+                    existing_record.verification_method = "IN_FLIGHT_GRACE_PEER"
+                    existing_record.affinity_score = 1.00
+                    existing_record.remarks = (
+                        f"In-flight check-in verified via mutual desk neighbor (score {challenge_score})"
+                    )
+                    session_obj.total_verified = (session_obj.total_verified or 0) + 1
+                    logger.info(
+                        f"[In-Flight Grace Audit] Rescued late arrival {student_key} "
+                        f"-> VERIFIED_PRESENT (score {challenge_score}, mutual neighbor)"
+                    )
+                else:
+                    existing_record.status = "ISOLATED_FLAGGED"
+                    existing_record.verification_method = "IN_FLIGHT_GRACE"
+                    existing_record.affinity_score = 0.50
+                    existing_record.remarks = (
+                        f"In-flight check-in after finalize without reciprocal neighbor "
+                        f"(score {challenge_score}, Reported: [{', '.join(normalized_neighbors)}])"
+                    )
+                    logger.info(
+                        f"[In-Flight Grace Audit] Late arrival {student_key} scored "
+                        f"{challenge_score} but no reciprocal neighbor — ISOLATED_FLAGGED"
+                    )
+            try:
+                await db.commit()
+            except IntegrityError:
+                await db.rollback()
 
         if not existing_record:
             verified_neighbors = []
@@ -1692,6 +1759,19 @@ async def audit_and_finalize_session(
         k = item["ble_device_id"].upper()
         if k in challenge_scores:
             item["game_score"] = challenge_scores[k]
+
+    # Score gate at verdict time: a VERIFIED verdict without a passing challenge
+    # score can never stand (syncs stage claims but carry no score — a student
+    # who never plays must not auto-verify through mutual claims alone). The
+    # 90 s grace path rescues late arrivals that do carry a legitimate score.
+    for item in audit_results:
+        score = item.get("game_score")
+        if item["status"] == "VERIFIED_PRESENT" and (score is None or score < 12):
+            item["status"] = "COGNITIVE_CHALLENGE_FAILED"
+            item["verification_method"] = "COGNITIVE_CHALLENGE"
+            item["remarks"] = (
+                f"Chimp challenge failed: score {score if score is not None else 'missing'} < 12"
+            )
 
     # Log the verdict so manual classroom tests are self-explaining in server logs
     verdict_counts: dict[str, int] = {}

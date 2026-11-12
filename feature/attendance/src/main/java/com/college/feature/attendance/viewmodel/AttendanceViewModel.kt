@@ -310,6 +310,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         private set
     private var auditPollingJob: Job? = null
     private var airVerdictJob: Job? = null
+    private var finalizedRefreshJob: Job? = null
 
     val proximityManager by lazy {
         com.college.feature.attendance.audio.UltrasonicProximityManager(application.applicationContext)
@@ -904,11 +905,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun submitMyNeighborsToCloudNow(keepRadioActive: Boolean) {
-        // Chimp gate: the server hard-rejects scoreless check-ins and latches a
-        // COGNITIVE_CHALLENGE_FAILED row. Mid-window debounced syncs (3s tick +
-        // every 4s, plus the window-end flush) would fire before the game reports
-        // its score — hold every cloud sync until the challenge has reported.
-        if (studentPhase == StudentPhase.PROBING_NEIGHBORS && chimpScore == null) return
         val sessId = detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: return
         val neighborIds = topDeskNeighbours.map { it.peerId }
         val closeNeighborIds = rawDiscoveredPeers.values
@@ -1020,6 +1016,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         backendSessionId = null
         sessionId = UUID.randomUUID().toString().replace("-", "").take(4).uppercase()
         sessionSalt = UUID.randomUUID().toString().replace("-", "").take(4).uppercase()
+        finalizedRefreshJob?.cancel()
         finalizedRecords = emptyList()
         cloudStatusMessage = null
 
@@ -1099,7 +1096,15 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             }
 
             override fun onFinish() {
-                finalizeSessionAndAudit()
+                // Grace window: a student game (25 s + face capture) may still be
+                // running — let its final check-in land before the audit pops the
+                // staging buffer. A manual Stop during this window finalizes
+                // immediately; this delayed call then exits idempotently.
+                cloudStatusMessage = "Wrapping up — waiting for students to finish…"
+                viewModelScope.launch(Dispatchers.Main) {
+                    delay(6000L)
+                    finalizeSessionAndAudit()
+                }
             }
         }.start()
     }
@@ -1142,6 +1147,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             "Completed • $verifiedCount present"
                         }
                         broadcastAirVerdicts(finalizedRecords)
+                        // Late check-ins land server-side within the grace window —
+                        // keep the instructor's list current as rescues flip records.
+                        startFinalizedRecordsRefresh(sessId)
                     }
                     is NetworkResult.Error -> {
                         cloudStatusMessage = if (result.code == 404) {
@@ -1156,6 +1164,46 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         finalizedRecords = emptyList()
                     }
                 }
+            }
+        }
+    }
+
+    // Post-finalize refresh: students finishing their game after the timer land
+    // late check-ins that the server rescues within the 90 s grace window —
+    // poll briefly so the instructor's list and counts reflect them.
+    private fun startFinalizedRecordsRefresh(sessId: String) {
+        finalizedRefreshJob?.cancel()
+        finalizedRefreshJob = viewModelScope.launch(Dispatchers.IO) {
+            repeat(10) {
+                delay(3000L)
+                try {
+                    val res = api.getSessionDetails(sessId)
+                    val session = if (res.isSuccessful) res.body() ?: return@launch else return@launch
+                    if (session.status == "CANCELLED" || session.status == "EXPIRED") return@launch
+                    val records = session.records ?: return@launch
+                    val previousVerified = finalizedRecords
+                        .filter { it.status == "VERIFIED_PRESENT" }
+                        .map { it.bleDeviceId }
+                        .toSet()
+                    withContext(Dispatchers.Main) {
+                        finalizedRecords = records
+                        val verifiedCount = records.count { it.status == "VERIFIED_PRESENT" }
+                        val reviewCount = records.count {
+                            it.status == "ISOLATED_FLAGGED" || it.status == "FLAGGED_WITNESSED" || it.status == "UNVERIFIED"
+                        }
+                        cloudStatusMessage = if (reviewCount > 0) {
+                            "Completed • $verifiedCount present, $reviewCount need review"
+                        } else {
+                            "Completed • $verifiedCount present"
+                        }
+                    }
+                    val newlyVerified = records.filter {
+                        it.status == "VERIFIED_PRESENT" && it.bleDeviceId !in previousVerified
+                    }
+                    if (newlyVerified.isNotEmpty()) {
+                        broadcastAirVerdicts(newlyVerified)
+                    }
+                } catch (_: Exception) { }
             }
         }
     }
@@ -1757,6 +1805,15 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                             stopScan = true,
                                             stopBcast = true
                                         )
+                                    } else if (
+                                        myRecord.status == "COGNITIVE_CHALLENGE_FAILED" &&
+                                        chimpScore != null && (chimpScore as Int) >= 12
+                                    ) {
+                                        // Teacher finalized while this game was still running;
+                                        // the server stamped a pending-score failure and our
+                                        // final check-in rescues it within the grace window —
+                                        // keep waiting instead of flashing a false failure.
+                                        applyOrDeferStudentPhase(StudentPhase.WAITING_FOR_AUDIT, null)
                                     } else {
                                         val msg = when {
                                             myRecord.status == "COGNITIVE_CHALLENGE_FAILED" -> "Cognitive challenge failed"
@@ -1793,6 +1850,15 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         }
                     }
                 } catch (_: Exception) { }
+            }
+            // Poll exhausted without a verdict — surface an honest result instead
+            // of hanging on the waiting screen forever.
+            withContext(Dispatchers.Main) {
+                if (studentPhase == StudentPhase.WAITING_FOR_AUDIT) {
+                    studentPhase = StudentPhase.UNVERIFIED_FLAGGED
+                    studentStatusMessage = "Audit confirmation timed out — please ask your instructor"
+                    onStartScanning?.invoke()
+                }
             }
         }
     }
@@ -1874,6 +1940,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                         stopScan = true,
                                         stopBcast = true
                                     )
+                                } else if (
+                                    myRecord.status == "COGNITIVE_CHALLENGE_FAILED" &&
+                                    chimpScore != null && (chimpScore as Int) >= 12
+                                ) {
+                                    applyOrDeferStudentPhase(StudentPhase.WAITING_FOR_AUDIT, null)
                                 } else {
                                     val msg = when {
                                         hasLocalDefenseFailed -> "Attendance not confirmed. Please see instructor."

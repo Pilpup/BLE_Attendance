@@ -760,9 +760,12 @@ async def test_session_eligibility_gate():
         assert record_map[k0007]["verification_method"] == "ELIGIBILITY_REJECTED"
 
 
-# Verifies the chimp cognitive-challenge score gate: a missing or sub-threshold
-# score is rejected 403 with a COGNITIVE_CHALLENGE_FAILED violation row; the
-# threshold score (12) and higher pass; the passing score is stored on the record
+# Verifies the chimp cognitive-challenge score gate end-to-end:
+# - scoreless neighbor syncs (no face) pass and stage claims for the audit
+# - a face-bearing check-in without a score is rejected 403 (missing < 12)
+# - a face-bearing check-in scoring 11 (< 12) is rejected 403 with the score stored
+# - finalize overrides an auto-verified verdict whose score never arrived
+# - a late score (finalize-after-game race) rescues the record via reciprocity
 @pytest.mark.anyio
 async def test_cognitive_challenge_score_gate():
     import base64
@@ -812,19 +815,6 @@ async def test_cognitive_challenge_score_gate():
         assert t_verify.status_code == 201
         teacher_headers = {"Authorization": f"Bearer {t_verify.json()['access_token']}"}
 
-        s_res = await client.post(
-            "/api/v1/attendance/sessions",
-            headers=teacher_headers,
-            json={
-                "session_token": "CHMP", "total_enrolled": 5,
-                "course_program": "B-Tech", "course_semester": 3,
-            },
-        )
-        assert s_res.status_code == 201
-        session_data = s_res.json()
-        wire_salt = session_data["session_wire_salt"]
-        submit_url = f"/api/v1/attendance/sessions/{session_data['id']}/submit-neighbors"
-
         async def register_student(email, roll):
             s_reg = await client.post(
                 "/api/v1/auth/register",
@@ -846,37 +836,81 @@ async def test_cognitive_challenge_score_gate():
 
         from app.routers.attendance import derive_short_device_key
 
+        # Roster (3 eligible students) must exist BEFORE the session is created —
+        # the server derives total_enrolled from the eligibility snapshot.
+        tok_a = await register_student("chimp.a@univ.edu", "22B2001")
+        tok_b = await register_student("chimp.b@univ.edu", "22B2002")
+        await register_student("chimp.c@univ.edu", "22B2003")  # absent classmate
+        tok_d = await register_student("chimp.d@univ.edu", "22B2004")
+        k_a = derive_short_device_key("22B2001")
+        k_b = derive_short_device_key("22B2002")
+        k_d = derive_short_device_key("22B2004")
+
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers=teacher_headers,
+            json={
+                "session_token": "CHMP",
+                "course_program": "B-Tech", "course_semester": 3,
+            },
+        )
+        assert s_res.status_code == 201
+        session_data = s_res.json()
+        # Roster derivation: 4 registered eligible students, not the 0 the app sends
+        assert session_data["total_enrolled"] == 4
+        wire_salt = session_data["session_wire_salt"]
+        submit_url = f"/api/v1/attendance/sessions/{session_data['id']}/submit-neighbors"
+
         img = Image.new("RGB", (64, 64), color=(200, 180, 160))
         buf = io.BytesIO()
         img.save(buf, format="JPEG")
         face_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
-        # 1) Missing score -> 403 COGNITIVE_CHALLENGE_FAILED (server never trusts absence)
-        tok_missing = await register_student("chimp.missing@univ.edu", "22B1001")
-        k_missing = derive_short_device_key("22B1001")
+        # 1) Scoreless neighbor sync (no face) -> accepted, claims staged
+        sync_a = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {tok_a}"},
+            json={"student_id": k_a, "neighbors": [k_b], "session_salt": wire_salt},
+        )
+        assert sync_a.status_code == 200, sync_a.text
+        sync_b = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {tok_b}"},
+            json={"student_id": k_b, "neighbors": [k_a], "session_salt": wire_salt},
+        )
+        assert sync_b.status_code == 200, sync_b.text
+
+        # 2) Face-bearing check-in without a score -> 403, score "missing"
         res_missing = await client.post(
             submit_url,
-            headers={"Authorization": f"Bearer {tok_missing}"},
-            json={"student_id": k_missing, "neighbors": [], "session_salt": wire_salt,
+            headers={"Authorization": f"Bearer {tok_a}"},
+            json={"student_id": k_a, "neighbors": [k_b], "session_salt": wire_salt,
                   "face_image_base64": face_b64},
         )
         assert res_missing.status_code == 403, res_missing.text
         assert "Cognitive challenge failed" in res_missing.json()["detail"]
         assert res_missing.json()["detail"].endswith("score missing < 12")
 
-        # 2) Score below threshold (11 < 12) -> 403
-        tok_low = await register_student("chimp.low@univ.edu", "22B1002")
-        k_low = derive_short_device_key("22B1002")
+        # 3) Face-bearing check-in scoring 11 (< 12) -> 403, score stored on the row
         res_low = await client.post(
             submit_url,
-            headers={"Authorization": f"Bearer {tok_low}"},
-            json={"game_score": 11, "student_id": k_low, "neighbors": [],
+            headers={"Authorization": f"Bearer {tok_d}"},
+            json={"game_score": 11, "student_id": k_d, "neighbors": [],
                   "session_salt": wire_salt, "face_image_base64": face_b64},
         )
         assert res_low.status_code == 403, res_low.text
         assert "score 11 < 12" in res_low.json()["detail"]
 
-        # Violation rows carry the failed score for instructor review
+        # 4) Threshold score (12) passes the face-bearing check-in
+        res_ok = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {tok_b}"},
+            json={"game_score": 12, "student_id": k_b, "neighbors": [k_a],
+                  "session_salt": wire_salt, "face_image_base64": face_b64},
+        )
+        assert res_ok.status_code == 200, res_ok.text
+        assert res_ok.json()["status"] == "success"
+
         async with test_session_factory() as s:
             rows = (await s.execute(
                 select(AttendanceRecord).where(
@@ -884,24 +918,12 @@ async def test_cognitive_challenge_score_gate():
                 )
             )).scalars().all()
             by_dev = {r.ble_device_id: r for r in rows}
-            assert by_dev[k_missing].status == "COGNITIVE_CHALLENGE_FAILED"
-            assert by_dev[k_missing].game_score is None
-            assert by_dev[k_low].status == "COGNITIVE_CHALLENGE_FAILED"
-            assert by_dev[k_low].game_score == 11
+            assert by_dev[k_d].status == "COGNITIVE_CHALLENGE_FAILED"
+            assert by_dev[k_d].game_score == 11
 
-        # 3) Threshold score (12) passes the gate
-        tok_ok = await register_student("chimp.ok@univ.edu", "22B1003")
-        k_ok = derive_short_device_key("22B1003")
-        res_ok = await client.post(
-            submit_url,
-            headers={"Authorization": f"Bearer {tok_ok}"},
-            json={"game_score": 12, "student_id": k_ok, "neighbors": [],
-                  "session_salt": wire_salt, "face_image_base64": face_b64},
-        )
-        assert res_ok.status_code == 200, res_ok.text
-        assert res_ok.json()["status"] == "success"
-
-        # 4) Finalize stores the passing score on the attendance record
+        # 5) Finalize: mutual pair (2 of 3 enrolled, tiny-class bypass) auto-verifies,
+        #    B's final score (12) arrived before the audit so its verdict stands;
+        #    A's verdict is overridden because no score ever arrived for A.
         fin = await client.post(
             f"/api/v1/attendance/sessions/{session_data['id']}/audit-and-finalize",
             headers=teacher_headers,
@@ -909,9 +931,36 @@ async def test_cognitive_challenge_score_gate():
         )
         assert fin.status_code == 200, fin.text
         rec_map = {r["ble_device_id"]: r for r in fin.json()["records"]}
-        assert rec_map[k_ok]["game_score"] == 12
-        assert rec_map[k_missing]["game_score"] is None
-        assert rec_map[k_low]["game_score"] == 11
+        assert rec_map[k_b]["status"] == "VERIFIED_PRESENT"
+        assert rec_map[k_b]["game_score"] == 12
+        assert rec_map[k_a]["status"] == "COGNITIVE_CHALLENGE_FAILED"
+        assert rec_map[k_a]["game_score"] is None
+        # Sub-threshold rejection rows stay frozen at finalize
+        assert rec_map[k_d]["status"] == "COGNITIVE_CHALLENGE_FAILED"
+        assert rec_map[k_d]["game_score"] == 11
+
+        # 6) Late arrival (game finished after the teacher's timer): A's final
+        #    check-in carries score 18 and rescues the pending-score failure via
+        #    reciprocity with B's finalized claims.
+        rescue = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {tok_a}"},
+            json={"game_score": 18, "student_id": k_a, "neighbors": [k_b],
+                  "session_salt": wire_salt, "face_image_base64": face_b64},
+        )
+        assert rescue.status_code == 200, rescue.text
+
+        detail = await client.get(
+            f"/api/v1/attendance/sessions/{session_data['id']}",
+            headers=teacher_headers,
+        )
+        assert detail.status_code == 200, detail.text
+        final_map = {r["ble_device_id"]: r for r in detail.json()["records"]}
+        assert final_map[k_a]["status"] == "VERIFIED_PRESENT"
+        assert final_map[k_a]["verification_method"] == "IN_FLIGHT_GRACE_PEER"
+        assert final_map[k_a]["game_score"] == 18
+        assert final_map[k_b]["game_score"] == 12
+        assert detail.json()["total_verified"] == 2
 
 
 # Verifies expired OTP cleanup behavior and purge on invalid submission
