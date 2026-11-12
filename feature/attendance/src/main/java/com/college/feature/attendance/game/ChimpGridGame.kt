@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -94,6 +95,8 @@ fun ChimpGridGame(
 
     var board by remember { mutableLongStateOf(0L) }          // 64-bit board (nibbles)
     var shownMask by remember { mutableIntStateOf(0) }        // 16-bit mask: untapped number cells
+    var tappedMask by remember { mutableIntStateOf(0) }       // 16-bit mask: correctly tapped cells (green)
+    var wrongCell by remember { mutableIntStateOf(-1) }       // the mistaken cell (red, round over)
     var nextExpected by remember { mutableIntStateOf(1) }
     var count by remember { mutableIntStateOf(5) }
     var round by remember { mutableIntStateOf(1) }
@@ -104,12 +107,11 @@ fun ChimpGridGame(
     // Round lifecycle: view window shows the numbers, tap window hides them.
     // roundOver = the student is done for THIS round (completed all taps, made
     // one mistake, or the window ran out) — no further clicks until the next
-    // round's fixed slot. Mistakes never reveal positions and never advance
-    // the sequence: brute-forcing by tapping every cell is dead.
+    // round's fixed slot. Mistakes never advance the sequence: brute-forcing
+    // by tapping every cell is dead. Tapped cells reveal their number (green
+    // = correct, red = the mistaken one) only after being pressed.
     var phaseShow by remember { mutableStateOf(true) }
     var roundOver by remember { mutableStateOf(false) }
-    var flashCell by remember { mutableIntStateOf(-1) }       // transient red flash on wrong tap
-    var flashUntilMs by remember { mutableLongStateOf(0L) }
     var viewEndAtMs by remember { mutableLongStateOf(0L) }
     var roundEndAtMs by remember { mutableLongStateOf(0L) }
 
@@ -145,9 +147,10 @@ fun ChimpGridGame(
         }
         board = b
         shownMask = mask
+        tappedMask = 0
+        wrongCell = -1
         phaseShow = true
         roundOver = false
-        flashCell = -1
         nextExpected = 1
         // Fixed schedule: rounds start at their cumulative slot, never early,
         // never late — the class stays in lockstep through all 4 rounds.
@@ -168,9 +171,6 @@ fun ChimpGridGame(
             if (phaseShow && now >= viewEndAtMs) {
                 phaseShow = false // hide numbers, recall phase
             }
-            if (flashCell >= 0 && now >= flashUntilMs) {
-                flashCell = -1
-            }
             if (now >= roundEndAtMs) {
                 if (round >= 4) {
                     running = false
@@ -184,13 +184,29 @@ fun ChimpGridGame(
         }
     }
 
-    // Board centered vertically on the screen; the pre-start countdown sits at
-    // its top-center (over empty cells — nothing is hidden behind it).
+    // Board centered vertically on the screen; the pre-start countdown sits in
+    // a fixed slot ABOVE the board so the grid never shifts when it ends.
     Column(
         modifier = modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(30.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            if (preStartLeftMs > 0L) {
+                Text(
+                    text = "Starting in ${(preStartLeftMs + 999) / 1000}$startDots",
+                    color = Color(0xFF93C5FD),
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -210,7 +226,8 @@ fun ChimpGridGame(
                             val value = nibble(board, idx) // read 4-bit nibble from 64-bit board
                             val hasNumber = value != 0
                             val active = hasNumber && ((shownMask and (1 shl idx)) != 0)
-                            val isFlash = flashCell == idx
+                            val isTapped = (tappedMask and (1 shl idx)) != 0
+                            val isWrong = wrongCell == idx
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
@@ -218,8 +235,9 @@ fun ChimpGridGame(
                                     .background(
                                         when {
                                             !hasNumber -> Color(0xFF0B1220)
-                                            isFlash -> Color(0xFF7F1D1D)             // wrong tap flash
-                                            phaseShow && active -> Color(0xFF172554) // number shown (view)
+                                            isWrong -> Color(0xFF7F1D1D)              // mistaken cell red
+                                            isTapped -> Color(0xFF166534)             // correct tap green
+                                            phaseShow && active -> Color(0xFF172554)  // number shown (view)
                                             active && !phaseShow -> Color(0xFF243447) // hidden number cell
                                             else -> Color(0xFF111827)
                                         }
@@ -230,6 +248,7 @@ fun ChimpGridGame(
                                             Modifier.clickable {
                                                 if (value == nextExpected) {
                                                     score += 1 // every correct tap scores
+                                                    tappedMask = tappedMask or (1 shl idx) // green reveal
                                                     shownMask = shownMask and (1 shl idx).inv() // bit clear
                                                     nextExpected += 1
                                                     if (nextExpected > count) {
@@ -237,11 +256,10 @@ fun ChimpGridGame(
                                                         roundOver = true
                                                     }
                                                 } else {
-                                                    // One mistake ends the round: brief red
-                                                    // flash, no number leak, no more clicks
-                                                    // until the next round's fixed slot.
-                                                    flashCell = idx
-                                                    flashUntilMs = System.currentTimeMillis() + 250L
+                                                    // One mistake ends the round: the mistaken
+                                                    // cell turns red and reveals its number —
+                                                    // no more clicks until the next round.
+                                                    wrongCell = idx
                                                     roundOver = true
                                                 }
                                             }
@@ -249,7 +267,7 @@ fun ChimpGridGame(
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {
-                                if (hasNumber && phaseShow && active) {
+                                if (hasNumber && (phaseShow || isTapped || isWrong)) {
                                     Text(
                                         text = value.toString(),
                                         color = Color.White,
@@ -261,20 +279,6 @@ fun ChimpGridGame(
                         }
                     }
                 }
-            }
-
-            if (preStartLeftMs > 0L) {
-                // Synchronized start countdown — overlaid at the board's
-                // top-center. All phones flip to round 1 together.
-                Text(
-                    text = "Starting in ${(preStartLeftMs + 999) / 1000}$startDots",
-                    color = Color(0xFF93C5FD),
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 10.dp)
-                )
             }
         }
     }
