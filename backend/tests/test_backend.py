@@ -858,6 +858,9 @@ async def test_cognitive_challenge_score_gate():
         session_data = s_res.json()
         # Roster derivation: 4 registered eligible students, not the 0 the app sends
         assert session_data["total_enrolled"] == 4
+        # Roster diagnostic: create response names the matched roll numbers so
+        # a surprising count (stale test account) is self-explaining
+        assert sorted(session_data["enrolled_roll_numbers"]) == ["22B2001", "22B2002", "22B2003", "22B2004"]
         wire_salt = session_data["session_wire_salt"]
         submit_url = f"/api/v1/attendance/sessions/{session_data['id']}/submit-neighbors"
 

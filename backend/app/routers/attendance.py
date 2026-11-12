@@ -736,6 +736,7 @@ async def create_attendance_session(
     # The teacher app sends no roster count, so derive it from the same
     # eligibility snapshot the student check-in gate uses (semester + program).
     roster_enrolled = payload.total_enrolled
+    roster_roll_numbers: list[str] = []
     if (not roster_enrolled) and eligibility_semester is not None and (eligibility_program or "").strip():
         candidates = await db.execute(
             select(User).where(
@@ -744,10 +745,12 @@ async def create_attendance_session(
                 User.role == "STUDENT",
             )
         )
-        roster_enrolled = sum(
-            1 for u in candidates.scalars().all()
+        matched_students = [
+            u for u in candidates.scalars().all()
             if _program_key(u.program) == _program_key(eligibility_program)
-        )
+        ]
+        roster_enrolled = len(matched_students)
+        roster_roll_numbers = [u.roll_number for u in matched_students if u.roll_number]
 
     # Expire previous active sessions for this course created by current teacher
     active_check = await db.execute(
@@ -809,6 +812,18 @@ async def create_attendance_session(
     # M9 (audit): never log gate material — token/salt in container logs
     # defeats the BLE-range assumption (anyone with log access gets the gate).
     logger.info(f"[Session Created] ID: {session.id}, Course: {session.course_code}")
+    # Roster diagnostic: the enrolled count is DERIVED from the eligibility
+    # snapshot (semester + program) over active STUDENT accounts — the teacher
+    # app sends no roster. Log the matched roll numbers so a surprising count
+    # (stale test account, wrong program on a profile) is self-explaining.
+    # Roll numbers are roster data, not gate material (M9 covers token/salt).
+    if roster_roll_numbers:
+        logger.info(
+            "[Roster] Derived total_enrolled=%d for program=%r semester=%r from active STUDENT accounts: %s",
+            roster_enrolled, eligibility_program, eligibility_semester,
+            ", ".join(roster_roll_numbers),
+        )
+    session.enrolled_roll_numbers = roster_roll_numbers or None
     _attach_wire_salt(session)
     return session
 

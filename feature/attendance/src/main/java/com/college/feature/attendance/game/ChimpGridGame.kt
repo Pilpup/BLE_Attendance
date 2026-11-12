@@ -57,8 +57,13 @@ fun ChimpGridGame(
     modifier: Modifier = Modifier,
     seed: Int = 0,
     durationMs: Long = 25_000L,
+    // Synchronized start: all students in the room begin round 1 at the same
+    // instant (teacher countdown beacon). The grid stays empty with a visible
+    // countdown until then — the 25 s clock only runs after it expires.
+    startDelayMs: Long = 0L,
     onFinished: (score: Int) -> Unit = {},
 ) {
+    var preStartLeftMs by remember { mutableLongStateOf(startDelayMs) }
     val rng = remember(seed) { Random(seed) }
 
     var board by remember { mutableLongStateOf(0L) }          // 64-bit board (nibbles)
@@ -98,7 +103,13 @@ fun ChimpGridGame(
         tapUntilMs = hideAtMs + 6000L
     }
 
-    LaunchedEffect(seed) {
+    LaunchedEffect(seed, startDelayMs) {
+        // Pre-start hold: tick the visible countdown down before round 1 begins
+        while (preStartLeftMs > 0L) {
+            val step = minOf(1000L, preStartLeftMs)
+            delay(step)
+            preStartLeftMs -= step
+        }
         val endAt = System.currentTimeMillis() + durationMs
         var r = 1
         newRound(r, System.currentTimeMillis())
@@ -121,6 +132,27 @@ fun ChimpGridGame(
             }
             delay(30)
         }
+    }
+
+    if (preStartLeftMs > 0L) {
+        Column(
+            modifier = modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(
+                text = "Starting together in ${(preStartLeftMs + 999) / 1000}…",
+                color = Color(0xFF93C5FD),
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "Eyes on your own screen",
+                color = Color(0xFF64748B),
+                fontSize = 13.sp
+            )
+        }
+        return
     }
 
     Column(

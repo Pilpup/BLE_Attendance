@@ -189,13 +189,37 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     private fun selectedClassSemester(): Int? =
         selectedCourse?.semester?.filter { it.isDigit() }?.toIntOrNull()
 
-    // H5 beacon: "/"+token(4)+wireSalt(4)+[semester(1)] — fixed positions,
-    // '/' distinguishes from 8-char peer probes and legacy S:/V: frames.
+    // H5 beacon: "/"+token(4)+wireSalt(4)+[semester(1)][G<k>] — fixed positions,
+    // '/' distinguishes from 8-char peer probes and legacy S:/V: frames. The
+    // G suffix carries the synchronized game start countdown (seconds remaining)
+    // during the first SYNC seconds; old clients ignore it (fixed-position parse).
     val currentBroadcastToken: String
         get() = if (isSessionActive) {
             val sem = selectedClassSemester()
-            if (sem != null) "/$sessionId$sessionSalt$sem" else "/$sessionId$sessionSalt"
+            val base = if (sem != null) "/$sessionId$sessionSalt$sem" else "/$sessionId$sessionSalt"
+            synchronizedGameCountdownSeconds()?.let { "${base}G$it" } ?: base
         } else "IDLE"
+
+    // Synchronized game start: every student phone that hears at least one
+    // countdown beacon starts the chimp challenge at the SAME instant. Without
+    // it, each phone latches the beacon (and starts its 25 s game) at its own
+    // scan latency — a desync that lets a student split attention across two
+    // phones and beat the challenge on both. Anchor is the teacher timer start
+    // on the monotonic clock; students estimate the target as (received + k),
+    // so delivery jitter never shifts the target.
+    companion object {
+        const val SYNC_GAME_START_OFFSET_SECONDS = 12
+    }
+
+    private var teacherSessionStartedElapsedMs = 0L
+    private var lastBeaconCountdownEmitted: Int? = null
+
+    private fun synchronizedGameCountdownSeconds(): Int? {
+        if (!isSessionActive || teacherSessionStartedElapsedMs <= 0L) return null
+        val k = SYNC_GAME_START_OFFSET_SECONDS -
+            ((android.os.SystemClock.elapsedRealtime() - teacherSessionStartedElapsedMs) / 1000L).toInt()
+        return if (k in 1..SYNC_GAME_START_OFFSET_SECONDS) k else null
+    }
 
     // Radio advertising configuration
     val teacherAdvMode = AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY
@@ -1089,10 +1113,21 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
         }
 
+        teacherSessionStartedElapsedMs = android.os.SystemClock.elapsedRealtime()
+        lastBeaconCountdownEmitted = null
         teacherTimer?.cancel()
         teacherTimer = object : CountDownTimer(durationSeconds * 1000L, 1000L) {
             override fun onTick(millisUntilFinished: Long) {
                 remainingSeconds = (millisUntilFinished / 1000L).toInt()
+                // Advertising is a static packet: the countdown only advances if
+                // the payload is re-emitted. Each countdown value gets exactly one
+                // re-emit (one stop+start — advertising has no restart throttle),
+                // then one final re-emit drops the suffix for the rest of class.
+                val k = synchronizedGameCountdownSeconds()
+                if (k != lastBeaconCountdownEmitted) {
+                    lastBeaconCountdownEmitted = k
+                    onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
+                }
             }
 
             override fun onFinish() {
@@ -1364,6 +1399,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         detectedSessionId = "----"
         detectedSessionSalt = "------"
         studentPhase = StudentPhase.LISTENING_FOR_TEACHER
+        ensureListeningWatchdog()
         onStartScanning?.invoke()
     }
 
@@ -1525,6 +1561,18 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     // check-in pacing is unaffected.
     private val latchDecisionWindowMs = 2_000L
 
+    // Synchronized game start (teacher countdown beacons "G<k>"): the minimum
+    // (received + k) estimate seen while listening. Cleared on every listening
+    // reset so a stale target can never delay a fresh session's game.
+    private var syncGameStartElapsedMs: Long? = null
+
+    // Delay applied to the chimp challenge after latching — 0 when no countdown
+    // was ever heard (old beacon / countdown expired). Exposed to the UI.
+    var chimpStartDelayMs by mutableStateOf(0L)
+        private set
+
+    private val beaconCountdownRegex = Regex("G(\\d{1,2})$")
+
     private data class BeaconCandidate(
         val sessionId: String,
         val sessionSalt: String,
@@ -1540,6 +1588,38 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     private fun invalidateBeaconLatch() {
         latchEpoch++
         beaconCandidates.clear()
+        syncGameStartElapsedMs = null
+        chimpStartDelayMs = 0L
+    }
+
+    // Listening watchdog: Android can silently stop delivering scan results
+    // (stack hiccup, throttling after repeated restarts) — the student then sits
+    // on the check-in screen forever with no error. While LISTENING, any
+    // 12 s packet silence restarts the scan; packet flow (any shape) proves the
+    // scan is alive. 12 s keeps restarts under Android's scan-throttle budget.
+    private var lastBlePacketHeardElapsedMs = 0L
+    private var listeningWatchdogJob: Job? = null
+
+    private fun ensureListeningWatchdog() {
+        listeningWatchdogJob?.cancel()
+        // Baseline = now: a scan that has never delivered anything since this
+        // listening entry still gets restarted at the first 12 s tick.
+        lastBlePacketHeardElapsedMs = android.os.SystemClock.elapsedRealtime()
+        listeningWatchdogJob = viewModelScope.launch(Dispatchers.Main) {
+            while (studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
+                delay(12_000L)
+                if (studentPhase != StudentPhase.LISTENING_FOR_TEACHER) return@launch
+                val now = android.os.SystemClock.elapsedRealtime()
+                if (lastBlePacketHeardElapsedMs > 0L && now - lastBlePacketHeardElapsedMs < 12_000L) {
+                    continue
+                }
+                android.util.Log.w(
+                    "AttendanceViewModel",
+                    "Scan watchdog: no packets for 12s while listening — restarting scan"
+                )
+                onStartScanning?.invoke()
+            }
+        }
     }
 
     private fun collectBeaconCandidate(sessionId: String, sessionSalt: String, rssi: Int) {
@@ -1577,9 +1657,18 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             "AttendanceViewModel",
             "Beacon latch: ${chosen.sessionId} @${chosen.peakRssi}dBm [candidates: $pool]"
         )
+        val syncTarget = syncGameStartElapsedMs
         invalidateBeaconLatch()
         detectedSessionId = chosen.sessionId
         detectedSessionSalt = chosen.sessionSalt
+        // Synchronized game start: everyone who heard a countdown starts at the
+        // same instant. Target already passed (very late latch) or never heard →
+        // start immediately (legacy behavior).
+        chimpStartDelayMs = syncTarget
+            ?.let { it - android.os.SystemClock.elapsedRealtime() }
+            ?.takeIf { it > 0L }
+            ?.coerceAtMost(20_000L)
+            ?: 0L
         studentPhase = StudentPhase.PROBING_NEIGHBORS
         startStudentDiscoveryWindow()
     }
@@ -1588,6 +1677,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val cleanMsg = messageText.trim()
 
         if (isTeacherMode) return
+        // Any received packet proves the scan is alive (watchdog silence check)
+        lastBlePacketHeardElapsedMs = android.os.SystemClock.elapsedRealtime()
 
         // Process teacher air verdict packets with offline/online gating
         // H5: '\'+targetId (compact), legacy V:<id>:OK
@@ -1644,7 +1735,17 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 val profileSemester = SessionManager.default.currentUser?.semester
                 if (bSem != null && profileSemester != null && bSem != profileSemester) {
                     studentStatusMessage = "Nearby class is Semester $bSem — your profile says Semester $profileSemester"
+                    android.util.Log.i("AttendanceViewModel", "Beacon rejected by semester pre-filter: bSem=$bSem profile=$profileSemester")
                     return
+                }
+                // Synchronized game start estimate: (now + k) on the monotonic
+                // clock; the minimum across all receptions converges to the
+                // teacher's target regardless of BLE delivery jitter. Beacon
+                // suffix is anchored ($ = end), so salt tokens containing G/digits
+                // can never produce a false countdown.
+                beaconCountdownRegex.find(cleanMsg)?.groupValues?.get(1)?.toIntOrNull()?.let { k ->
+                    val est = android.os.SystemClock.elapsedRealtime() + k * 1000L
+                    syncGameStartElapsedMs = minOf(est, syncGameStartElapsedMs ?: est)
                 }
                 collectBeaconCandidate(bToken, bSalt, rssi)
             }
@@ -1885,6 +1986,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         detectedSessionSalt = "------"
         studentPhase = StudentPhase.LISTENING_FOR_TEACHER
         studentStatusMessage = "Session cancelled by instructor — waiting for a new session"
+        ensureListeningWatchdog()
         onStartScanning?.invoke()
     }
 
@@ -1912,6 +2014,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         detectedSessionSalt = "------"
         studentPhase = StudentPhase.LISTENING_FOR_TEACHER
         studentStatusMessage = "Session expired before the audit completed — please ask your instructor"
+        ensureListeningWatchdog()
         onStartScanning?.invoke()
     }
 

@@ -277,6 +277,9 @@ class AttendanceSessionResponse(BaseModel):
     eligibility_program: Optional[str] = None
     eligibility_department: Optional[str] = None
     eligibility_semester: Optional[int] = None
+    # Roster diagnostic (session create only): the roll numbers whose active
+    # STUDENT accounts were counted into total_enrolled. Not persisted.
+    enrolled_roll_numbers: Optional[list[str]] = None
 
     model_config = ConfigDict(from_attributes=True)
 
