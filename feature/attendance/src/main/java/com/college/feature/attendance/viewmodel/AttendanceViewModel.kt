@@ -216,12 +216,41 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         private set
     var chimpScore: Int? by mutableStateOf(null)
         private set
+    var isChimpChallengeActive by mutableStateOf(false)
+        private set
+    // Audit/verdict result deferred while game is mid-round (finish round first)
+    private var deferredStudentPhase: StudentPhase? = null
+    private var deferredStudentStatusMessage: String? = null
+    private var deferredStopScanning: Boolean = false
+    private var deferredStopBroadcasting: Boolean = false
+    private var deferredStartScanning: Boolean = false
 
     val hasLocalDefenseFailed: Boolean
         get() = faceProxyDetected || ultrasonicProximityDetected || chimpChallengeFailed
 
     var capturedFaceBase64 by mutableStateOf<String?>(null)
     var capturedFaceBytes by mutableStateOf<ByteArray?>(null)
+
+    fun updateChimpChallengeActive(active: Boolean) {
+        isChimpChallengeActive = active
+        if (!active) {
+            val phase = deferredStudentPhase
+            if (phase != null) {
+                deferredStudentPhase = null
+                val msg = deferredStudentStatusMessage
+                deferredStudentStatusMessage = null
+                val stopScan = deferredStopScanning
+                val stopBcast = deferredStopBroadcasting
+                val startScan = deferredStartScanning
+                deferredStopScanning = false; deferredStopBroadcasting = false; deferredStartScanning = false
+                studentStatusMessage = msg ?: studentStatusMessage
+                studentPhase = phase
+                if (stopScan) onStopScanning?.invoke()
+                if (stopBcast) onStopBroadcasting?.invoke()
+                if (startScan) onStartScanning?.invoke()
+            }
+        }
+    }
 
     fun recordChimpChallengeScore(score: Int) {
         chimpScore = score
@@ -1234,6 +1263,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         capturedFaceBytes = null
         chimpScore = null
         chimpChallengeFailed = false
+        isChimpChallengeActive = false
+        deferredStudentPhase = null
+        deferredStudentStatusMessage = null
+        deferredStopScanning = false
+        deferredStopBroadcasting = false
+        deferredStartScanning = false
         faceProxyDetected = false
         ultrasonicProximityDetected = false
         chimpChallengeFailed = false
@@ -1289,6 +1324,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         capturedFaceBytes = null
         chimpScore = null
         chimpChallengeFailed = false
+        isChimpChallengeActive = false
+        deferredStudentPhase = null
+        deferredStudentStatusMessage = null
+        deferredStopScanning = false
+        deferredStopBroadcasting = false
+        deferredStartScanning = false
         faceProxyDetected = false
         ultrasonicProximityDetected = false
         chimpChallengeFailed = false
@@ -1488,10 +1529,18 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     stopPeerBatchUpdates()
                     val isPollingOnline = auditPollingJob?.isActive == true
                     if (!isPollingOnline) {
-                        studentPhase = StudentPhase.VERIFIED_PRESENT
-                        studentStatusMessage = "Attendance Confirmed"
-                        onStopScanning?.invoke()
-                        onStopBroadcasting?.invoke()
+                        if (isChimpChallengeActive) {
+                            deferredStudentPhase = StudentPhase.VERIFIED_PRESENT
+                            deferredStudentStatusMessage = "Attendance Confirmed"
+                            deferredStopScanning = true
+                            deferredStopBroadcasting = true
+                            deferredStartScanning = false
+                        } else {
+                            studentPhase = StudentPhase.VERIFIED_PRESENT
+                            studentStatusMessage = "Attendance Confirmed"
+                            onStopScanning?.invoke()
+                            onStopBroadcasting?.invoke()
+                        }
                     } else {
                         studentStatusMessage = "Air verdict detected; confirming with server"
                     }
@@ -1677,15 +1726,37 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             }
                             withContext(Dispatchers.Main) {
                                 auditedRecord = myRecord
+                                fun applyOrDefer(
+                                    phase: StudentPhase,
+                                    msg: String?,
+                                    stopScan: Boolean = false,
+                                    stopBcast: Boolean = false,
+                                    startScan: Boolean = false
+                                ) {
+                                    if (isChimpChallengeActive) {
+                                        deferredStudentPhase = phase
+                                        deferredStudentStatusMessage = msg
+                                        deferredStopScanning = stopScan
+                                        deferredStopBroadcasting = stopBcast
+                                        deferredStartScanning = startScan
+                                    } else {
+                                        if (msg != null) studentStatusMessage = msg
+                                        studentPhase = phase
+                                        if (stopScan) onStopScanning?.invoke()
+                                        if (stopBcast) onStopBroadcasting?.invoke()
+                                        if (startScan) onStartScanning?.invoke()
+                                    }
+                                }
                                 if (myRecord != null) {
                                     if (myRecord.status == "VERIFIED_PRESENT") {
-                                        studentPhase = StudentPhase.VERIFIED_PRESENT
-                                        studentStatusMessage = "Attendance Confirmed"
-                                        onStopScanning?.invoke()
-                                        onStopBroadcasting?.invoke()
+                                        applyOrDefer(
+                                            StudentPhase.VERIFIED_PRESENT,
+                                            "Attendance Confirmed",
+                                            stopScan = true,
+                                            stopBcast = true
+                                        )
                                     } else {
-                                        studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-                                        studentStatusMessage = when {
+                                        val msg = when {
                                             myRecord.status == "COGNITIVE_CHALLENGE_FAILED" -> "Cognitive challenge failed"
                                             myRecord.status == "DIVIDED_ATTENTION_PROXY" -> "Divided attention proxy detected"
                                             myRecord.status == "CO_LOCATED_SAME_DESK_PROXY" -> "Desk co-location rejected"
@@ -1698,12 +1769,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                             myRecord.status == "FLAGGED_WITNESSED" -> "Verified classmates witnessed you — instructor confirmation needed"
                                             else -> myRecord.remarks ?: "Attendance not confirmed"
                                         }
-                                        onStartScanning?.invoke()
+                                        applyOrDefer(StudentPhase.UNVERIFIED_FLAGGED, msg, startScan = true)
                                     }
                                 } else {
-                                    studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-                                    studentStatusMessage = "Attendance not confirmed"
-                                    onStartScanning?.invoke()
+                                    applyOrDefer(StudentPhase.UNVERIFIED_FLAGGED, "Attendance not confirmed", startScan = true)
                                 }
                             }
                             if (myRecord?.status == "VERIFIED_PRESENT") {

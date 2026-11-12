@@ -99,6 +99,7 @@ internal fun StudentSection(
     onRefreshAudit: (() -> Unit)? = null,
     isRefreshingAudit: Boolean = false,
     onChimpScore: ((Int) -> Unit)? = null,
+    onChimpChallengeActive: ((Boolean) -> Unit)? = null,
     onFaceCaptured: (String, ByteArray?) -> Unit = { _, _ -> },
     onStartScanning: () -> Unit,
     onStopScanning: () -> Unit,
@@ -155,6 +156,16 @@ internal fun StudentSection(
     LaunchedEffect(studentPhase) {
         if (studentPhase == StudentPhase.STANDBY || studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
             lastGameScore = null
+        }
+    }
+    DisposableEffect(studentPhase) {
+        if (studentPhase == StudentPhase.PROBING_NEIGHBORS) {
+            onChimpChallengeActive?.invoke(true)
+        }
+        onDispose {
+            if (studentPhase == StudentPhase.PROBING_NEIGHBORS) {
+                onChimpChallengeActive?.invoke(false)
+            }
         }
     }
 
@@ -224,6 +235,7 @@ internal fun StudentSection(
                     onFinished = { score ->
                         lastGameScore = score
                         onChimpScore?.invoke(score)
+                        onChimpChallengeActive?.invoke(false)
                         gameScope.launch {
                             val lockedCandidate = faceCaptureManager.stopCameraAndTakeCandidate()
                             val faceResult = withContext(Dispatchers.Default) {
