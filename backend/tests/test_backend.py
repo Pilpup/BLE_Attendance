@@ -531,7 +531,7 @@ async def test_submit_neighbors_salt_enforcement():
         missing = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {student_tokens['22B3456']}"},
-            json={"student_id": k_spoofer, "neighbors": [k_alpha, "2345"]},
+            json={"game_score": 20, "student_id": k_spoofer, "neighbors": [k_alpha, "2345"]},
         )
         assert missing.status_code == 403
 
@@ -539,7 +539,7 @@ async def test_submit_neighbors_salt_enforcement():
         wrong = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {student_tokens['22B3456']}"},
-            json={"student_id": k_spoofer, "neighbors": [k_alpha, "2345"], "session_salt": "WRNG"},
+            json={"game_score": 20, "student_id": k_spoofer, "neighbors": [k_alpha, "2345"], "session_salt": "WRNG"},
         )
         assert wrong.status_code == 403
         assert "Nice try" in wrong.json()["detail"]
@@ -548,7 +548,7 @@ async def test_submit_neighbors_salt_enforcement():
         valid_one = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {student_tokens['22B1234']}"},
-            json={"student_id": k_alpha, "neighbors": [k_beta], "session_salt": wire_salt},
+            json={"game_score": 20, "student_id": k_alpha, "neighbors": [k_beta], "session_salt": wire_salt},
         )
         assert valid_one.status_code == 200
         assert valid_one.json()["status"] == "success"
@@ -556,7 +556,7 @@ async def test_submit_neighbors_salt_enforcement():
         valid_two = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {student_tokens['22B5678']}"},
-            json={"student_id": k_beta, "neighbors": [k_alpha], "session_salt": wire_salt},
+            json={"game_score": 20, "student_id": k_beta, "neighbors": [k_alpha], "session_salt": wire_salt},
         )
         assert valid_two.status_code == 200
 
@@ -689,7 +689,7 @@ async def test_session_eligibility_gate():
         wrong_class = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {sem6_token}"},
-            json={"student_id": k0006, "neighbors": [], "session_salt": "WRNG"},
+            json={"game_score": 20, "student_id": k0006, "neighbors": [], "session_salt": "WRNG"},
         )
         assert wrong_class.status_code == 403, wrong_class.text
         assert "Semester 3" in wrong_class.json()["detail"]
@@ -701,7 +701,7 @@ async def test_session_eligibility_gate():
         blank = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {blank_token}"},
-            json={"student_id": k0007, "neighbors": [], "session_salt": wire_salt},
+            json={"game_score": 20, "student_id": k0007, "neighbors": [], "session_salt": wire_salt},
         )
         assert blank.status_code == 403
         assert "Attendance profile incomplete" in blank.json()["detail"]
@@ -713,7 +713,7 @@ async def test_session_eligibility_gate():
         valid = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {sem3_token}"},
-            json={"student_id": k0003, "neighbors": ["1111"], "session_salt": wire_salt},
+            json={"game_score": 20, "student_id": k0003, "neighbors": ["1111"], "session_salt": wire_salt},
         )
         assert valid.status_code == 200, valid.text
         assert valid.json()["status"] == "success"
@@ -740,7 +740,7 @@ async def test_session_eligibility_gate():
         dev_submit = await client.post(
             submit_url,
             headers={"Authorization": f"Bearer {dev_token}"},
-            json={"student_id": "9999", "neighbors": [], "session_salt": "WRNG"},
+            json={"game_score": 20, "student_id": "9999", "neighbors": [], "session_salt": "WRNG"},
         )
         assert dev_submit.status_code == 403
         assert "Nice try" in dev_submit.json()["detail"]  # salt-gate rejection, not eligibility
@@ -1215,8 +1215,7 @@ async def test_debug_session_auto_provision_and_duplicate_rejection():
         res1 = await client.post(
             "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
             headers={"Authorization": f"Bearer {tok_stud1}"},
-            json={
-                "student_id": "STUD1",
+            json={"game_score": 20, "student_id": "STUD1",
                 "neighbors": ["PEER-A1", "PEER-B2"],
                 "session_salt": "DEMO1",
                 "face_image_base64": b64_img,
@@ -1228,8 +1227,7 @@ async def test_debug_session_auto_provision_and_duplicate_rejection():
         res2 = await client.post(
             "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
             headers={"Authorization": f"Bearer {tok_stud2}"},
-            json={
-                "student_id": "STUD2",
+            json={"game_score": 20, "student_id": "STUD2",
                 "neighbors": ["PEER-A1", "PEER-B2"],
                 "session_salt": "DEMO1",
                 "face_image_base64": b64_img,
@@ -1294,8 +1292,7 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
         res1 = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_stud1}"},
-            json={
-                "student_id": k1,
+            json={"game_score": 20, "student_id": k1,
                 "neighbors": [k2],
                 "session_salt": wire_salt,
                 "ultrasonic_proximity_detected": True,
@@ -1307,8 +1304,7 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
         res2 = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_stud2}"},
-            json={
-                "student_id": k2,
+            json={"game_score": 20, "student_id": k2,
                 "neighbors": [k1, k3],
                 "session_salt": wire_salt,
                 "ultrasonic_proximity_detected": True,
@@ -1322,8 +1318,7 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
         res3 = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_stud3}"},
-            json={
-                "student_id": k3,
+            json={"game_score": 20, "student_id": k3,
                 "neighbors": [k2, k4],
                 "session_salt": wire_salt,
                 "ultrasonic_proximity_detected": True,
@@ -1335,7 +1330,7 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
         res4 = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_stud4}"},
-            json={"student_id": k4,
+            json={"game_score": 20, "student_id": k4,
              "neighbors": [k3], "session_salt": wire_salt},
         )
         assert res4.status_code == 200, res4.text
@@ -1374,8 +1369,7 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
         grace = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_stud5}"},
-            json={
-                "student_id": k5,
+            json={"game_score": 20, "student_id": k5,
                 "neighbors": [],
                 "session_salt": wire_salt,
                 "ultrasonic_proximity_detected": True,
@@ -1497,7 +1491,7 @@ async def test_finalize_counts_frozen_proxy_priors():
         spoof = await client.post(
             f"/api/v1/attendance/sessions/{session_id}/submit-neighbors",
             headers={"Authorization": f"Bearer {tok_stud}"},
-            json={"student_id": "9876", "neighbors": [], "session_salt": "WRNG"},
+            json={"game_score": 20, "student_id": "9876", "neighbors": [], "session_salt": "WRNG"},
         )
         assert spoof.status_code == 403
         assert "Nice try" in spoof.json()["detail"]
@@ -1561,14 +1555,14 @@ async def test_finalize_staged_drain_requires_reciprocal_peers():
         r1 = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_stud1}"},
-            json={"student_id": k1, "neighbors": [k2], "session_salt": wire_salt},
+            json={"game_score": 20, "student_id": k1, "neighbors": [k2], "session_salt": wire_salt},
         )
         assert r1.status_code == 200, r1.text
 
         r2 = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_stud2}"},
-            json={"student_id": k2, "neighbors": [k1], "session_salt": wire_salt},
+            json={"game_score": 20, "student_id": k2, "neighbors": [k1], "session_salt": wire_salt},
         )
         assert r2.status_code == 200, r2.text
 
@@ -1576,7 +1570,7 @@ async def test_finalize_staged_drain_requires_reciprocal_peers():
         r3 = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_stud3}"},
-            json={"student_id": k3, "neighbors": ["GHOST"], "session_salt": wire_salt},
+            json={"game_score": 20, "student_id": k3, "neighbors": ["GHOST"], "session_salt": wire_salt},
         )
         assert r3.status_code == 200, r3.text
 
@@ -1734,6 +1728,7 @@ async def test_submit_neighbors_binary_upload():
                 "X-Session-Salt": "BAD_SALT",
                 "X-Student-Id": "BIN1",
                 "X-Neighbors": "PEER-A1,PEER-B2",
+                "X-Game-Score": "20",
             },
         )
         assert bad_res.status_code == 403
@@ -1748,6 +1743,7 @@ async def test_submit_neighbors_binary_upload():
                 "X-Session-Salt": "DEMO1",
                 "X-Student-Id": "BIN1",
                 "X-Neighbors": "PEER-A1,PEER-B2",
+                "X-Game-Score": "20",
             },
         )
         assert good_res.status_code == 200
@@ -1763,6 +1759,7 @@ async def test_submit_neighbors_binary_upload():
                 "X-Session-Salt": "DEMO1",
                 "X-Student-Id": "BIN2",
                 "X-Neighbors": "PEER-A1,PEER-B2",
+                "X-Game-Score": "20",
             },
         )
         assert dup_res.status_code == 403
@@ -2240,7 +2237,7 @@ async def test_grace_duplicate_claim_succeeds():
         res = await client.post(
             session_url,
             headers={"Authorization": f"Bearer {tok_present}"},
-            json={"student_id": k_present, "neighbors": [], "session_salt": wire_salt},
+            json={"game_score": 20, "student_id": k_present, "neighbors": [], "session_salt": wire_salt},
         )
         assert res.status_code == 200, res.text
 
@@ -2251,7 +2248,7 @@ async def test_grace_duplicate_claim_succeeds():
         )
         assert audit_res.status_code == 200, audit_res.text
 
-        grace_payload = {"student_id": k_straggler, "neighbors": [], "session_salt": wire_salt}
+        grace_payload = {"game_score": 20, "student_id": k_straggler, "neighbors": [], "session_salt": wire_salt}
         first = await client.post(
             session_url, headers={"Authorization": f"Bearer {tok_straggler}"}, json=grace_payload
         )
@@ -2456,7 +2453,7 @@ async def test_submit_during_finalize_inflight_is_not_orphaned(tmp_path):
                 client.post(
                     session_url,
                     headers={"Authorization": f"Bearer {tok_straggler}"},
-                    json={"student_id": k_straggler, "neighbors": [], "session_salt": wire_salt},
+                    json={"game_score": 20, "student_id": k_straggler, "neighbors": [], "session_salt": wire_salt},
                 )
             )
             finalize_res, submit_res = await asyncio.gather(finalize_task, submit_task)
@@ -2525,8 +2522,7 @@ async def test_submit_face_verified_reflects_outcome():
         res = await client.post(
             "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
             headers={"Authorization": f"Bearer {tok_stud}"},
-            json={
-                "student_id": "STUD5",
+            json={"game_score": 20, "student_id": "STUD5",
                 "neighbors": ["PEER-A1"],
                 "session_salt": "DEMO1",
                 "face_image_base64": b64_img,
@@ -2540,8 +2536,7 @@ async def test_submit_face_verified_reflects_outcome():
         noface = await client.post(
             "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
             headers={"Authorization": f"Bearer {tok_stud}"},
-            json={
-                "student_id": "STUD5",
+            json={"game_score": 20, "student_id": "STUD5",
                 "neighbors": ["PEER-A1"],
                 "session_salt": "DEMO1",
             },
@@ -2553,8 +2548,7 @@ async def test_submit_face_verified_reflects_outcome():
         bogus_face = await client.post(
             "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
             headers={"Authorization": f"Bearer {tok_stud}"},
-            json={
-                "student_id": "STUD5",
+            json={"game_score": 20, "student_id": "STUD5",
                 "neighbors": ["PEER-A1"],
                 "session_salt": "DEMO1",
                 "face_image_base64": "!!!!not-base64-face!!!!",
@@ -2590,7 +2584,7 @@ async def test_lab_face_check_errors_are_http_errors():
         res = await client.post(
             "/api/v1/attendance/lab/face-check",
             headers={"Authorization": f"Bearer {tok_teacher}"},
-            json={"face_image_base64": "!!!!not-base64-face!!!!"},
+            json={"game_score": 20, "face_image_base64": "!!!!not-base64-face!!!!"},
         )
         assert res.status_code >= 400, res.text
         assert "Face processing failed" in res.json()["detail"]

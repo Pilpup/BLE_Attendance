@@ -21,10 +21,8 @@ Lcom/college/feature/attendance/ble/BleScanner;
 Lcom/college/feature/attendance/ble/BleConstants;
 
 # Game draw pipeline (K1): frame buffer, video-game loop, telemetry
-Lcom/college/feature/attendance/game/OrbPoppingGame;
 Lcom/college/feature/attendance/game/FrameBuffer;
 Lcom/college/feature/attendance/game/GameCore;
-Lcom/college/feature/attendance/game/GameTelemetryEngine;
 
 # Session + server config (_prefs init and heartbeat token reads)
 Lcom/college/core/network/SessionManager;
@@ -32,8 +30,6 @@ Lcom/college/core/network/ServerConfigManager;
 Lcom/college/core/network/NetworkClient;
 
 # Telemetry events (round reporting path)
-Lcom/college/feature/attendance/telemetry/TapEvent;
-Lcom/college/feature/attendance/telemetry/ExpiredTargetEvent;
 
 # Camera best-frame path (post-game encode, cold on first round)
 Lcom/college/feature/attendance/camera/BestFrameAnalyzer;

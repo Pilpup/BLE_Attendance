@@ -81,12 +81,11 @@ import kotlinx.coroutines.withContext
 import com.college.core.model.User
 import com.college.core.ui.theme.AppTheme
 import com.college.feature.attendance.camera.PassiveFaceCaptureManager
-import com.college.feature.attendance.game.GameTelemetryEngine
-import com.college.feature.attendance.game.OrbPoppingGame
+import com.college.feature.attendance.game.ChimpGridGame
 import com.college.feature.attendance.network.AttendanceRecordItem
 import com.college.feature.attendance.viewmodel.StudentPhase
 
-// Student attendance portal displaying instructions island, game challenge, and completion
+// Student attendance portal displaying instructions, probing, and completion
 @Composable
 internal fun StudentSection(
     user: User,
@@ -99,22 +98,18 @@ internal fun StudentSection(
     auditedRecord: AttendanceRecordItem? = null,
     onRefreshAudit: (() -> Unit)? = null,
     isRefreshingAudit: Boolean = false,
-    onChallengeResult: (hit: Int, total: Int) -> Unit = { _, _ -> },
+    onChimpScore: ((Int) -> Unit)? = null,
     onFaceCaptured: (String, ByteArray?) -> Unit = { _, _ -> },
     onStartScanning: () -> Unit,
     onStopScanning: () -> Unit,
     onNext: () -> Unit = {},
     onDone: () -> Unit = {}
 ) {
-    // Passive face capture — wired like commit ca858fa/6baa2f0 (headless front camera, sharpest frame)
+    // Passive face capture — headless front camera, sharpest frame
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val faceCaptureManager = remember { PassiveFaceCaptureManager(context, lifecycleOwner) }
-    // R11 (review §2.3): gameScope survives the game leaving composition and
-    // lands the post-encode state writes back on the main thread after the
-    // withContext(Dispatchers.Default) face encode.
     val gameScope = rememberCoroutineScope()
-    var lastCapturedFaceBase64 by remember { mutableStateOf<String?>(null) }
 
     val permissionsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
@@ -153,27 +148,13 @@ internal fun StudentSection(
     val isScanning = studentPhase == StudentPhase.LISTENING_FOR_TEACHER ||
             studentPhase == StudentPhase.PROBING_NEIGHBORS
 
-    // Mirrors GameTelemetryEngine.DEFAULT_TARGETS_GOAL (24 targets ≈ 20s round, 30s session design)
-    val orbTotalTargets = 24
-    var targetsHit by remember { mutableIntStateOf(0) }
-    var totalTargetsSpawned by remember { mutableIntStateOf(orbTotalTargets) }
-    var isGameOver by remember { mutableStateOf(false) }
-
     val isVerified = studentPhase == StudentPhase.VERIFIED_PRESENT
     val isUnverified = studentPhase == StudentPhase.UNVERIFIED_FLAGGED
+    var lastGameScore by remember { mutableStateOf<Int?>(null) }
 
-    // Synchronize challenge state on student phase change
     LaunchedEffect(studentPhase) {
-        if (studentPhase == StudentPhase.PROBING_NEIGHBORS) {
-            targetsHit = 0
-            totalTargetsSpawned = orbTotalTargets
-            isGameOver = false
-            onChallengeResult(0, orbTotalTargets)
-        } else if (studentPhase == StudentPhase.STANDBY || studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
-            isGameOver = false
-            targetsHit = 0
-            totalTargetsSpawned = orbTotalTargets
-            lastCapturedFaceBase64 = null
+        if (studentPhase == StudentPhase.STANDBY || studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
+            lastGameScore = null
         }
     }
 
@@ -198,7 +179,7 @@ internal fun StudentSection(
             .background(AppTheme.colors.background)
             .systemBarsPadding()
     ) {
-        // Navigation header with back arrow, screen title, and optional score pill
+        // Navigation header with back arrow and screen title
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -228,172 +209,85 @@ internal fun StudentSection(
                 color = AppTheme.colors.textPrimary,
                 letterSpacing = (-0.5).sp
             )
-
-            // Hit counter during gameplay
-            if (studentPhase == StudentPhase.PROBING_NEIGHBORS && !isGameOver) {
-                Spacer(modifier = Modifier.weight(1f))
-                Text(
-                    text = "$targetsHit / $orbTotalTargets",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = AppTheme.colors.textSecondary,
-                    modifier = Modifier.padding(end = 16.dp)
-                )
-            }
         }
 
         when {
-            // Interactive floating balls reflex challenge
-            studentPhase == StudentPhase.PROBING_NEIGHBORS && !isGameOver -> {
-                Box(
+            // Probing: chimp memory challenge, then capture face and advance
+            studentPhase == StudentPhase.PROBING_NEIGHBORS -> {
+                ChimpGridGame(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
-                ) {
-                    OrbPoppingGame(
-                        modifier = Modifier.fillMaxSize(),
-                        seedKey = "$detectedSessionId:$sessionSalt:$studentId",
-                        onProgress = { hits, total ->
-                            targetsHit = hits
-                            totalTargetsSpawned = total
-                            onChallengeResult(hits, total)
-                        },
-                        onComplete = { taps, expired, totalGoal ->
-                            isGameOver = true
-                            // R11 (review §2.3): challenge-end face extraction
-                            // used to run its JPEG encode + Base64 synchronously
-                            // on the main thread (tens of ms on budget phones,
-                            // dropped frames right when the scorecard swaps in).
-                            // Split halves: the camera teardown + candidate steal
-                            // stay here (CameraX is main-thread bound AND the
-                            // analyzer's reset would recycle the bitmap we still
-                            // need), then the encode runs on Dispatchers.Default
-                            // and every state write + onNext() lands back on Main.
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    seed = "$detectedSessionId:$sessionSalt:$studentId".hashCode(),
+                    durationMs = 25_000L,
+                    onFinished = { score ->
+                        lastGameScore = score
+                        onChimpScore?.invoke(score)
+                        gameScope.launch {
                             val lockedCandidate = faceCaptureManager.stopCameraAndTakeCandidate()
-                            gameScope.launch {
-                                val faceResult = withContext(Dispatchers.Default) {
-                                    lockedCandidate?.let { faceCaptureManager.encodeCandidateResult(it) }
+                            val faceResult = withContext(Dispatchers.Default) {
+                                lockedCandidate?.let { faceCaptureManager.encodeCandidateResult(it) }
+                            }
+                            withContext(Dispatchers.Main) {
+                                if (faceResult != null) {
+                                    onFaceCaptured(faceResult.base64, faceResult.bytes)
                                 }
-                                withContext(Dispatchers.Main) {
-                                    if (faceResult != null) {
-                                        lastCapturedFaceBase64 = faceResult.base64
-                                        onFaceCaptured(faceResult.base64, faceResult.bytes)
-                                    }
-                                    val report = GameTelemetryEngine.analyze(
-                                        taps = taps,
-                                        expired = expired,
-                                        totalTargetsGoal = totalGoal
-                                    )
-                                    targetsHit = report.hits
-                                    totalTargetsSpawned = report.totalSpawns
-                                    onChallengeResult(report.hits, report.totalSpawns)
-                                    onNext()
-                                }
+                                onNext()
                             }
                         }
-                    )
-                }
+                    }
+                )
             }
 
-            // Challenge completed and waiting for teacher confirmation
-            isGameOver || studentPhase == StudentPhase.DISCOVERY_COMPLETE || studentPhase == StudentPhase.WAITING_FOR_AUDIT || isVerified || isUnverified -> {
+            // Waiting for teacher confirmation / final states
+            studentPhase == StudentPhase.DISCOVERY_COMPLETE ||
+                studentPhase == StudentPhase.WAITING_FOR_AUDIT ||
+                isVerified ||
+                isUnverified -> {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f)
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
                 ) {
-                    var scoreCardHeightDp by remember { mutableStateOf(128.dp) }
-                    val density = LocalDensity.current
-
                     Column(
-                        modifier = Modifier
-                            .align(Alignment.Center)
-                            .fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth(),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        // Slot 1: Score island while waiting, directly replaced by verification animation when done
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .align(Alignment.CenterHorizontally)
-                                .defaultMinSize(minHeight = scoreCardHeightDp)
-                        ) {
-                            if (isVerified) {
-                                VerifiedStatusAnimation()
-                            } else if (isUnverified) {
-                                UnverifiedStatusAnimation()
-                            } else {
-                                // Score card island containing score metrics
-                                Surface(
-                                    shape = RoundedCornerShape(22.dp),
-                                    color = AppTheme.colors.surface,
-                                    border = null,
-                                    modifier = Modifier.onGloballyPositioned { coords ->
-                                        scoreCardHeightDp = with(density) { coords.size.height.toDp() }
-                                    }
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(vertical = 20.dp, horizontal = 44.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally
-                                    ) {
-                                        Text(
-                                            text = "Score",
-                                            fontSize = 26.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = AppTheme.colors.textPrimary,
-                                            letterSpacing = (-0.5).sp
-                                        )
-
-                                        Spacer(modifier = Modifier.height(8.dp))
-
-                                        Text(
-                                            text = "$targetsHit / $orbTotalTargets",
-                                            fontSize = 48.sp,
-                                            fontWeight = FontWeight.Black,
-                                            color = AppTheme.colors.accentOrange
-                                        )
-                                    }
-                                }
-                            }
+                        if (lastGameScore != null) {
+                            Text(
+                                text = "Score ${lastGameScore}",
+                                fontSize = 36.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = AppTheme.colors.textPrimary
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
                         }
 
-                        Spacer(modifier = Modifier.height(24.dp))
-
-                        // Slot 2: Waiting for teacher indicator placed at screen center (hidden once verified/unverified)
-                        Box(
-                            contentAlignment = Alignment.Center,
-                            modifier = Modifier
-                                .align(Alignment.CenterHorizontally)
-                                .defaultMinSize(minHeight = 24.dp)
-                        ) {
-                            if (!isVerified && !isUnverified) {
-                                Text(
-                                    text = "Waiting for teacher...",
-                                    fontSize = 19.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color.Transparent
-                                )
-                                Text(
-                                    text = "Waiting for teacher$animatedDots",
-                                    fontSize = 19.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = AppTheme.colors.textPrimary
-                                )
-                            } else if (isUnverified && !studentStatusMessage.isNullOrBlank()) {
-                                Text(
-                                    text = studentStatusMessage,
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = AppTheme.colors.textSecondary
-                                )
-                            }
+                        if (isVerified) {
+                            VerifiedStatusAnimation()
+                        } else if (isUnverified) {
+                            UnverifiedStatusAnimation()
+                        } else {
+                            Text(
+                                text = "Waiting for teacher$animatedDots",
+                                fontSize = 19.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = AppTheme.colors.textPrimary
+                            )
                         }
 
-                        // Counterbalance spacer to keep layout locked at the exact same vertical position
-                        Spacer(modifier = Modifier.height(scoreCardHeightDp + 24.dp))
+                        if (isUnverified && !studentStatusMessage.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = studentStatusMessage,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = AppTheme.colors.textSecondary
+                            )
+                        }
                     }
-
-
                 }
             }
 
@@ -456,7 +350,7 @@ internal fun StudentSection(
                                 modifier = Modifier.width(26.dp)
                             )
                             Text(
-                                text = "Tap floating balls as fast as possible to confirm your attendance.",
+                                text = "Stay in class and allow your device to be discovered.",
                                 fontSize = 15.5.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = AppTheme.colors.textPrimary,

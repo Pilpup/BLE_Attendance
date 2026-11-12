@@ -212,22 +212,24 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     private var lastNeglectedPacketLogMs = 0L
     val discoveredPeers: Map<String, PeerData> get() = rawDiscoveredPeers
 
-    // Interactive reflex challenge state (score is cosmetic, informational only)
-    var challengeScore by mutableIntStateOf(0)
-    var challengeTotalTargets by mutableIntStateOf(0)
-    val challengeScorePercentage: Int
-        get() = if (challengeTotalTargets > 0) (challengeScore * 100) / challengeTotalTargets else 0
+    var chimpChallengeFailed by mutableStateOf(false)
+        private set
+    var chimpScore: Int? by mutableStateOf(null)
+        private set
 
     val hasLocalDefenseFailed: Boolean
-        get() = faceProxyDetected || ultrasonicProximityDetected
-
-    fun recordChallengeResult(hit: Int, total: Int) {
-        challengeScore = hit
-        challengeTotalTargets = total
-    }
+        get() = faceProxyDetected || ultrasonicProximityDetected || chimpChallengeFailed
 
     var capturedFaceBase64 by mutableStateOf<String?>(null)
     var capturedFaceBytes by mutableStateOf<ByteArray?>(null)
+
+    fun recordChimpChallengeScore(score: Int) {
+        chimpScore = score
+        chimpChallengeFailed = score < 15
+        if (chimpChallengeFailed) {
+            studentStatusMessage = "Cognitive challenge failed: score $score < 15"
+        }
+    }
 
     // Records the locked face biometric payload and immediately uploads to cloud registry
     fun recordFaceCapture(faceB64: String, faceBytes: ByteArray? = null) {
@@ -870,7 +872,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         closeNeighbors = closeHeader,
                         coLocatedPeerId = coLocatedPeerId,
                         ultrasonicProximityDetected = ultrasonicProximityDetected,
-                        challengeReport = "hits=${challengeScore},targets_spawned=${challengeTotalTargets}".takeIf { challengeTotalTargets > 0 },
+                        gameScore = chimpScore,
                         relayedReportsJson = null,
                         imageBytes = requestBody
                     )
@@ -884,9 +886,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     faceImageBase64 = facePayload,
                     ultrasonicProximityDetected = ultrasonicProximityDetected,
                     coLocatedPeerId = coLocatedPeerId,
-                    challengeReport = if (challengeTotalTargets > 0) {
-                        mapOf("hits" to challengeScore, "targets_spawned" to challengeTotalTargets)
-                    } else null
+                    challengeReport = chimpScore?.let { mapOf("chimp_score" to it) },
+                    gameScore = chimpScore,
                 )
                 safeApiCall { api.submitNeighbors(sessId, req) }
             }
@@ -1229,12 +1230,14 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         rawDiscoveredPeers.clear()
         topDeskNeighbours = emptyList()
         studentStatusMessage = null
-        challengeScore = 0
-        challengeTotalTargets = 0
         capturedFaceBase64 = null
         capturedFaceBytes = null
+        chimpScore = null
+        chimpChallengeFailed = false
         faceProxyDetected = false
         ultrasonicProximityDetected = false
+        chimpChallengeFailed = false
+        chimpScore = null
         coLocatedPeerId = null
         ultrasonicSnrDb = 0.0
         testedUltrasonicPeers.clear()
@@ -1282,12 +1285,14 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         rawDiscoveredPeers.clear()
         topDeskNeighbours = emptyList()
         studentStatusMessage = null
-        challengeScore = 0
-        challengeTotalTargets = 0
         capturedFaceBase64 = null
         capturedFaceBytes = null
+        chimpScore = null
+        chimpChallengeFailed = false
         faceProxyDetected = false
         ultrasonicProximityDetected = false
+        chimpChallengeFailed = false
+        chimpScore = null
         coLocatedPeerId = null
         ultrasonicSnrDb = 0.0
         testedUltrasonicPeers.clear()
@@ -1732,6 +1737,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         topDeskNeighbours = emptyList()
         capturedFaceBase64 = null
         capturedFaceBytes = null
+        chimpScore = null
+        chimpChallengeFailed = false
         testedUltrasonicPeers.clear()
         ultrasonicProximityDetected = false
         coLocatedPeerId = null
@@ -1757,6 +1764,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         topDeskNeighbours = emptyList()
         capturedFaceBase64 = null
         capturedFaceBytes = null
+        chimpScore = null
+        chimpChallengeFailed = false
         testedUltrasonicPeers.clear()
         ultrasonicProximityDetected = false
         coLocatedPeerId = null

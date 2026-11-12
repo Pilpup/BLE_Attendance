@@ -228,7 +228,11 @@ class SubmitNeighborsRequest(BaseModel):
     )
     challenge_report: Optional[dict] = Field(
         default=None,
-        description="Client-computed reflex-challenge counters (hits / targets spawned). INFORMATIONAL TELEMETRY ONLY: client-attested data must never gate security verdicts."
+        description="Client-computed challenge report (e.g. chimp_score). Used for challenge integrity checks."
+    )
+    game_score: Optional[int] = Field(
+        default=None,
+        description="Chimp memory challenge score; <15 is rejected as unverified."
     )
 
     # Strips whitespace from student identifier

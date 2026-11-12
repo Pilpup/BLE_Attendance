@@ -122,7 +122,8 @@ data class SubmitNeighborsRequest(
     @SerializedName("face_image_base64") val faceImageBase64: String? = null,
     @SerializedName("ultrasonic_proximity_detected") val ultrasonicProximityDetected: Boolean? = null,
     @SerializedName("co_located_peer_id") val coLocatedPeerId: String? = null,
-    @SerializedName("challenge_report") val challengeReport: Map<String, Int>? = null
+    @SerializedName("challenge_report") val challengeReport: Map<String, Int>? = null,
+    @SerializedName("game_score") val gameScore: Int? = null
 )
 
 // Face Biometric Diagnostic Lab Models

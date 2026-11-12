@@ -183,7 +183,7 @@ async def test_30_student_classroom_mesh_simulation():
         # forgery fix; offline students now verify through the >=2-witness rule)
         for sid, (nbrs, _relayed) in cluster_reports.items():
             headers = {"Authorization": f"Bearer {student_tokens[sid]}"}
-            payload = {"neighbors": [k[n] for n in nbrs], "session_salt": wire_salt}
+            payload = {"game_score": 20, "neighbors": [k[n] for n in nbrs], "session_salt": wire_salt}
             sub_res = await client.post(
                 "/api/v1/attendance/sessions/89F2/submit-neighbors",
                 headers=headers,
@@ -197,7 +197,7 @@ async def test_30_student_classroom_mesh_simulation():
         spoofer_sub = await client.post(
             "/api/v1/attendance/sessions/89F2/submit-neighbors",
             headers=spoofer_headers,
-            json={"neighbors": [k["ST01"]], "session_salt": wire_salt},
+            json={"game_score": 20, "neighbors": [k["ST01"]], "session_salt": wire_salt},
         )
         assert spoofer_sub.status_code == 200
 

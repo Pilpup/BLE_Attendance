@@ -1122,14 +1122,31 @@ async def submit_student_neighbors(
         ultrasonic_proximity = ultrasonic_proximity_str.lower() in ("true", "1") if ultrasonic_proximity_str is not None else False
         challenge_report_hdr = request.headers.get("x-challenge-report")
         challenge_report = None
+        game_score = None
+        game_score_hdr = request.headers.get("x-game-score") or request.headers.get("x-chimp-score")
+        if game_score_hdr:
+            try:
+                game_score = int(game_score_hdr.strip())
+            except ValueError:
+                game_score = None
         if challenge_report_hdr:
             try:
                 challenge_report = {
                     k.strip(): int(v)
                     for k, v in (p.split("=", 1) for p in challenge_report_hdr.split(",") if "=" in p)
                 }
-            except ValueError:
+                if game_score is None:
+                    for k in ("chimp_score", "score", "game_score"):
+                        if k in challenge_report:
+                            game_score = int(challenge_report[k])
+                            break
+            except Exception:
                 challenge_report = {"raw": challenge_report_hdr}
+                if game_score is None:
+                    try:
+                        game_score = int(challenge_report_hdr.strip())
+                    except Exception:
+                        pass
 
         payload = SubmitNeighborsRequest(
             student_id=student_id,
@@ -1140,6 +1157,7 @@ async def submit_student_neighbors(
             ultrasonic_proximity_detected=ultrasonic_proximity,
             co_located_peer_id=co_located_peer_id,
             challenge_report=challenge_report,
+            game_score=game_score,
         )
 
     session_obj = await _resolve_session(session_id, db)
@@ -1274,13 +1292,38 @@ async def submit_student_neighbors(
         f"FP: {hashlib.sha256(fingerprint_material.encode()).hexdigest()[:12]}"
     )
 
-    # Reflex-challenge counters are client-attested telemetry only. Logged for
-    # instructor triage (surface anomalies after collusion findings) and
-    # deliberately NEVER used as a security gate — the client could fake them.
-    if payload.challenge_report:
+    # Challenge score gate (security): chimp score < 15 => unverified.
+    challenge_score = payload.game_score
+    if challenge_score is None and payload.challenge_report:
+        for k in ("chimp_score", "score", "game_score"):
+            if k in payload.challenge_report:
+                try:
+                    challenge_score = int(payload.challenge_report[k])
+                except Exception:
+                    challenge_score = None
+                break
+    if payload.challenge_report or challenge_score is not None:
         logger.info(
             f"[Challenge Telemetry] Session: {target_session_id} Key: {student_key} "
-            f"Report: {payload.challenge_report}"
+            f"Report: {payload.challenge_report} Score: {challenge_score}"
+        )
+    if challenge_score is None or challenge_score < 15:
+        score_val = challenge_score if challenge_score is not None else "missing"
+        await _record_proxy_violation(
+            db=db,
+            session_id=target_session_id,
+            device_id=student_key,
+            status="COGNITIVE_CHALLENGE_FAILED",
+            verification_method="COGNITIVE_CHALLENGE",
+            remarks=f"Chimp challenge failed: score {score_val} < 15",
+            student_id=current_user.id if current_user else None,
+            reported_neighbors=normalized_neighbors,
+        )
+        await _commit_proxy_violation(db)
+        detail_score = challenge_score if challenge_score is not None else "missing"
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Cognitive challenge failed: score {detail_score} < 15",
         )
 
     # Face deduplication check (Layer 3: Camera Face Biometric Deduplication)

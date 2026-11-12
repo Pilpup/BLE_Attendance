@@ -4,7 +4,6 @@
 }
 
 -keep class com.college.feature.attendance.network.** { *; }
--keep class com.college.feature.attendance.telemetry.** { *; }
 
 # Keep CameraX analyzer interfaces and callbacks intact
 -keep class androidx.camera.core.** { *; }

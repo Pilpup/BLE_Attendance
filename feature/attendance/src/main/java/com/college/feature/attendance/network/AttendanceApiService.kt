@@ -67,7 +67,7 @@ interface AttendanceApiService {
         @Header("X-Close-Neighbors") closeNeighbors: String?,
         @Header("X-Co-Located-Peer-Id") coLocatedPeerId: String?,
         @Header("X-Ultrasonic-Proximity-Detected") ultrasonicProximityDetected: Boolean?,
-        @Header("X-Challenge-Report") challengeReport: String?,
+        @Header("X-Game-Score") gameScore: Int? = null,
         @Header("X-Relayed-Reports") relayedReportsJson: String?,
         @Body imageBytes: RequestBody
     ): Response<Unit>
