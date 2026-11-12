@@ -51,6 +51,7 @@ from app.models.attendance import (
     AttendanceSession,
     Course,
     CourseUnit,
+    LeaveApplication,
     SessionSubmission,
     UnitTopic,
     User,
@@ -344,6 +345,98 @@ async def _populate_record_student_details(
         if u is not None:
             r.roll_number = u.roll_number
             r.student_name = u.full_name
+
+
+# Approved-leave overlay (leave feature): after finalize verdicts exist but
+# BEFORE the finalize commit, enrolled students whose APPROVED leave covers
+# the session date are marked "LEAVE" instead of "ABSENT" (or given a LEAVE
+# row outright — both finalize paths only create records for students who
+# participated). Presence beats leave: VERIFIED_PRESENT, challenge failures,
+# and proxy verdicts are never overwritten — approved leave explains absence,
+# not a student who showed up and failed the check. Roster is derived from
+# the same eligibility snapshot the check-in gate uses (semester + program
+# over active STUDENT accounts); legacy sessions without a snapshot have no
+# derivable roster and are skipped.
+async def _apply_approved_leave_overlay(
+    session_obj: AttendanceSession, db: AsyncSession
+) -> int:
+    semester = session_obj.eligibility_semester
+    program = (session_obj.eligibility_program or "").strip()
+    session_date = session_obj.started_at.date() if session_obj.started_at else None
+    if semester is None or not program or session_date is None:
+        return 0
+
+    candidates = await db.execute(
+        select(User).where(
+            User.semester == semester,
+            User.is_active.is_(True),
+            User.role == "STUDENT",
+        )
+    )
+    roster = [
+        u for u in candidates.scalars().all()
+        if u.roll_number and _program_key(u.program) == _program_key(program)
+    ]
+    if not roster:
+        return 0
+
+    roster_ids = [u.id for u in roster]
+    leave_res = await db.execute(
+        select(LeaveApplication)
+        .where(
+            LeaveApplication.student_id.in_(roster_ids),
+            LeaveApplication.status == "APPROVED",
+            LeaveApplication.from_date <= session_date,
+            LeaveApplication.to_date >= session_date,
+        )
+        .order_by(LeaveApplication.created_at)
+    )
+    # Latest covering application wins if a student has several for this date
+    leave_by_student: dict[uuid.UUID, LeaveApplication] = {}
+    for leave_row in leave_res.scalars().all():
+        leave_by_student[leave_row.student_id] = leave_row
+    if not leave_by_student:
+        return 0
+
+    rec_res = await db.execute(
+        select(AttendanceRecord).where(AttendanceRecord.session_id == session_obj.id)
+    )
+    existing_recs = rec_res.scalars().all()
+    by_student = {r.student_id: r for r in existing_recs if r.student_id}
+    by_device = {r.ble_device_id.upper(): r for r in existing_recs}
+
+    created = 0
+    for student in roster:
+        leave_row = leave_by_student.get(student.id)
+        if not leave_row:
+            continue
+        range_text = f"{leave_row.from_date.isoformat()}..{leave_row.to_date.isoformat()}"
+        rec = by_student.get(student.id)
+        if rec is None:
+            # Unbound-but-keyed row (submitted without a resolvable account):
+            # matching by the derived device key keeps one row per student.
+            rec = by_device.get(derive_short_device_key(student.roll_number))
+        if rec is None:
+            db.add(
+                AttendanceRecord(
+                    id=uuid.uuid4(),
+                    session_id=session_obj.id,
+                    student_id=student.id,
+                    ble_device_id=derive_short_device_key(student.roll_number),
+                    status="LEAVE",
+                    verification_method="LEAVE_APPROVAL",
+                    affinity_score=0.00,
+                    reported_neighbors=[],
+                    remarks=f"Approved leave {range_text}",
+                    recorded_at=datetime.now(timezone.utc),
+                )
+            )
+            created += 1
+        elif rec.status == "ABSENT":
+            rec.status = "LEAVE"
+            rec.verification_method = "LEAVE_APPROVAL"
+            rec.remarks = f"Approved leave {range_text}"
+    return created
 
 
 # Record or update a proxy violation record for a device
@@ -1139,6 +1232,12 @@ async def finalize_attendance_session(
     # Batch inserts all records and cleans staged submissions
     if records_to_create:
         db.add_all(records_to_create)
+        await db.flush()
+
+    # Approved-leave overlay: enrolled students with an APPROVED leave covering
+    # the session date are marked LEAVE instead of ABSENT (or given a LEAVE
+    # row). Runs after the verdict gate so the gate never sees LEAVE rows.
+    await _apply_approved_leave_overlay(session_obj, db)
 
     session_obj.status = "COMPLETED"
     session_obj.ended_at = datetime.now(timezone.utc)
@@ -1963,6 +2062,11 @@ async def audit_and_finalize_session(
     if records_to_create:
         db.add_all(records_to_create)
         await db.flush()
+
+    # Approved-leave overlay: enrolled students with an APPROVED leave covering
+    # the session date are marked LEAVE instead of ABSENT (or given a LEAVE
+    # row). Runs after the verdict gate so the gate never sees LEAVE rows.
+    await _apply_approved_leave_overlay(session_obj, db)
 
     session_obj.status = "COMPLETED"
     session_obj.ended_at = datetime.now(timezone.utc)

@@ -24,6 +24,9 @@ import com.college.feature.attendance.network.AttendanceRecordItem
 import com.college.feature.attendance.network.AttendanceSessionResponse
 import com.college.feature.attendance.network.CourseCreateRequest
 import com.college.feature.attendance.network.CourseResponse
+import com.college.feature.attendance.network.LeaveApplicationResponse
+import com.college.feature.attendance.network.LeaveCreateRequest
+import com.college.feature.attendance.network.LeaveReviewRequest
 import com.college.feature.attendance.network.MeshAuditRunRequest
 import com.college.feature.attendance.network.RecordOverrideRequest
 import com.college.feature.attendance.network.SessionCreateRequest
@@ -105,7 +108,8 @@ enum class StudentPhase {
 enum class TeacherViewMode {
     MENU,
     TAKE_ATTENDANCE,
-    OLDER_SESSIONS
+    OLDER_SESSIONS,
+    LEAVE_REQUESTS
 }
 
 // Manages classroom attendance session state, BLE discovery, and cloud synchronization
@@ -174,6 +178,18 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var teacherViewMode by mutableStateOf(TeacherViewMode.MENU)
     var pastSessions by mutableStateOf<List<AttendanceSessionResponse>>(emptyList())
     var isLoadingHistory by mutableStateOf(false)
+
+    // Leave applications (student): submit + history
+    var myLeaveApplications by mutableStateOf<List<LeaveApplicationResponse>>(emptyList())
+    var isLoadingLeave by mutableStateOf(false)
+    var isSubmittingLeave by mutableStateOf(false)
+    var leaveMessage by mutableStateOf<String?>(null)
+
+    // Leave applications (teacher/HOD): department queue
+    var departmentLeaveApplications by mutableStateOf<List<LeaveApplicationResponse>>(emptyList())
+    var isLoadingDeptLeave by mutableStateOf(false)
+    var isReviewingLeave by mutableStateOf(false)
+    var deptLeaveMessage by mutableStateOf<String?>(null)
     var selectedSessionForDetails by mutableStateOf<AttendanceSessionResponse?>(null)
 
     // Cloud session state and sync messaging
@@ -2144,5 +2160,119 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         onStartScanning = null
         onStopScanning = null
         proximityManager.release()
+    }
+
+    // Leave applications (student)
+    fun loadMyLeaveApplications() {
+        if (!SessionManager.default.isLoggedIn) return
+        isLoadingLeave = true
+        leaveMessage = null
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val res = api.getMyLeaveApplications()
+                withContext(Dispatchers.Main) {
+                    isLoadingLeave = false
+                    if (res.isSuccessful) {
+                        myLeaveApplications = res.body().orEmpty()
+                    } else if (res.code() == 401) {
+                        handleAuthExpired()
+                    }
+                }
+            } catch (_: Exception) {
+                withContext(Dispatchers.Main) { isLoadingLeave = false }
+            }
+        }
+    }
+
+    fun submitLeaveApplication(fromDate: String, toDate: String, reason: String) {
+        if (!SessionManager.default.isLoggedIn) return
+        isSubmittingLeave = true
+        leaveMessage = null
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val res = api.submitLeaveApplication(
+                    LeaveCreateRequest(fromDate = fromDate, toDate = toDate, reason = reason.trim())
+                )
+                withContext(Dispatchers.Main) {
+                    isSubmittingLeave = false
+                    if (res.isSuccessful) {
+                        leaveMessage = "Leave application submitted"
+                        loadMyLeaveApplications()
+                    } else if (res.code() == 401) {
+                        handleAuthExpired()
+                    } else {
+                        val detail = try {
+                            org.json.JSONObject(res.errorBody()?.string().orEmpty()).optString("detail")
+                        } catch (_: Exception) { "" }
+                        leaveMessage = detail.ifBlank { "Could not submit application" }
+                    }
+                }
+            } catch (_: Exception) {
+                withContext(Dispatchers.Main) {
+                    isSubmittingLeave = false
+                    leaveMessage = "Could not submit application"
+                }
+            }
+        }
+    }
+
+    // Leave queue (teacher/HOD)
+    fun loadDepartmentLeaveApplications() {
+        if (!SessionManager.default.isLoggedIn) return
+        isLoadingDeptLeave = true
+        deptLeaveMessage = null
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val res = api.getDepartmentLeaveApplications()
+                withContext(Dispatchers.Main) {
+                    isLoadingDeptLeave = false
+                    if (res.isSuccessful) {
+                        departmentLeaveApplications = res.body().orEmpty()
+                    } else if (res.code() == 401) {
+                        handleAuthExpired()
+                    } else {
+                        val detail = try {
+                            org.json.JSONObject(res.errorBody()?.string().orEmpty()).optString("detail")
+                        } catch (_: Exception) { "" }
+                        deptLeaveMessage = detail.ifBlank { "Could not load leave requests" }
+                    }
+                }
+            } catch (_: Exception) {
+                withContext(Dispatchers.Main) {
+                    isLoadingDeptLeave = false
+                    deptLeaveMessage = "Could not load leave requests"
+                }
+            }
+        }
+    }
+
+    fun reviewLeaveApplication(applicationId: String, decision: String) {
+        if (!SessionManager.default.isLoggedIn) return
+        isReviewingLeave = true
+        deptLeaveMessage = null
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val res = api.reviewLeaveApplication(applicationId, LeaveReviewRequest(decision = decision))
+                withContext(Dispatchers.Main) {
+                    isReviewingLeave = false
+                    if (res.isSuccessful) {
+                        deptLeaveMessage = if (decision == "APPROVED") "Leave approved" else "Leave rejected"
+                        loadDepartmentLeaveApplications()
+                    } else if (res.code() == 401) {
+                        handleAuthExpired()
+                    } else {
+                        val detail = try {
+                            org.json.JSONObject(res.errorBody()?.string().orEmpty()).optString("detail")
+                        } catch (_: Exception) { "" }
+                        deptLeaveMessage = detail.ifBlank { "Could not review application" }
+                    }
+                }
+            } catch (_: Exception) {
+                withContext(Dispatchers.Main) {
+                    isReviewingLeave = false
+                    deptLeaveMessage = "Could not review application"
+                }
+            }
+        }
     }
 }

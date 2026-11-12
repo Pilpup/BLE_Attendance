@@ -150,3 +150,32 @@ data class FaceLabCompareResponse(
     @SerializedName("is_duplicate") val isDuplicate: Boolean,
     val remarks: String
 )
+
+// Leave application (student -> HOD). Duration is the explicit date range.
+data class LeaveCreateRequest(
+    @SerializedName("from_date") val fromDate: String,
+    @SerializedName("to_date") val toDate: String,
+    val reason: String
+)
+
+@Immutable
+data class LeaveApplicationResponse(
+    val id: String = "",
+    @SerializedName("student_id") val studentId: String? = null,
+    @SerializedName("student_name") val studentName: String? = null,
+    @SerializedName("student_roll") val studentRoll: String? = null,
+    val department: String = "",
+    @SerializedName("from_date") val fromDate: String = "",
+    @SerializedName("to_date") val toDate: String = "",
+    val reason: String = "",
+    val status: String = "PENDING",
+    @SerializedName("review_comment") val reviewComment: String? = null,
+    @SerializedName("reviewed_at") val reviewedAt: String? = null,
+    @SerializedName("created_at") val createdAt: String? = null,
+    @SerializedName("can_review") val canReview: Boolean = false
+)
+
+data class LeaveReviewRequest(
+    val decision: String,
+    val comment: String? = null
+)

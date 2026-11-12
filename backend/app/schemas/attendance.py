@@ -118,7 +118,7 @@ class AttendanceRecordResponse(BLEAuditRecordItem):
 
 
 # Canonical status enums for request validation (docs of record: BLEAuditRecordItem / RecordOverrideRequest docstrings)
-_ALLOWED_OVERRIDE_STATUSES = {"VERIFIED_PRESENT", "ABSENT", "ISOLATED_FLAGGED"}
+_ALLOWED_OVERRIDE_STATUSES = {"VERIFIED_PRESENT", "ABSENT", "ISOLATED_FLAGGED", "LEAVE"}
 _ALLOWED_FINALIZE_STATUSES = {"VERIFIED_PRESENT", "ABSENT", "ISOLATED_FLAGGED", "SPOOFER_REJECTED"}
 
 
@@ -126,7 +126,7 @@ _ALLOWED_FINALIZE_STATUSES = {"VERIFIED_PRESENT", "ABSENT", "ISOLATED_FLAGGED", 
 class RecordOverrideRequest(BaseModel):
     status: str = Field(
         default="VERIFIED_PRESENT",
-        description="New attendance status: VERIFIED_PRESENT | ABSENT | ISOLATED_FLAGGED",
+        description="New attendance status: VERIFIED_PRESENT | ABSENT | ISOLATED_FLAGGED | LEAVE",
     )
     remarks: Optional[str] = Field(
         default="Manual override by instructor",
@@ -139,7 +139,7 @@ class RecordOverrideRequest(BaseModel):
         # an unclassifiable row the teacher dashboard cannot render.
         normalized = str(v if v is not None else "").strip().upper()
         if normalized not in _ALLOWED_OVERRIDE_STATUSES:
-            raise ValueError("status must be one of: VERIFIED_PRESENT | ABSENT | ISOLATED_FLAGGED")
+            raise ValueError("status must be one of: VERIFIED_PRESENT | ABSENT | ISOLATED_FLAGGED | LEAVE")
         return normalized
 
 

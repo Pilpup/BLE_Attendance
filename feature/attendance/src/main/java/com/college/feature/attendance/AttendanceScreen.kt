@@ -83,7 +83,13 @@ fun AttendanceScreen(
             onDone = {
                 callbacks.onStopStudentScanning()
                 onBack()
-            }
+            },
+            myLeaveApplications = viewModel.myLeaveApplications,
+            isLoadingLeave = viewModel.isLoadingLeave,
+            isSubmittingLeave = viewModel.isSubmittingLeave,
+            leaveMessage = viewModel.leaveMessage,
+            onLoadMyLeaves = { viewModel.loadMyLeaveApplications() },
+            onSubmitLeave = { f, t, r -> viewModel.submitLeaveApplication(f, t, r) }
         )
         return
     }
@@ -128,6 +134,10 @@ fun AttendanceScreen(
                             viewModel.resetSession()
                         } else if (user.hasRole(Role.STUDENT) && viewModel.studentPhase != StudentPhase.STANDBY) {
                             viewModel.resetStudentSession()
+                        } else if (user.canTakeAttendance() && viewModel.teacherViewMode == TeacherViewMode.LEAVE_REQUESTS) {
+                            viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
+                        } else if (user.canTakeAttendance() && viewModel.teacherViewMode == TeacherViewMode.OLDER_SESSIONS) {
+                            viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
                         } else {
                             onBack()
                         }
@@ -146,6 +156,7 @@ fun AttendanceScreen(
                         user.canTakeAttendance() -> {
                             when (viewModel.teacherViewMode) {
                                 TeacherViewMode.OLDER_SESSIONS -> "Older Sessions"
+                                TeacherViewMode.LEAVE_REQUESTS -> "Leave Requests"
                                 else -> "Attendance"
                             }
                         }
@@ -202,7 +213,13 @@ fun AttendanceScreen(
                         selectedCourse = viewModel.selectedCourse,
                         onExportAttendance = callbacks.onShareAttendance,
                         availableCourses = viewModel.availableCourses,
-                        onRefreshCourses = { viewModel.loadCourses() }
+                        onRefreshCourses = { viewModel.loadCourses() },
+                        departmentLeaveApplications = viewModel.departmentLeaveApplications,
+                        isLoadingDeptLeave = viewModel.isLoadingDeptLeave,
+                        isReviewingLeave = viewModel.isReviewingLeave,
+                        deptLeaveMessage = viewModel.deptLeaveMessage,
+                        onLoadDeptLeave = { viewModel.loadDepartmentLeaveApplications() },
+                        onReviewLeave = { id, decision -> viewModel.reviewLeaveApplication(id, decision) }
                     )
                 }
 
@@ -218,6 +235,12 @@ fun AttendanceScreen(
                     auditedRecord = viewModel.auditedRecord,
                     onRefreshAudit = { viewModel.refreshAuditStatus() },
                     isRefreshingAudit = viewModel.isRefreshingAudit,
+                    myLeaveApplications = viewModel.myLeaveApplications,
+                    isLoadingLeave = viewModel.isLoadingLeave,
+                    isSubmittingLeave = viewModel.isSubmittingLeave,
+                    leaveMessage = viewModel.leaveMessage,
+                    onLoadMyLeaves = { viewModel.loadMyLeaveApplications() },
+                    onSubmitLeave = { f, t, r -> viewModel.submitLeaveApplication(f, t, r) },
                     onChimpScore = { viewModel.recordChimpChallengeScore(it) },
                     onChimpChallengeActive = { viewModel.updateChimpChallengeActive(it) },
                     onFaceCaptured = { b64, bytes -> viewModel.recordFaceCapture(b64, bytes) },

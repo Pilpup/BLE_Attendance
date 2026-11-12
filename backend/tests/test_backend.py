@@ -3320,3 +3320,411 @@ async def test_legacy_finalize_enforces_score_gate():
         assert record_map[k_b]["status"] == "COGNITIVE_CHALLENGE_FAILED"
         assert record_map[k_b]["game_score"] == 8
         assert "score 8 < 15" in record_map[k_b]["remarks"]
+
+
+# Leave feature (chunk 1): student submissions route to the department queue;
+# TEACHERs of the department are view-only; ONLY role='HOD' (set manually in
+# the DB, never registrable) can approve/reject — and only within their own
+# department. Invalid ranges, oversized spans, and re-reviews are rejected.
+@pytest.mark.anyio
+async def test_leave_submission_and_hod_review_flow():
+    import uuid
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base, User
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with test_session_factory() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_teacher = await _register_test_teacher(client, test_session_factory, "Prof. Leave Dept", "leave.teacher@univ.edu")
+        tok_ece = await _register_test_teacher(client, test_session_factory, "Prof. ECE View", "ece.view@univ.edu")
+        tok_student = await _register_roll_student(client, test_session_factory, "Leave Student", "leave.stud@univ.edu", "22B5501")
+
+        # Manual DB promotion mirrors the real flow: HOD is never registrable
+        async with test_session_factory() as s:
+            hod_row = (await s.execute(select(User).where(User.email == "leave.teacher@univ.edu"))).scalars().first()
+            hod_row.role = "HOD"
+            ece_row = (await s.execute(select(User).where(User.email == "ece.view@univ.edu"))).scalars().first()
+            ece_row.department = "ECE"
+            await s.commit()
+
+        submit_url = "/api/v1/leave/applications"
+        r = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {tok_student}"},
+            json={"from_date": "2026-11-13", "to_date": "2026-11-15", "reason": "Family function out of station"},
+        )
+        assert r.status_code == 201, r.text
+        body = r.json()
+        assert body["status"] == "PENDING"
+        assert body["can_review"] is False
+        assert body["department"] == "CSE"
+        application_id = body["id"]
+
+        # Validation: backwards range, >90-day span, too-short reason
+        bad_range = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {tok_student}"},
+            json={"from_date": "2026-11-15", "to_date": "2026-11-13", "reason": "Backwards range test"},
+        )
+        assert bad_range.status_code == 422
+        long_span = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {tok_student}"},
+            json={"from_date": "2026-01-01", "to_date": "2026-12-30", "reason": "Way too long range"},
+        )
+        assert long_span.status_code == 422
+        tiny_reason = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {tok_student}"},
+            json={"from_date": "2026-11-13", "to_date": "2026-11-14", "reason": "ab"},
+        )
+        assert tiny_reason.status_code == 422
+
+        # Student sees own application
+        mine = await client.get(
+            "/api/v1/leave/applications/mine",
+            headers={"Authorization": f"Bearer {tok_student}"},
+        )
+        assert mine.status_code == 200
+        assert len(mine.json()) == 1
+
+        # HOD queue: sees the application with review rights
+        queue = await client.get(
+            "/api/v1/leave/applications",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+        )
+        assert queue.status_code == 200
+        items = queue.json()
+        assert len(items) == 1
+        assert items[0]["can_review"] is True
+        assert items[0]["student_roll"] == "22B5501"
+
+        # Teacher of another department sees an EMPTY queue (dept isolation)
+        queue_ece = await client.get(
+            "/api/v1/leave/applications",
+            headers={"Authorization": f"Bearer {tok_ece}"},
+        )
+        assert queue_ece.status_code == 200
+        assert queue_ece.json() == []
+
+        # TEACHER role cannot review at all
+        forbidden = await client.post(
+            f"/api/v1/leave/applications/{application_id}/review",
+            headers={"Authorization": f"Bearer {tok_ece}"},
+            json={"decision": "APPROVED"},
+        )
+        assert forbidden.status_code == 403
+        assert "Only the HOD" in forbidden.json()["detail"]
+
+        # Even a HOD of another department cannot act on it
+        async with test_session_factory() as s:
+            ece_row = (await s.execute(select(User).where(User.email == "ece.view@univ.edu"))).scalars().first()
+            ece_row.role = "HOD"
+            await s.commit()
+        cross = await client.post(
+            f"/api/v1/leave/applications/{application_id}/review",
+            headers={"Authorization": f"Bearer {tok_ece}"},
+            json={"decision": "REJECTED", "comment": "not my department"},
+        )
+        assert cross.status_code == 403
+        assert "another department" in cross.json()["detail"]
+
+        # Own-department HOD approves
+        approved = await client.post(
+            f"/api/v1/leave/applications/{application_id}/review",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"decision": "APPROVED", "comment": "Approved — one time"},
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["status"] == "APPROVED"
+        assert approved.json()["review_comment"] == "Approved — one time"
+        assert approved.json()["reviewed_at"] is not None
+
+        # Re-reviewing a decided application is a conflict
+        again = await client.post(
+            f"/api/v1/leave/applications/{application_id}/review",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"decision": "REJECTED"},
+        )
+        assert again.status_code == 409
+
+        # Reject path works too
+        r2 = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {tok_student}"},
+            json={"from_date": "2026-11-20", "to_date": "2026-11-20", "reason": "Medical checkup"},
+        )
+        assert r2.status_code == 201, r2.text
+        second_id = r2.json()["id"]
+        rejected = await client.post(
+            f"/api/v1/leave/applications/{second_id}/review",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"decision": "REJECTED", "comment": "Exam week"},
+        )
+        assert rejected.status_code == 200
+        assert rejected.json()["status"] == "REJECTED"
+        assert rejected.json()["review_comment"] == "Exam week"
+
+
+# HOD is a TEACHER superset: widening require_teacher must keep session
+# creation (and all other teacher powers) working for role='HOD'.
+@pytest.mark.anyio
+async def test_hod_retains_teacher_powers():
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base, User
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with test_session_factory() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_teacher = await _register_test_teacher(client, test_session_factory, "Prof. HOD Powers", "hod.powers@univ.edu")
+        tok_student = await _register_roll_student(client, test_session_factory, "Powers Student", "powers.stud@univ.edu", "22B5502")
+
+        async with test_session_factory() as s:
+            hod_row = (await s.execute(select(User).where(User.email == "hod.powers@univ.edu"))).scalars().first()
+            hod_row.role = "HOD"
+            await s.commit()
+
+        # require_teacher accepts HOD: session creation succeeds
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"session_token": "HODP", "total_enrolled": 1},
+        )
+        assert s_res.status_code == 201, s_res.text
+
+
+# Leave feature (chunk 2): the finalize overlay. Enrolled students whose
+# APPROVED leave covers the session date are marked LEAVE instead of ABSENT
+# (or given a LEAVE row when they never produced one). Presence beats leave:
+# VERIFIED verdicts stay VERIFIED even with approved leave. Students without
+# approved leave get nothing.
+@pytest.mark.anyio
+async def test_leave_overlay_marks_leave_in_legacy_finalize():
+    from datetime import datetime, timezone
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base, User
+    from app.routers.attendance import derive_short_device_key
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with test_session_factory() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_teacher = await _register_test_teacher(client, test_session_factory, "Prof. Leave Overlay", "leave.overlay@univ.edu")
+        tok_a = await _register_roll_student(client, test_session_factory, "Overlay Alpha", "overlay.a@univ.edu", "22B6601")
+        tok_b = await _register_roll_student(client, test_session_factory, "Overlay Bravo", "overlay.b@univ.edu", "22B6602")
+        tok_c = await _register_roll_student(client, test_session_factory, "Overlay Charlie", "overlay.c@univ.edu", "22B6603")
+        tok_d = await _register_roll_student(client, test_session_factory, "Overlay Delta", "overlay.d@univ.edu", "22B6604")
+        tok_e = await _register_roll_student(client, test_session_factory, "Overlay Echo", "overlay.e@univ.edu", "22B6605")
+
+        async with test_session_factory() as s:
+            hod_row = (await s.execute(select(User).where(User.email == "leave.overlay@univ.edu"))).scalars().first()
+            hod_row.role = "HOD"
+            await s.commit()
+
+        # Class runs today; every leave below covers today's date
+        today = datetime.now(timezone.utc).date().isoformat()
+
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={
+                "session_token": "LVOL",
+                "total_enrolled": 0,
+                "course_program": "B.Tech",
+                "course_semester": 1,
+            },
+        )
+        assert s_res.status_code == 201, s_res.text
+        session_id = s_res.json()["id"]
+
+        # C and D are a mutual pair (both should end VERIFIED despite leave)
+        submit_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
+        r_c = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {tok_c}"},
+            json={"game_score": 20, "student_id": derive_short_device_key("22B6603"), "neighbors": [derive_short_device_key("22B6604")], "session_salt": s_res.json()["session_wire_salt"]},
+        )
+        assert r_c.status_code == 200, r_c.text
+        r_d = await client.post(
+            submit_url,
+            headers={"Authorization": f"Bearer {tok_d}"},
+            json={"game_score": 20, "student_id": derive_short_device_key("22B6604"), "neighbors": [derive_short_device_key("22B6603")], "session_salt": s_res.json()["session_wire_salt"]},
+        )
+        assert r_d.status_code == 200, r_d.text
+
+        # Leaves: A (silent), B (will arrive as an ABSENT payload row),
+        # C and D (present pair — proves presence beats leave)
+        for tok, email, roll in [(tok_a, "overlay.a@univ.edu", "22B6601"), (tok_b, "overlay.b@univ.edu", "22B6602"), (tok_c, "overlay.c@univ.edu", "22B6603"), (tok_d, "overlay.d@univ.edu", "22B6604")]:
+            r = await client.post(
+                "/api/v1/leave/applications",
+                headers={"Authorization": f"Bearer {tok}"},
+                json={"from_date": today, "to_date": today, "reason": f"Overlay test leave {roll}"},
+            )
+            assert r.status_code == 201, r.text
+        async with test_session_factory() as s:
+            pending = (await s.execute(select(_leave_model()))).scalars().all()
+            for row in pending:
+                row.status = "APPROVED"
+                row.reviewed_by = hod_row.id if hod_row else None
+            await s.commit()
+
+        # Teacher's payload marks B ABSENT (by device key)
+        k_b = derive_short_device_key("22B6602")
+        fin = await client.post(
+            f"/api/v1/attendance/sessions/{session_id}/finalize",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={
+                "records": [
+                    {
+                        "ble_device_id": k_b,
+                        "student_id": None,
+                        "status": "ABSENT",
+                        "verification_method": "NONE",
+                        "affinity_score": 0.0,
+                        "reported_neighbors": [],
+                    }
+                ]
+            },
+        )
+        assert fin.status_code == 200, fin.text
+        fin_data = fin.json()
+        assert fin_data["total_verified"] == 2  # C and D only
+        record_map = {r["ble_device_id"]: r for r in fin_data["records"]}
+        assert record_map[derive_short_device_key("22B6601")]["status"] == "LEAVE"
+        assert record_map[k_b]["status"] == "LEAVE"  # ABSENT rewritten
+        assert record_map[derive_short_device_key("22B6603")]["status"] == "VERIFIED_PRESENT"
+        assert record_map[derive_short_device_key("22B6604")]["status"] == "VERIFIED_PRESENT"
+        # E had no approved leave — silent student, no record invented
+        assert derive_short_device_key("22B6605") not in record_map
+        # LEAVE rows self-explain
+        assert "Approved leave" in record_map[k_b]["remarks"]
+
+
+# Same overlay through the audit-and-finalize path: a fully silent class where
+# one student has approved leave gets exactly one LEAVE row and nothing else.
+@pytest.mark.anyio
+async def test_leave_overlay_in_audit_finalize():
+    from datetime import datetime, timezone
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base, User
+    from app.routers.attendance import derive_short_device_key
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with test_session_factory() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_teacher = await _register_test_teacher(client, test_session_factory, "Prof. Audit Leave", "audit.leave@univ.edu")
+        tok_a = await _register_roll_student(client, test_session_factory, "Audit Leave Stud", "audit.leave.stud@univ.edu", "22B6701")
+        tok_e = await _register_roll_student(client, test_session_factory, "Audit No Leave", "audit.noleave@univ.edu", "22B6702")
+
+        async with test_session_factory() as s:
+            hod_row = (await s.execute(select(User).where(User.email == "audit.leave@univ.edu"))).scalars().first()
+            hod_row.role = "HOD"
+            await s.commit()
+
+        today = datetime.now(timezone.utc).date().isoformat()
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={
+                "session_token": "AVOL",
+                "total_enrolled": 0,
+                "course_program": "B.Tech",
+                "course_semester": 1,
+            },
+        )
+        assert s_res.status_code == 201, s_res.text
+        session_id = s_res.json()["id"]
+
+        r = await client.post(
+            "/api/v1/leave/applications",
+            headers={"Authorization": f"Bearer {tok_a}"},
+            json={"from_date": today, "to_date": today, "reason": "Audit path leave test"},
+        )
+        assert r.status_code == 201, r.text
+        async with test_session_factory() as s:
+            pending = (await s.execute(select(_leave_model()))).scalars().all()
+            for row in pending:
+                row.status = "APPROVED"
+                if hod_row:
+                    row.reviewed_by = hod_row.id
+            await s.commit()
+
+        fin = await client.post(
+            f"/api/v1/attendance/sessions/{session_id}/audit-and-finalize",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"reports": {}},
+        )
+        assert fin.status_code == 200, fin.text
+        fin_data = fin.json()
+        assert fin_data["total_verified"] == 0
+        records = fin_data["records"]
+        assert len(records) == 1
+        assert records[0]["ble_device_id"] == derive_short_device_key("22B6701")
+        assert records[0]["status"] == "LEAVE"
+        assert records[0]["verification_method"] == "LEAVE_APPROVAL"
+        # The other silent student (no approved leave) has no record
+        assert all(rec["ble_device_id"] != derive_short_device_key("22B6702") for rec in records)
+
+
+def _leave_model():
+    from app.models.attendance import LeaveApplication
+    return LeaveApplication

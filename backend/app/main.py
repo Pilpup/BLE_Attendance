@@ -13,7 +13,7 @@ from app.config import settings, validate_production_secrets
 from app.core.security import is_test_environment
 from app.database import AsyncSessionLocal, engine, is_postgres
 from app.models.attendance import Base, EmailOTP
-from app.routers import attendance, auth, library
+from app.routers import attendance, auth, leave, library
 from app.seed import seed_library_demo_books
 
 logger = logging.getLogger("uvicorn.error")
@@ -172,6 +172,25 @@ BEGIN
 
     -- email_otps index on expires_at for fast periodic purging
     CREATE INDEX IF NOT EXISTS ix_email_otps_expires_at ON email_otps(expires_at);
+
+    -- leave_applications (student -> HOD approval workflow; leave feature)
+    CREATE TABLE IF NOT EXISTS leave_applications (
+        id UUID PRIMARY KEY,
+        student_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        department VARCHAR(50) NOT NULL,
+        from_date DATE NOT NULL,
+        to_date DATE NOT NULL,
+        reason TEXT NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+        reviewed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+        reviewed_at TIMESTAMP WITH TIME ZONE,
+        review_comment VARCHAR(500),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+        CONSTRAINT ck_leave_apps_dates CHECK (to_date >= from_date),
+        CONSTRAINT ck_leave_apps_status CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED'))
+    );
+    CREATE INDEX IF NOT EXISTS ix_leave_apps_dept_status ON leave_applications(department, status);
+    CREATE INDEX IF NOT EXISTS ix_leave_apps_student_created ON leave_applications(student_id, created_at);
 END $$;
 """
 
@@ -322,6 +341,7 @@ async def log_requests(request: Request, call_next):
 app.include_router(attendance.router, prefix=settings.API_V1_STR)
 app.include_router(auth.router, prefix=settings.API_V1_STR)
 app.include_router(library.router, prefix=settings.API_V1_STR)
+app.include_router(leave.router, prefix=settings.API_V1_STR)
 
 
 # Returns basic service discovery information

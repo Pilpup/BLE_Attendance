@@ -95,4 +95,23 @@ interface AttendanceApiService {
     suspend fun compareLabFaces(
         @Body body: FaceLabCompareRequest
     ): Response<FaceLabCompareResponse>
+
+    // Leave: student submits and views own applications
+    @POST("api/v1/leave/applications")
+    suspend fun submitLeaveApplication(
+        @Body body: LeaveCreateRequest
+    ): Response<LeaveApplicationResponse>
+
+    @GET("api/v1/leave/applications/mine")
+    suspend fun getMyLeaveApplications(): Response<List<LeaveApplicationResponse>>
+
+    // Leave: department queue (teacher/HOD) and HOD review
+    @GET("api/v1/leave/applications")
+    suspend fun getDepartmentLeaveApplications(): Response<List<LeaveApplicationResponse>>
+
+    @POST("api/v1/leave/applications/{applicationId}/review")
+    suspend fun reviewLeaveApplication(
+        @Path("applicationId") applicationId: String,
+        @Body body: LeaveReviewRequest
+    ): Response<LeaveApplicationResponse>
 }

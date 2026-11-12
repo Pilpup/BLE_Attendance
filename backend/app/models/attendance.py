@@ -1,8 +1,8 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, UniqueConstraint, text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -241,4 +241,36 @@ class EmailOTP(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
+# Leave application: student -> department HOD workflow. The explicit
+# from/to date range IS the extracted duration; finalize later marks covered
+# students "LEAVE" instead of "ABSENT". Department is a snapshot of the
+# student's department at submit time (uppercased) so HOD queue matching
+# never shifts if the account's department is edited later.
+class LeaveApplication(Base):
+    __tablename__ = "leave_applications"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    student_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    department: Mapped[str] = mapped_column(String(50), nullable=False)
+    from_date: Mapped[date] = mapped_column(Date, nullable=False)
+    to_date: Mapped[date] = mapped_column(Date, nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="PENDING", nullable=False)
+    reviewed_by: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    review_comment: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+    __table_args__ = (
+        Index("ix_leave_apps_dept_status", "department", "status"),
+        Index("ix_leave_apps_student_created", "student_id", "created_at"),
     )
