@@ -39,7 +39,12 @@ class MainActivity : ComponentActivity() {
     private val bleScanner by lazy {
         BleScanner(
             context = this,
-            onScanningChanged = { _ -> },
+            onScanningChanged = { active ->
+                // Scan-liveness feedback: onScanFailed (e.g. Android's
+                // 5-scans/30s throttle) must be visible to the ViewModel — the
+                // listening watchdog times its restarts against real state.
+                viewModel.onBleScanStateChanged(active)
+            },
             onPacketReceived = { rssi, _, messageText ->
                 viewModel.onPacketReceived(rssi, messageText)
             }
@@ -66,6 +71,13 @@ class MainActivity : ComponentActivity() {
 
         viewModel.onStopBroadcasting = {
             bleAdvertiser.stopBroadcasting()
+        }
+
+        // Countdown updates swap the beacon payload WITHOUT a stop/start cycle
+        // (AdvertisingSet on API 26+) — the legacy restart path silently killed
+        // beacons in the field during the 12 s re-emit storm.
+        viewModel.onUpdateBroadcasting = { token ->
+            bleAdvertiser.updatePayload(token)
         }
 
         viewModel.onStartScanning = {
@@ -169,7 +181,7 @@ class MainActivity : ComponentActivity() {
                 AttendanceScreenCallbacks(
                     onStartTeacherSession = {
                         checkAndExecute {
-                            viewModel.startTeacherSession(durationSeconds = 30)
+                            viewModel.startTeacherSession(durationSeconds = 40)
                         }
                     },
                     onStopTeacherSession = {

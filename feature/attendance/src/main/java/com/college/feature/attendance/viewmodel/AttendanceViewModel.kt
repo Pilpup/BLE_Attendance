@@ -208,7 +208,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     // on the monotonic clock; students estimate the target as (received + k),
     // so delivery jitter never shifts the target.
     companion object {
-        const val SYNC_GAME_START_OFFSET_SECONDS = 12
+        const val SYNC_GAME_START_OFFSET_SECONDS = 7
     }
 
     private var teacherSessionStartedElapsedMs = 0L
@@ -432,10 +432,27 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var onStartScanning: (() -> Unit)? = null
     var onStopScanning: (() -> Unit)? = null
 
+    // Payload-only beacon update (AdvertisingSet API): countdown values swap
+    // the advertised bytes WITHOUT a stop/start cycle — legacy restart churn
+    // silently killed the teacher beacon in the field.
+    var onUpdateBroadcasting: ((token: String) -> Unit)? = null
+
     // R11-C (review §2.1, deferred from chunk 11): MainActivity wires this to
-    // BleScanner.setScanLatency — LOW_LATENCY only for the active peer
-    // discovery window, BALANCED while idly listening and after the window.
+    // BleScanner.setScanLatency — density is pure state now; scan starts are
+    // explicit and throttled by the caller.
     var onSwitchScanLatency: ((lowLatency: Boolean) -> Unit)? = null
+
+    // Scan liveness (MainActivity wires BleScanner.onScanningChanged): the
+    // listening watchdog times restarts against real scan state instead of
+    // firing blind into Android's 5-scans/30s throttle.
+    private var bleScanActive = false
+
+    fun onBleScanStateChanged(active: Boolean) {
+        bleScanActive = active
+        if (!active) {
+            android.util.Log.w("AttendanceViewModel", "BLE scan stopped/failed (listener reports inactive)")
+        }
+    }
 
     var studentDiscoverySecondsRemaining by mutableIntStateOf(0)
     private var teacherTimer: CountDownTimer? = null
@@ -994,12 +1011,19 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             if (detail.contains("Ultrasonic", ignoreCase = true) || detail.contains("desk", ignoreCase = true)) {
                                 ultrasonicProximityDetected = true
                             }
-                            studentStatusMessage = detail
-                            if (!keepRadioActive || studentDiscoverySecondsRemaining == 0) {
+                            if (studentDiscoverySecondsRemaining <= 0) {
+                                studentStatusMessage = detail
                                 studentPhase = StudentPhase.UNVERIFIED_FLAGGED
                                 startPollingForAudit(sessId)
                                 onStartScanning?.invoke()
                                 onStopBroadcasting?.invoke()
+                            } else {
+                                // Mid-window (game still running): a 403 detail
+                                // must never paint the game screen — the salt
+                                // gate's "Nice try lil bro" taunted students
+                                // mid-challenge. Log it; the window-end submit
+                                // surfaces the real outcome.
+                                android.util.Log.w("AttendanceViewModel", "Mid-window 403 suppressed from UI: $detail")
                             }
                         } else {
                             if (studentDiscoverySecondsRemaining <= 0) {
@@ -1035,7 +1059,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     // Start teacher session and initialize backend record
-    fun startTeacherSession(durationSeconds: Int = 30, courseId: String? = null) {
+    fun startTeacherSession(durationSeconds: Int = 40, courseId: String? = null) {
         val targetCourseId = courseId ?: selectedCourse?.id
         backendSessionId = null
         sessionId = UUID.randomUUID().toString().replace("-", "").take(4).uppercase()
@@ -1120,13 +1144,14 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             override fun onTick(millisUntilFinished: Long) {
                 remainingSeconds = (millisUntilFinished / 1000L).toInt()
                 // Advertising is a static packet: the countdown only advances if
-                // the payload is re-emitted. Each countdown value gets exactly one
-                // re-emit (one stop+start — advertising has no restart throttle),
-                // then one final re-emit drops the suffix for the rest of class.
+                // the payload changes. Each value gets exactly one update via
+                // AdvertisingSet.setAdvertisingData — the transmission never
+                // restarts — and one final update drops the suffix for the rest
+                // of class.
                 val k = synchronizedGameCountdownSeconds()
                 if (k != lastBeaconCountdownEmitted) {
                     lastBeaconCountdownEmitted = k
-                    onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
+                    onUpdateBroadcasting?.invoke(currentBroadcastToken)
                 }
             }
 
@@ -1137,7 +1162,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 // immediately; this delayed call then exits idempotently.
                 cloudStatusMessage = "Wrapping up — waiting for students to finish…"
                 viewModelScope.launch(Dispatchers.Main) {
-                    delay(6000L)
+                    delay(3000L)
                     finalizeSessionAndAudit()
                 }
             }
@@ -1399,6 +1424,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         detectedSessionId = "----"
         detectedSessionSalt = "------"
         studentPhase = StudentPhase.LISTENING_FOR_TEACHER
+        // LOW_LATENCY listening: the synchronized start needs every phone to
+        // latch fast (BALANCED duty cycle adds ~1-2 s of first-heard lag).
+        // Density is pure state; this explicit start is the only scan op.
+        onSwitchScanLatency?.invoke(true)
         ensureListeningWatchdog()
         onStartScanning?.invoke()
     }
@@ -1468,7 +1497,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         studentDiscoverySecondsRemaining = 0
         // R11-C: drop scan density even when Next is tapped before the window
         // closes (fast game finish) — audit wait/verdict listening runs BALANCED.
+        // Density is pure state now; restart the scan to apply it.
         onSwitchScanLatency?.invoke(false)
+        onStartScanning?.invoke()
         val sessId = detectedSessionId.takeIf { it.isNotBlank() && it != "----" } ?: backendSessionId ?: ""
         if (hasLocalDefenseFailed) {
             if (studentStatusMessage == null) {
@@ -1535,6 +1566,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 // R11-C (review §2.1): the 25 s discovery window is closed —
                 // the score window and audit wait run on BALANCED (battery).
                 onSwitchScanLatency?.invoke(false)
+                // Density change no longer restarts the scan itself — do it
+                // here: BALANCED from this point (audit wait runs on battery).
+                onStartScanning?.invoke()
                 // Background BLE discovery window complete; sync neighbors to cloud
                 submitMyNeighborsToCloud(keepRadioActive = true)
                 // studentPhase remains PROBING_NEIGHBORS so the score window stays visible
@@ -1598,6 +1632,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     // 12 s packet silence restarts the scan; packet flow (any shape) proves the
     // scan is alive. 12 s keeps restarts under Android's scan-throttle budget.
     private var lastBlePacketHeardElapsedMs = 0L
+    private var lastWatchdogRestartElapsedMs = 0L
     private var listeningWatchdogJob: Job? = null
 
     private fun ensureListeningWatchdog() {
@@ -1605,6 +1640,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         // Baseline = now: a scan that has never delivered anything since this
         // listening entry still gets restarted at the first 12 s tick.
         lastBlePacketHeardElapsedMs = android.os.SystemClock.elapsedRealtime()
+        lastWatchdogRestartElapsedMs = 0L
         listeningWatchdogJob = viewModelScope.launch(Dispatchers.Main) {
             while (studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
                 delay(12_000L)
@@ -1613,9 +1649,17 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 if (lastBlePacketHeardElapsedMs > 0L && now - lastBlePacketHeardElapsedMs < 12_000L) {
                     continue
                 }
+                // Restart cadence: at most one restart per 15 s — two restarts
+                // per 30 s plus phase switches stays inside Android's
+                // 5-scans-per-30s throttle budget. Restarting faster would
+                // trip the throttle and kill the scan for the whole window.
+                if (now - lastWatchdogRestartElapsedMs < 15_000L) {
+                    continue
+                }
+                lastWatchdogRestartElapsedMs = now
                 android.util.Log.w(
                     "AttendanceViewModel",
-                    "Scan watchdog: no packets for 12s while listening — restarting scan"
+                    "Scan watchdog: no packets for 12s while listening — restarting scan (scanActive=$bleScanActive)"
                 )
                 onStartScanning?.invoke()
             }
@@ -1986,6 +2030,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         detectedSessionSalt = "------"
         studentPhase = StudentPhase.LISTENING_FOR_TEACHER
         studentStatusMessage = "Session cancelled by instructor — waiting for a new session"
+        onSwitchScanLatency?.invoke(true)
         ensureListeningWatchdog()
         onStartScanning?.invoke()
     }
@@ -2014,6 +2059,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         detectedSessionSalt = "------"
         studentPhase = StudentPhase.LISTENING_FOR_TEACHER
         studentStatusMessage = "Session expired before the audit completed — please ask your instructor"
+        onSwitchScanLatency?.invoke(true)
         ensureListeningWatchdog()
         onStartScanning?.invoke()
     }

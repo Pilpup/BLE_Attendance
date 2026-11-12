@@ -41,22 +41,16 @@ class BleScanner(
     private val bleScanner get() = bluetoothManager.adapter?.bluetoothLeScanner
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // R11-C (review §2.1, deferred from chunk 11): scan density follows the
-    // discovery phase. BALANCED while idly listening for the teacher beacon and
-    // after the discovery window (battery + thermal on old SoCs), LOW_LATENCY
-    // only while the active peer-discovery window demands packet density.
-    // Bluetooth scan settings are immutable per scan: a mode change while
-    // scanning means a stop+restart of the SAME filter and callback — the
-    // defensive stopScan inside startScanning() tolerates the swap, and the
-    // brief rescan blind spot lands at an intentional phase boundary, never
-    // mid-handshake.
+    // Scan-density state only: the caller decides when to (re)start the scan —
+    // setScanLatency no longer restarts it. A density change takes effect on the
+    // next startScanning(), which keeps the number of Android scan starts per
+    // 30 s inside the 5-scan throttle budget (start latency swaps used to cost
+    // one restart each).
     @Volatile
     private var lowLatencyScanning = false
 
     fun setScanLatency(lowLatency: Boolean) {
-        if (lowLatencyScanning == lowLatency) return
         lowLatencyScanning = lowLatency
-        startScanning()
     }
 
     // Starts a BLE scan filtered by classroom service UUID, at the density

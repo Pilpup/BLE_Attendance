@@ -36,6 +36,24 @@ private const val GRID = 4
 private const val CELLS = 16
 private const val MASK4 = 0xFL
 
+// Hard per-round schedule (view + tap, fixed for EVERY student — round
+// boundaries are synchronized class-wide, so no mid-game desync exists):
+//   r1: 1.9 s view + 2.5 s tap | r2: 2.3 + 3.5 | r3: 3.3 + 4.5 | r4: 4.0 + 5.5
+// Total 27.5 s exactly.
+private const val GRID_R1_VIEW = 1900L
+private const val GRID_R1_TAP = 2500L
+private const val GRID_R2_VIEW = 2300L
+private const val GRID_R2_TAP = 3500L
+private const val GRID_R3_VIEW = 3300L
+private const val GRID_R3_TAP = 4500L
+private const val GRID_R4_VIEW = 4000L
+private const val GRID_R4_TAP = 5500L
+
+// Last 800 ms of every tap window is the REVEAL: remaining numbers light up
+// green, wrong taps show red. Students who finish early see their reveal from
+// the moment they complete; everyone's next round starts at the same instant.
+private const val REVEAL_MS = 800L
+
 private inline fun nibble(board: Long, idx: Int): Int = ((board ushr (idx * 4)) and MASK4).toInt()
 private inline fun withNibble(board: Long, idx: Int, value: Int): Long {
     val shift = idx * 4
@@ -49,36 +67,53 @@ private fun countForRound(round: Int): Int = when (round) {
     else -> 8
 }
 
-// Dynamic view window: scales with count.
-private fun viewWindowMs(n: Int): Long = (400L + n * 450L)
+private fun viewWindowMs(n: Int): Long = when (n) {
+    5 -> GRID_R1_VIEW
+    6 -> GRID_R2_VIEW
+    7 -> GRID_R3_VIEW
+    else -> GRID_R4_VIEW
+}
+
+private fun tapWindowMs(n: Int): Long = when (n) {
+    5 -> GRID_R1_TAP
+    6 -> GRID_R2_TAP
+    7 -> GRID_R3_TAP
+    else -> GRID_R4_TAP
+}
 
 @Composable
 fun ChimpGridGame(
     modifier: Modifier = Modifier,
     seed: Int = 0,
-    durationMs: Long = 25_000L,
     // Synchronized start: all students in the room begin round 1 at the same
-    // instant (teacher countdown beacon). The grid stays empty with a visible
-    // countdown until then — the 25 s clock only runs after it expires.
+    // instant (teacher countdown beacon). The grid stays empty and the
+    // countdown shows under the rules until then.
     startDelayMs: Long = 0L,
     onFinished: (score: Int) -> Unit = {},
 ) {
-    var preStartLeftMs by remember { mutableLongStateOf(startDelayMs) }
     val rng = remember(seed) { Random(seed) }
 
     var board by remember { mutableLongStateOf(0L) }          // 64-bit board (nibbles)
-    var shownMask by remember { mutableIntStateOf(0) }        // 16-bit mask: visible number cells
-    var phaseShow by remember { mutableStateOf(true) }        // true=view window, false=recall
+    var shownMask by remember { mutableIntStateOf(0) }        // 16-bit mask: untapped number cells
     var nextExpected by remember { mutableIntStateOf(1) }
     var count by remember { mutableIntStateOf(5) }
     var round by remember { mutableIntStateOf(1) }
     var score by remember { mutableIntStateOf(0) }
     var running by remember { mutableStateOf(true) }
-    var hideAtMs by remember { mutableLongStateOf(0L) }
-    var tapUntilMs by remember { mutableLongStateOf(0L) }
-    var timeUp by remember { mutableStateOf(false) }
+    var preStartLeftMs by remember { mutableLongStateOf(startDelayMs) }
 
-    fun newRound(r: Int, now: Long) {
+    // Per-round phase state (driven by the fixed-schedule loop below)
+    var phaseShow by remember { mutableStateOf(true) }        // true = view window
+    var revealPhase by remember { mutableStateOf(false) }     // true = reveal slot (last 800 ms)
+    var roundCompleted by remember { mutableStateOf(false) }  // all n tapped -> immediate reveal
+    var wrongCells by remember { mutableStateOf(setOf<Int>()) }
+    var flashCell by remember { mutableIntStateOf(-1) }       // transient red flash on wrong tap
+    var flashUntilMs by remember { mutableLongStateOf(0L) }
+    var viewEndAtMs by remember { mutableLongStateOf(0L) }
+    var revealStartAtMs by remember { mutableLongStateOf(0L) }
+    var roundEndAtMs by remember { mutableLongStateOf(0L) }
+
+    fun newRound(r: Int, roundStart: Long) {
         round = r
         val n = countForRound(r)
         count = n
@@ -98,61 +133,47 @@ fun ChimpGridGame(
         board = b
         shownMask = mask
         phaseShow = true
+        revealPhase = false
+        roundCompleted = false
+        wrongCells = emptySet()
         nextExpected = 1
-        hideAtMs = now + viewWindowMs(n)
-        tapUntilMs = hideAtMs + 6000L
+        // Fixed schedule: rounds start at their cumulative slot, never early,
+        // never late — the class stays in lockstep through all 4 rounds.
+        viewEndAtMs = roundStart + viewWindowMs(n)
+        revealStartAtMs = roundStart + viewWindowMs(n) + tapWindowMs(n) - REVEAL_MS
+        roundEndAtMs = roundStart + viewWindowMs(n) + tapWindowMs(n)
     }
 
     LaunchedEffect(seed, startDelayMs) {
         // Pre-start hold: tick the visible countdown down before round 1 begins
         while (preStartLeftMs > 0L) {
-            val step = minOf(1000L, preStartLeftMs)
+            val step = minOf(200L, preStartLeftMs)
             delay(step)
             preStartLeftMs -= step
         }
-        val endAt = System.currentTimeMillis() + durationMs
-        var r = 1
-        newRound(r, System.currentTimeMillis())
+        newRound(1, System.currentTimeMillis())
         while (running) {
             val now = System.currentTimeMillis()
-            if (!timeUp && now >= endAt) {
-                timeUp = true // let current round finish, do not close mid-round
-            }
-            if (phaseShow && now >= hideAtMs) {
+            if (phaseShow && now >= viewEndAtMs) {
                 phaseShow = false // hide numbers, recall phase
             }
-            if (!phaseShow && now >= tapUntilMs) {
-                if (timeUp) {
+            if (!phaseShow && !revealPhase && now >= revealStartAtMs) {
+                revealPhase = true
+            }
+            if (flashCell >= 0 && now >= flashUntilMs) {
+                flashCell = -1
+            }
+            if (now >= roundEndAtMs) {
+                if (round >= 4) {
                     running = false
                     onFinished(score)
                     break
                 }
-                r += 1
-                newRound(r, System.currentTimeMillis())
+                // Next round starts at its fixed slot regardless of loop jitter
+                newRound(round + 1, roundEndAtMs)
             }
             delay(30)
         }
-    }
-
-    if (preStartLeftMs > 0L) {
-        Column(
-            modifier = modifier.fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(
-                text = "Starting together in ${(preStartLeftMs + 999) / 1000}…",
-                color = Color(0xFF93C5FD),
-                fontSize = 22.sp,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = "Eyes on your own screen",
-                color = Color(0xFF64748B),
-                fontSize = 13.sp
-            )
-        }
-        return
     }
 
     Column(
@@ -175,7 +196,10 @@ fun ChimpGridGame(
                         val value = nibble(board, idx) // read 4-bit nibble from 64-bit board
                         val hasNumber = value != 0
                         val active = hasNumber && ((shownMask and (1 shl idx)) != 0)
-                        val reveal = phaseShow || !active // show during view window, hide active during recall
+                        val revealNow = roundCompleted || revealPhase
+                        val reveal = phaseShow || revealNow || !active // view / reveal / already-tapped
+                        val isWrong = idx in wrongCells
+                        val isFlash = flashCell == idx
                         Box(
                             modifier = Modifier
                                 .weight(1f)
@@ -183,51 +207,41 @@ fun ChimpGridGame(
                                 .background(
                                     when {
                                         !hasNumber -> Color(0xFF0B1220)
+                                        isFlash -> Color(0xFF7F1D1D)              // wrong tap flash
+                                        revealNow && isWrong -> Color(0xFF7F1D1D) // wrong press shown red
+                                        revealNow && hasNumber -> Color(0xFF166534) // correct positions green
+                                        phaseShow && active -> Color(0xFF172554)  // number revealed (view)
                                         active && !phaseShow -> Color(0xFF243447) // hidden active cell
-                                        phaseShow && active -> Color(0xFF172554)  // number revealed
                                         else -> Color(0xFF111827)
                                     }
                                 )
                                 .border(1.dp, Color(0xFF334155))
                                 .then(
-                                    if (running && !phaseShow && active) {
+                                    if (running && !phaseShow && !revealNow && active) {
                                         Modifier.clickable {
                                             if (value == nextExpected) {
-                                                val gain = when (value) {
-                                                    count - 3 -> 1          // combined for 1..(n-3)
-                                                    count - 2 -> 1
-                                                    count - 1 -> 1
-                                                    count -> count - 3      // final number bonus
-                                                    else -> 0
-                                                }
-                                                score += gain
+                                                score += 1 // every correct tap scores
                                                 shownMask = shownMask and (1 shl idx).inv() // bit clear
                                                 nextExpected += 1
                                                 if (nextExpected > count) {
-                                                    if (timeUp) {
-                                                        running = false
-                                                        onFinished(score)
-                                                    } else {
-                                                        val r = round + 1
-                                                        newRound(r, System.currentTimeMillis())
-                                                    }
+                                                    // Round complete: completion bonus, reveal
+                                                    // plays until the round's fixed end.
+                                                    score += count - 3
+                                                    roundCompleted = true
                                                 }
                                             } else {
-                                                // wrong tap -> end round (or finish if time up)
-                                                if (timeUp) {
-                                                    running = false
-                                                    onFinished(score)
-                                                } else {
-                                                    val r = round + 1
-                                                    newRound(r, System.currentTimeMillis())
-                                                }
+                                                // Wrong press: red flash, no leak of the
+                                                // cell's number, round keeps running.
+                                                wrongCells = wrongCells + idx
+                                                flashCell = idx
+                                                flashUntilMs = System.currentTimeMillis() + 250L
                                             }
                                         }
                                     } else Modifier
                                 ),
                             contentAlignment = Alignment.Center
                         ) {
-                            if (hasNumber && reveal) {
+                            if (hasNumber && reveal && !isFlash) {
                                 Text(
                                     text = value.toString(),
                                     color = Color.White,
@@ -248,5 +262,16 @@ fun ChimpGridGame(
             fontWeight = FontWeight.Medium,
             modifier = Modifier.padding(top = 14.dp)
         )
+        if (preStartLeftMs > 0L) {
+            // Synchronized start countdown — one line under the rules, never a
+            // full-screen takeover. All phones flip to round 1 together.
+            Text(
+                text = "Everyone starts together in ${(preStartLeftMs + 999) / 1000}…",
+                color = Color(0xFF93C5FD),
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 4.dp)
+            )
+        }
     }
 }

@@ -232,7 +232,6 @@ internal fun StudentSection(
                         .weight(1f)
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     seed = "$detectedSessionId:$sessionSalt:$studentId".hashCode(),
-                    durationMs = 25_000L,
                     startDelayMs = chimpStartDelayMs,
                     onFinished = { score ->
                         lastGameScore = score
