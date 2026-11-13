@@ -574,7 +574,9 @@ async def test_submit_neighbors_salt_enforcement():
         # cannot be anchored as "the room" — held for review, not auto-verified.
         # The salt-rejected attempt is still a hard spoofer verdict.
         assert audit_data["total_verified"] == 0
-        assert audit_data["total_spoofers"] == 1  # deduplicated: missing + wrong = one flag
+        # Unverified = every non-VERIFIED row: 2 mutual NEEDS_REVIEW reporters
+        # (H3 unanchored) + 1 hard spoofer verdict.
+        assert audit_data["total_unverified"] == 3
 
         record_map = {r["ble_device_id"]: r for r in audit_data["records"]}
         spoofer_record = record_map[k_spoofer]
@@ -1566,7 +1568,7 @@ async def test_ultrasonic_proximity_mutual_pair_materialization():
         assert record_map[k4]["status"] == "VERIFIED_PRESENT"
 
         assert audit_data["total_verified"] == 2
-        assert audit_data["total_spoofers"] == 2  # ignored claim is not counted
+        assert audit_data["total_unverified"] == 2  # ignored claim is not counted
 
         # Post-finalize grace claim: mutuality is unevaluable (buffer already
         # popped) — the straggler gets a normal grace record, NOT a proxy row.
@@ -1659,7 +1661,7 @@ async def test_session_token_conflict_cross_teacher():
 
 
 # Verifies M5: frozen security verdicts (e.g. the salt gate's SPOOFER_REJECTED
-# row) must still surface in total_spoofers on the plain finalize route even
+# row) must still surface in total_unverified on the plain finalize route even
 # though finalize preserves them in place instead of rewriting them.
 @pytest.mark.anyio
 async def test_finalize_counts_frozen_proxy_priors():
@@ -1711,7 +1713,7 @@ async def test_finalize_counts_frozen_proxy_priors():
         assert fin.status_code == 200, fin.text
         fin_data = fin.json()
         assert fin_data["status"] == "COMPLETED"
-        assert fin_data["total_spoofers"] == 1
+        assert fin_data["total_unverified"] == 1
         assert fin_data["total_verified"] == 0
 
 
@@ -1789,7 +1791,7 @@ async def test_finalize_staged_drain_requires_reciprocal_peers():
         fin_data = fin.json()
 
         assert fin_data["total_verified"] == 2  # the mutual pair (both parties) confirms
-        assert fin_data["total_spoofers"] == 0
+        assert fin_data["total_unverified"] == 1  # the fake claimer's isolated row
         record_map = {r["ble_device_id"]: r for r in fin_data["records"]}
 
         assert record_map[k1]["status"] == "VERIFIED_PRESENT"
@@ -1814,6 +1816,96 @@ async def test_finalize_staged_drain_requires_reciprocal_peers():
         assert record_map[k3]["affinity_score"] == 0.50
         assert "without confirmed desk neighbor" in record_map[k3]["remarks"]
         assert "HOST" in record_map[k3]["remarks"]  # 'GHOST' -> last-4 key
+
+
+# Roster bind ("Student 79" bug): a witness/offline row for a device that never
+# authenticated carries student_id NULL — the dashboard fallback then renders
+# "Student <key-suffix>" (key D1F779 -> "Student 79") instead of the real
+# student. Finalize must reverse-map the deterministic device key against the
+# session's eligibility roster and bind the account, so the response carries
+# the real roll number and name.
+@pytest.mark.anyio
+async def test_finalize_binds_unbound_witness_rows_to_roster():
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    bind_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with bind_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        from app.routers.attendance import derive_short_device_key
+
+        tok_teacher = await _register_test_teacher(client, bind_db, "Prof. Roster Bind", "roster.bind@univ.edu")
+        tok_s1 = await _register_roll_student(client, bind_db, "Honest One", "honest.one@univ.edu", "251340101031")
+        tok_s2 = await _register_roll_student(client, bind_db, "Honest Two", "honest.two@univ.edu", "251340101033")
+        # The offline student registers an account but never submits — only
+        # their deterministic device key ever enters the mesh (witnessed by the
+        # two honest peers).
+        await _register_roll_student(client, bind_db, "Priyansh Thapliyal", "offline.witness@univ.edu", "251340101032")
+        k1 = derive_short_device_key("251340101031")
+        k2 = derive_short_device_key("251340101033")
+        k_off = derive_short_device_key("251340101032")  # D1F779 — the real "Student 79"
+
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"session_token": "RB79", "total_enrolled": 3, "course_program": "B.Tech", "course_semester": 1},
+        )
+        assert s_res.status_code == 201, s_res.text
+        session_id = s_res.json()["id"]
+        wire_salt = s_res.json()["session_wire_salt"]
+        session_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
+
+        r1 = await client.post(
+            session_url,
+            headers={"Authorization": f"Bearer {tok_s1}"},
+            json={"game_score": 20, "student_id": k1, "neighbors": [k2, k_off], "session_salt": wire_salt},
+        )
+        assert r1.status_code == 200, r1.text
+
+        r2 = await client.post(
+            session_url,
+            headers={"Authorization": f"Bearer {tok_s2}"},
+            json={"game_score": 20, "student_id": k2, "neighbors": [k1, k_off], "session_salt": wire_salt},
+        )
+        assert r2.status_code == 200, r2.text
+
+        fin = await client.post(
+            f"/api/v1/attendance/sessions/{session_id}/audit-and-finalize",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"reports": {}},
+        )
+        assert fin.status_code == 200, fin.text
+        fin_data = fin.json()
+        assert fin_data["status"] == "COMPLETED"
+        assert fin_data["total_verified"] == 2
+        assert fin_data["total_unverified"] == 1  # the offline witness row
+
+        record_map = {r["ble_device_id"]: r for r in fin_data["records"]}
+        assert record_map[k_off]["status"] == "FLAGGED_WITNESSED"
+
+        # The fix: NULL student_id is now roster-bound, so the dashboard gets
+        # the real identity — not the "Student 79" key-suffix fallback.
+        assert record_map[k_off]["student_id"] is not None
+        assert record_map[k_off]["student_name"] == "Priyansh Thapliyal"
+        assert record_map[k_off]["roll_number"] == "251340101032"
+
+        # Honest peers keep their account binding as before
+        assert record_map[k1]["student_name"] == "Honest One"
+        assert record_map[k1]["roll_number"] == "251340101031"
+        assert record_map[k2]["student_name"] == "Honest Two"
 
 
 # Verifies hygiene guards: strict status whitelists on the TEACHER-OVERWRITE
@@ -2879,7 +2971,7 @@ async def test_finalize_counts_are_recounted_from_db():
         assert fin.status_code == 200, fin.text
         # Recount sees the prior row (1) + the drained payload row (1) = 2
         assert fin.json()["total_verified"] == 2, fin.text
-        assert fin.json()["total_spoofers"] == 0
+        assert fin.json()["total_unverified"] == 0
 
 
 @pytest.mark.anyio

@@ -89,7 +89,8 @@ BEGIN
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS ended_at TIMESTAMP WITH TIME ZONE;
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS total_enrolled INTEGER DEFAULT 0;
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS total_verified INTEGER DEFAULT 0;
-    ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS total_spoofers INTEGER DEFAULT 0;
+    ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS total_unverified INTEGER DEFAULT 0;
+    ALTER TABLE attendance_sessions DROP COLUMN IF EXISTS total_spoofers;
     ALTER TABLE attendance_sessions ALTER COLUMN status TYPE VARCHAR(50) USING status::text;
     CREATE INDEX IF NOT EXISTS ix_attendance_sessions_session_token ON attendance_sessions(session_token);
     CREATE INDEX IF NOT EXISTS ix_attendance_sessions_teacher_started ON attendance_sessions(teacher_id, started_at);
@@ -371,7 +372,7 @@ async def debug_db():
             await conn.run_sync(Base.metadata.create_all)
             if is_postgres:
                 await conn.execute(text(POSTGRES_SCHEMA_SYNC_BLOCK))
-            sess_rows = (await conn.execute(text("SELECT id, session_token, status, total_verified, total_spoofers, started_at FROM attendance_sessions ORDER BY started_at DESC LIMIT 5;"))).mappings().all()
+            sess_rows = (await conn.execute(text("SELECT id, session_token, status, total_verified, total_unverified, started_at FROM attendance_sessions ORDER BY started_at DESC LIMIT 5;"))).mappings().all()
             rec_rows = (await conn.execute(text("SELECT id, session_id, ble_device_id, status, verification_method, recorded_at FROM attendance_records ORDER BY recorded_at DESC LIMIT 5;"))).mappings().all()
 
         return {

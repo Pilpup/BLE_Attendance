@@ -457,6 +457,55 @@ async def _apply_approved_leave_overlay(
     return created
 
 
+# Binds unbound attendance records (student_id NULL) to roster accounts.
+# Witness/offline rows (e.g. FLAGGED_WITNESSED) and legacy payload rows carry
+# only the BLE device key — that device never authenticated, so no account
+# was bound at check-in. Device keys are the DETERMINISTIC derivation
+# derive_short_device_key(roll), so the server can reverse-map them against
+# the session's eligibility roster (same snapshot the check-in gate uses).
+# Without this the teacher dashboard shows "Student <key-suffix>" instead of
+# the student's real name and roll number. 6-hex key collisions across a
+# roster resolve last-wins (same policy as the leave overlay).
+async def _bind_unbound_records_to_roster(
+    session_obj: AttendanceSession, db: AsyncSession
+) -> int:
+    semester = session_obj.eligibility_semester
+    program = (session_obj.eligibility_program or "").strip()
+    if semester is None or not program:
+        return 0
+
+    candidates = await db.execute(
+        select(User).where(
+            User.semester == semester,
+            User.is_active.is_(True),
+            User.role == "STUDENT",
+        )
+    )
+    key_to_student: dict[str, uuid.UUID] = {}
+    for u in candidates.scalars().all():
+        if u.roll_number:
+            key_to_student[derive_short_device_key(u.roll_number)] = u.id
+    if not key_to_student:
+        return 0
+
+    rec_res = await db.execute(
+        select(AttendanceRecord).where(
+            AttendanceRecord.session_id == session_obj.id,
+            AttendanceRecord.student_id.is_(None),
+        )
+    )
+    bound = 0
+    for rec in rec_res.scalars().all():
+        uid = key_to_student.get(rec.ble_device_id.upper())
+        if uid:
+            rec.student_id = uid
+            bound += 1
+            logger.info(
+                f"[Roster Bind] Session {session_obj.id}: unbound record {rec.ble_device_id} -> student {uid}"
+            )
+    return bound
+
+
 # Record or update a proxy violation record for a device
 # Record proxy violation handling concurrent write races
 async def _record_proxy_violation(
@@ -1067,7 +1116,7 @@ async def finalize_attendance_session(
     verified_count = 0
     # M5: frozen security verdicts (written out-of-band by the defense layers —
     # salt gate, face dedup, no-face) are preserved in place, but they must still
-    # surface in total_spoofers even though the finalize loop skips updating them.
+    # count toward total_unverified even though the finalize loop skips updating them.
     spoofer_count = sum(
         1 for r in prior_records
         if r.status in (
@@ -1252,6 +1301,10 @@ async def finalize_attendance_session(
         db.add_all(records_to_create)
         await db.flush()
 
+    # Bind unbound (witness/offline/legacy) rows to roster accounts so the
+    # teacher dashboard shows real names/rolls, not "Student <key-suffix>".
+    await _bind_unbound_records_to_roster(session_obj, db)
+
     # Approved-leave overlay: enrolled students with an APPROVED leave covering
     # the session date are marked LEAVE instead of ABSENT (or given a LEAVE
     # row). Runs after the verdict gate so the gate never sees LEAVE rows.
@@ -1272,18 +1325,15 @@ async def finalize_attendance_session(
         )
     )
     session_obj.total_verified = verified_res.scalar() or 0
-    spoofer_res = await db.execute(
+    # Count every record that did not end VERIFIED — witnessed offline
+    # students, isolated seats, spoofers, proxy flags, challenge failures.
+    unverified_res = await db.execute(
         select(func.count()).select_from(AttendanceRecord).where(
             AttendanceRecord.session_id == session_obj.id,
-            AttendanceRecord.status.in_([
-                "SPOOFER_REJECTED",
-                "DUPLICATE_FACE_PROXY",
-                "CO_LOCATED_SAME_DESK_PROXY",
-                "NO_FACE_DETECTED",
-            ]),
+            AttendanceRecord.status.not_in(["VERIFIED_PRESENT", "LEAVE"]),
         )
     )
-    session_obj.total_spoofers = spoofer_res.scalar() or 0
+    session_obj.total_unverified = unverified_res.scalar() or 0
 
     await db.commit()
     await db.refresh(session_obj)
@@ -1298,7 +1348,7 @@ async def finalize_attendance_session(
     await _populate_course_metadata(session_obj, db)
     await _populate_record_student_details(session_obj, db)
 
-    logger.info(f"[Audit Finalized] Session: {session_obj.id}, Verified: {session_obj.total_verified}, Spoofers: {session_obj.total_spoofers}, Total Records: {len(payload.records)}")
+    logger.info(f"[Legacy Finalized] Session: {session_obj.id}, Verified: {session_obj.total_verified}, Unverified: {session_obj.total_unverified}, Total Records: {len(payload.records)}")
     return _attach_wire_salt(session_obj)
 
 @router.post(
@@ -2078,6 +2128,10 @@ async def audit_and_finalize_session(
         db.add_all(records_to_create)
         await db.flush()
 
+    # Bind unbound (witness/offline/legacy) rows to roster accounts so the
+    # teacher dashboard shows real names/rolls, not "Student <key-suffix>".
+    await _bind_unbound_records_to_roster(session_obj, db)
+
     # Approved-leave overlay: enrolled students with an APPROVED leave covering
     # the session date are marked LEAVE instead of ABSENT (or given a LEAVE
     # row). Runs after the verdict gate so the gate never sees LEAVE rows.
@@ -2096,19 +2150,15 @@ async def audit_and_finalize_session(
     )
     session_obj.total_verified = verified_res.scalar() or 0
 
-    # Count all spoofers and proxy violators on the session
-    spoofer_res = await db.execute(
+    # Count every record that did not end VERIFIED — witnessed offline
+    # students, isolated seats, spoofers, proxy flags, challenge failures.
+    unverified_res = await db.execute(
         select(func.count()).select_from(AttendanceRecord).where(
             AttendanceRecord.session_id == session_obj.id,
-            AttendanceRecord.status.in_([
-                "SPOOFER_REJECTED",
-                "DUPLICATE_FACE_PROXY",
-                "CO_LOCATED_SAME_DESK_PROXY",
-                "NO_FACE_DETECTED",
-            ]),
+            AttendanceRecord.status.not_in(["VERIFIED_PRESENT", "LEAVE"]),
         )
     )
-    session_obj.total_spoofers = spoofer_res.scalar() or 0
+    session_obj.total_unverified = unverified_res.scalar() or 0
 
     await db.commit()
     await db.refresh(session_obj)
@@ -2124,7 +2174,7 @@ async def audit_and_finalize_session(
     await _populate_course_metadata(session_obj, db)
     await _populate_record_student_details(session_obj, db)
 
-    logger.info(f"[Audit Finalized] Session: {session_obj.id}, Verified: {session_obj.total_verified}, Spoofers: {session_obj.total_spoofers}, Total Records: {len(audit_results)}")
+    logger.info(f"[Audit Finalized] Session: {session_obj.id}, Verified: {session_obj.total_verified}, Unverified: {session_obj.total_unverified}, Total Records: {len(audit_results)}")
     return _attach_wire_salt(session_obj)
 
 

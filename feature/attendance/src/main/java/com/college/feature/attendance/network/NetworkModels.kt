@@ -94,7 +94,7 @@ data class AttendanceSessionResponse(
     @SerializedName("session_wire_salt") val sessionWireSalt: String? = null,
     val status: String,
     @SerializedName("total_verified") val totalVerified: Int,
-    @SerializedName("total_spoofers") val totalSpoofers: Int,
+    @SerializedName("total_unverified") val totalUnverified: Int,
     @SerializedName("started_at") val startedAt: String? = null,
     @SerializedName("ended_at") val endedAt: String? = null,
     val records: List<AttendanceRecordItem>? = null,

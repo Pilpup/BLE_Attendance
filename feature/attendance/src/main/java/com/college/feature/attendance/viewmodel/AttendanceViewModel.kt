@@ -1324,7 +1324,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             sessionToken = sessionId,
             status = "COMPLETED",
             totalVerified = records.count { it.status == "VERIFIED_PRESENT" },
-            totalSpoofers = records.count { it.status == "SPOOFER_REJECTED" },
+            totalUnverified = records.count { it.status != "VERIFIED_PRESENT" && it.status != "LEAVE" },
             startedAt = timestamp,
             records = records,
             courseCode = selectedCourse?.courseCode ?: "",

@@ -137,7 +137,11 @@ class AttendanceSession(Base):
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     total_enrolled: Mapped[int] = mapped_column(default=0)
     total_verified: Mapped[int] = mapped_column(default=0)
-    total_spoofers: Mapped[int] = mapped_column(default=0)
+    # Honest-counter rename (was total_spoofers): this is the session's
+    # UNVERIFIED count — every attendance record that did not end VERIFIED
+    # (witnessed offline students, isolated, spoofers, proxy flags). The old
+    # name promised "spoofers" but the flag statuses are a superset.
+    total_unverified: Mapped[int] = mapped_column(default=0)
 
     # Composite indexes for instructor session listings and query acceleration
     __table_args__ = (

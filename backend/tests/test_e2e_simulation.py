@@ -212,7 +212,10 @@ async def test_30_student_classroom_mesh_simulation():
 
         assert audit_data["status"] == "COMPLETED"
         assert audit_data["total_verified"] == 25
-        assert audit_data["total_spoofers"] == 1
+        # Unverified = every non-VERIFIED row: the 4 offline students held at
+        # FLAGGED_WITNESSED for instructor confirmation + the unreciprocated
+        # hallway spoofer.
+        assert audit_data["total_unverified"] == 5
 
         records = audit_data["records"]
         record_map = {r["ble_device_id"]: r for r in records}

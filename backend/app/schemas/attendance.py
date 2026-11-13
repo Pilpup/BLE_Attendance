@@ -270,7 +270,7 @@ class AttendanceSessionResponse(BaseModel):
     ended_at: Optional[datetime] = None
     total_enrolled: int
     total_verified: int
-    total_spoofers: int
+    total_unverified: int
     records: Optional[list[AttendanceRecordResponse]] = None
     course_code: Optional[str] = None
     course_name: Optional[str] = None
