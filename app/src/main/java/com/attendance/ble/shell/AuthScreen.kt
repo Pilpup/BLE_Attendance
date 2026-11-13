@@ -164,7 +164,7 @@ fun AuthScreen(
 
             Text(
                 text = if (currentStep == AuthStep.OTP_VERIFICATION) {
-                    "Verification"
+                    "Check your email"
                 } else if (isRegisterMode) {
                     "Create Account"
                 } else {
@@ -264,7 +264,7 @@ fun AuthScreen(
                                 value = emailInput,
                                 onValueChange = { emailInput = it },
                                 label = { Text("Email Address") },
-                                placeholder = { Text("e.g. qwerty@gmail.com") },
+                                placeholder = { Text("qwerty@gmail.com") },
                                 singleLine = true,
                                 isError = emailError != null,
                                 colors = fieldColors,
@@ -299,7 +299,7 @@ fun AuthScreen(
                                 value = emailInput,
                                 onValueChange = { emailInput = it },
                                 label = { Text("Email Address") },
-                                placeholder = { Text("e.g. qwerty@gmail.com") },
+                                placeholder = { Text("qwerty@gmail.com") },
                                 singleLine = true,
                                 isError = emailError != null,
                                 colors = fieldColors,
@@ -601,35 +601,27 @@ fun AuthScreen(
             } else {
                 // OTP Step Header
                 Column(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 4.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Text(
-                        text = if (isRegisterMode) "Verify Email" else "Two-Factor Authentication",
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = AppTheme.colors.textPrimary
+                        text = "We’ve sent a code to",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = AppTheme.colors.textSecondary,
+                        textAlign = TextAlign.Center
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "We sent a 6-digit verification code to:",
-                        fontSize = 14.sp,
-                        color = AppTheme.colors.textSecondary
+                        text = pendingEmail,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = AppTheme.colors.textPrimary,
+                        textAlign = TextAlign.Center
                     )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = AppTheme.colors.primaryPurpleBg,
-                        border = BorderStroke(1.dp, AppTheme.colors.primaryPurple.copy(alpha = 0.3f))
-                    ) {
-                        Text(
-                            text = pendingEmail,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = AppTheme.colors.primaryPurple,
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
-                        )
-                    }
+                    Spacer(modifier = Modifier.height(6.dp))
                 }
 
                 // OTP Card
