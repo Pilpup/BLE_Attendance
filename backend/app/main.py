@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 
 from sqlalchemy import delete, text
 from app.config import settings, validate_production_secrets
-from app.core.security import is_test_environment
+from app.core.security import is_test_environment, limiter_ip
 from app.database import AsyncSessionLocal, engine, is_postgres
 from app.models.attendance import Base, EmailOTP
 from app.routers import attendance, auth, leave, library
@@ -339,11 +339,13 @@ async def log_requests(request: Request, call_next):
     path = request.url.path
     if path == "/health":
         return await call_next(request)
-    client_ip = request.client.host if request.client else "unknown"
-    raw_xff = request.headers.get("x-forwarded-for", "none")
-    raw_cf = request.headers.get("cf-connecting-ip", "none")
+    # Logs the limiter-trusted client IP (CF-Connecting-IP when present) —
+    # NOT the uvicorn-resolved XFF value, which is attacker-controlled. The
+    # raw xff=/cf= probe dump from the spoofing investigation is gone: probe
+    # verified, header dumps were log noise.
+    client_ip = limiter_ip(request)
     method = request.method
-    logger.info(f"==> Incoming {method} {path} from {client_ip} | xff={raw_xff} | cf={raw_cf}")
+    logger.info(f"==> Incoming {method} {path} from {client_ip}")
     response = await call_next(request)
     logger.info(f"<== Finished {method} {path} - Status {response.status_code}")
     return response

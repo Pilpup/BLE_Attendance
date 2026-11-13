@@ -1025,14 +1025,15 @@ async def create_attendance_session(
     logger.info(f"[Session Created] ID: {session.id}, Course: {session.course_code}")
     # Roster diagnostic: the enrolled count is DERIVED from the eligibility
     # snapshot (semester + program) over active STUDENT accounts — the teacher
-    # app sends no roster. Log the matched roll numbers so a surprising count
-    # (stale test account, wrong program on a profile) is self-explaining.
-    # Roll numbers are roster data, not gate material (M9 covers token/salt).
+    # app sends no roster. Only the COUNT is logged: individual roll numbers
+    # are PII and were sitting in Render's retained logs for no runtime
+    # benefit. Surprising counts are debugged via enrolled_roll_numbers in the
+    # session-create response (owner-visible), not via log dumps.
     if roster_roll_numbers:
         logger.info(
-            "[Roster] Derived total_enrolled=%d for program=%r semester=%r from active STUDENT accounts: %s",
+            "[Roster] Derived total_enrolled=%d for program=%r semester=%r (%d matched active STUDENT accounts)",
             roster_enrolled, eligibility_program, eligibility_semester,
-            ", ".join(roster_roll_numbers),
+            len(roster_roll_numbers),
         )
     session.enrolled_roll_numbers = roster_roll_numbers or None
     _attach_wire_salt(session)
