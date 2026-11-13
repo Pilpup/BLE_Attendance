@@ -135,9 +135,11 @@ fun AttendanceScreen(
                         } else if (user.hasRole(Role.STUDENT) && viewModel.studentPhase != StudentPhase.STANDBY) {
                             viewModel.resetStudentSession()
                         } else if (user.canTakeAttendance() && viewModel.teacherViewMode == TeacherViewMode.LEAVE_REQUESTS) {
+                            // Leave requests is a sub-view inside take-attendance flow.
                             viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
                         } else if (user.canTakeAttendance() && viewModel.teacherViewMode == TeacherViewMode.OLDER_SESSIONS) {
-                            viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
+                            // Older sessions is entered from home; back returns home.
+                            onBack()
                         } else {
                             onBack()
                         }

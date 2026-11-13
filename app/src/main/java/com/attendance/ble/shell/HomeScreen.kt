@@ -110,6 +110,11 @@ fun HomeScreen(
                         onNavigate("${AttendanceDashboardCard.NAV_ROUTE}/older")
                     }
                 )
+                add(
+                    FeatureItem("Leave Requests", Icons.AutoMirrored.Filled.EventNote, colors.successGreen) {
+                        onNavigate("${AttendanceDashboardCard.NAV_ROUTE}/leave")
+                    }
+                )
             }
             if (user?.hasRole(Role.STUDENT) == true) {
                 add(

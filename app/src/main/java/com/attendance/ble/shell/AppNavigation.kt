@@ -55,13 +55,21 @@ fun AppNavigation(
                     destination = when {
                         route == "auth" -> Destination.AUTH
                         route.startsWith(AttendanceDashboardCard.NAV_ROUTE) -> {
-                            if (route.contains("older")) {
-                                viewModel.teacherViewMode = TeacherViewMode.OLDER_SESSIONS
-                                viewModel.selectedSessionForDetails = null
-                                viewModel.loadSessionHistory()
-                            } else {
-                                viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
-                                viewModel.selectedSessionForDetails = null
+                            when {
+                                route.contains("older") -> {
+                                    viewModel.teacherViewMode = TeacherViewMode.OLDER_SESSIONS
+                                    viewModel.selectedSessionForDetails = null
+                                    viewModel.loadSessionHistory()
+                                }
+                                route.contains("leave") -> {
+                                    viewModel.teacherViewMode = TeacherViewMode.LEAVE_REQUESTS
+                                    viewModel.selectedSessionForDetails = null
+                                    viewModel.loadDepartmentLeaveApplications()
+                                }
+                                else -> {
+                                    viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
+                                    viewModel.selectedSessionForDetails = null
+                                }
                             }
                             Destination.ATTENDANCE
                         }
@@ -94,7 +102,11 @@ fun AppNavigation(
                         viewModel.resetSession()
                     } else if (viewModel.finalizedRecords.isNotEmpty()) {
                         viewModel.resetSession()
+                    } else if (viewModel.teacherViewMode == TeacherViewMode.LEAVE_REQUESTS) {
+                        // Sub-view inside take-attendance; back returns to the form.
+                        viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
                     } else {
+                        // OLDER_SESSIONS list and take-attendance root return home.
                         destination = Destination.HOME
                     }
                 }
