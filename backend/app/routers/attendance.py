@@ -42,6 +42,7 @@ from app.core.security import (
     get_current_user,
     get_optional_user,
     is_test_environment,
+    limiter_ip,
     require_teacher,
 )
 from app.database import get_db
@@ -1567,7 +1568,7 @@ async def submit_student_neighbors(
     ])
     logger.info(
         f"[Check-In Fingerprint] Session: {target_session_id} Key: {student_key} "
-        f"IP: {request.client.host if request.client else 'unknown'} "
+        f"IP: {limiter_ip(request)} "
         f"FP: {hashlib.sha256(fingerprint_material.encode()).hexdigest()[:12]}"
     )
 

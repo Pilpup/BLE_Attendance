@@ -5,7 +5,7 @@ from typing import Optional
 
 import bcrypt
 import jwt
-from fastapi import Depends, HTTPException, Security, status
+from fastapi import Depends, HTTPException, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -176,3 +176,28 @@ async def require_staff_or_dev(current_user: User = Depends(get_current_user)) -
             detail="Insufficient permissions: Staff or Developer access required",
         )
     return current_user
+
+
+# Client IP for IP-keyed rate limiting.
+#
+# X-Forwarded-For is NOT safe here: Render's edge APPENDS the connecting
+# client's IP after any client-supplied entries ("forged,real,cf,render"),
+# and uvicorn under --forwarded-allow-ips "*" resolves the leftmost entry —
+# attacker-controlled (confirmed on the 2026-11 deploy: `from` spoofed with a
+# forged XFF while cf stayed real).
+#
+# CF-Connecting-IP is safe: Cloudflare's edge sets it to the socket peer that
+# connected to Cloudflare, independent of client XFF (confirmed: forged XFF,
+# cf stayed real). A client-supplied CF-Connecting-IP was blocked at the edge
+# (Cloudflare error 1000), matching Cloudflare's documented overwrite-at-edge
+# behavior.
+#
+# Fallback for requests that never traversed Cloudflare (container healthcheck,
+# direct internal calls): uvicorn's resolved client host — the same value the
+# limiters keyed on before this helper existed, so fallback is never worse
+# than the prior behavior.
+def limiter_ip(request: Request) -> str:
+    cf_ip = (request.headers.get("cf-connecting-ip") or "").strip()
+    if cf_ip:
+        return cf_ip
+    return request.client.host if request.client else "unknown"
