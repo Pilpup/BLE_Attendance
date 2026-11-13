@@ -25,10 +25,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.college.core.model.Role
 import com.college.core.model.User
-import com.college.core.network.ServerConfigManager
+import com.college.core.network.model.RegisterRequest
 import com.college.core.ui.theme.AppTheme
-import com.college.feature.attendance.network.AttendanceApiClient
-import com.college.feature.attendance.network.RegisterRequest
 import com.college.feature.attendance.ui.theme.*
 import com.college.feature.attendance.viewmodel.AttendanceViewModel
 import com.college.feature.attendance.viewmodel.StudentPhase
@@ -100,14 +98,12 @@ fun AttendanceScreen(
             userName = viewModel.currentUserName,
             userRole = viewModel.currentUserRole,
             rollNumber = viewModel.studentId,
-            serverUrl = AttendanceApiClient.baseUrl,
             isAuthLoading = viewModel.isAuthLoading,
             authErrorText = viewModel.authErrorText,
             onDismiss = { viewModel.showAuthDialog = false },
             onLogin = { email, pass -> viewModel.login(email, pass) },
             onRegister = { viewModel.register(it) },
             onLogout = { viewModel.logout() },
-            onUpdateServerUrl = { viewModel.setServerUrl(it) },
             onUpdateRollNumber = callbacks.onUpdateRollNumber
         )
     }
@@ -277,14 +273,12 @@ private fun AuthServerDialog(
     userName: String,
     userRole: String,
     rollNumber: String,
-    serverUrl: String,
     isAuthLoading: Boolean,
     authErrorText: String?,
     onDismiss: () -> Unit,
     onLogin: (String, String) -> Unit,
     onRegister: (RegisterRequest) -> Unit,
     onLogout: () -> Unit,
-    onUpdateServerUrl: (String) -> Unit,
     onUpdateRollNumber: (String) -> Unit
 ) {
     var isRegisterMode by remember { mutableStateOf(false) }
@@ -295,7 +289,6 @@ private fun AuthServerDialog(
     var rollNumberInput by remember { mutableStateOf(rollNumber) }
     var departmentInput by remember { mutableStateOf("CSE") }
     var facultyCodeInput by remember { mutableStateOf("") }
-    var serverUrlInput by remember { mutableStateOf(serverUrl) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -506,40 +499,6 @@ private fun AuthServerDialog(
                         Text(authErrorText, color = alertRed, fontSize = 12.sp)
                     }
                 }
-
-                HorizontalDivider(color = cardBorder)
-
-                Text("BACKEND SERVER URL", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textSecondary)
-                OutlinedTextField(
-                    value = serverUrlInput,
-                    onValueChange = { serverUrlInput = it },
-                    label = { Text("Server Base URL") },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = primaryBlue,
-                        unfocusedBorderColor = cardBorder,
-                        focusedTextColor = textPrimary,
-                        unfocusedTextColor = textPrimary
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    // R9 (review §3.4): shortcuts reference the single URL
-                    // source, never fresh literals. The hardcoded basement-LAN
-                    // button (10.115.186.134:53317) is deleted — it shipped a
-                    // fixed private IP into every release build; a needed dev
-                    // target can be typed into the field above instead.
-                    OutlinedButton(
-                        onClick = { serverUrlInput = ServerConfigManager.DEFAULT_BASE_URL },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        modifier = Modifier.height(28.dp)
-                    ) {
-                        Text("Cloud Render", fontSize = 10.sp)
-                    }
-                }
             }
         },
         confirmButton = {
@@ -547,12 +506,6 @@ private fun AuthServerDialog(
                 if (isLoggedIn) {
                     Button(
                         onClick = {
-                            // R9-A (found during chunk 9): Log Out used to
-                            // silently COMMIT whatever sat in the URL field as
-                            // the new server address — a half-typed or stale LAN
-                            // value could strand a logged-out user on the wrong
-                            // backend. Server changes belong to the register
-                            // flow, where the field is a deliberate input.
                             onLogout()
                             onDismiss()
                         },
@@ -563,7 +516,6 @@ private fun AuthServerDialog(
                 } else if (isRegisterMode) {
                     Button(
                         onClick = {
-                            onUpdateServerUrl(serverUrlInput)
                             onRegister(
                                 RegisterRequest(
                                     name = nameInput,
@@ -588,7 +540,6 @@ private fun AuthServerDialog(
                 } else {
                     Button(
                         onClick = {
-                            onUpdateServerUrl(serverUrlInput)
                             onLogin(emailInput, passwordInput)
                         },
                         enabled = !isAuthLoading && emailInput.isNotBlank() && passwordInput.isNotBlank(),
@@ -604,10 +555,7 @@ private fun AuthServerDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = {
-                onUpdateServerUrl(serverUrlInput)
-                onDismiss()
-            }) {
+            TextButton(onClick = onDismiss) {
                 Text("Close", color = textSecondary)
             }
         }

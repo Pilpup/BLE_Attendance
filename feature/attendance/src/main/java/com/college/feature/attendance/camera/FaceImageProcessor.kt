@@ -59,7 +59,7 @@ object FaceImageProcessor {
             processedBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_COMPRESSION_QUALITY, outputStream)
             outputStream.toByteArray()
         } catch (e: Exception) {
-            Log.e(TAG, "Error processing face frame: ${e.message}", e)
+//             Log.e(TAG, "Error processing face frame: ${e.message}", e)
             null
         } finally {
             if (processedBitmap != null && processedBitmap !== originalBitmap) {

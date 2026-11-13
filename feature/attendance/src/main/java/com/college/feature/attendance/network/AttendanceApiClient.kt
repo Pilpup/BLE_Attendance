@@ -5,11 +5,8 @@ import com.college.core.network.ServerConfigManager
 
 object AttendanceApiClient {
 
-    var baseUrl: String
+    val baseUrl: String
         get() = ServerConfigManager.default.currentBaseUrl
-        set(value) {
-            ServerConfigManager.default.setServerUrl(value)
-        }
 
     val service: AttendanceApiService by lazy {
         NetworkClient.createService<AttendanceApiService>()

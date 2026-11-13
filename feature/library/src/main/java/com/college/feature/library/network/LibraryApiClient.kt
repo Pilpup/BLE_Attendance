@@ -5,11 +5,8 @@ import com.college.core.network.ServerConfigManager
 
 object LibraryApiClient {
 
-    var baseUrl: String
+    val baseUrl: String
         get() = ServerConfigManager.default.currentBaseUrl
-        set(value) {
-            ServerConfigManager.default.setServerUrl(value)
-        }
 
     val service: LibraryApiService by lazy {
         NetworkClient.createService<LibraryApiService>()

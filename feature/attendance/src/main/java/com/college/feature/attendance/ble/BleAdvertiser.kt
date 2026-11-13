@@ -38,11 +38,11 @@ class BleAdvertiser(
     // State listener for active BLE advertising (legacy path)
     private val advertiseCallback = object : AdvertiseCallback() {
         override fun onStartSuccess(settingsInEffect: AdvertiseSettings?) {
-            Log.i(TAG, "Radio broadcasting started successfully")
+            // Log.i(TAG, "Radio broadcasting started successfully")
             onBroadcastingChanged(true)
         }
         override fun onStartFailure(errorCode: Int) {
-            Log.e(TAG, "Broadcasting failed with error code: $errorCode")
+            // Log.e(TAG, "Broadcasting failed with error code: $errorCode")
             onBroadcastingChanged(false)
         }
     }
@@ -51,7 +51,7 @@ class BleAdvertiser(
     fun startBroadcasting(selectedAdvMode: Int, selectedTxPower: Int, broadcastToken: String) {
         val advertiser = bleAdvertiser
         if (advertiser == null) {
-            Log.w(TAG, "BluetoothLeAdvertiser not available or permissions missing")
+            // Log.w(TAG, "BluetoothLeAdvertiser not available or permissions missing")
             onBroadcastingChanged(false)
             return
         }
@@ -59,7 +59,7 @@ class BleAdvertiser(
         // Convert token string once to avoid duplicate allocations
         val tokenBytes = broadcastToken.toByteArray(Charsets.UTF_8)
         if (tokenBytes.size > BleConstants.MAX_LEGACY_PAYLOAD_BYTES) {
-            Log.w(TAG, "broadcastToken size (${tokenBytes.size}B) exceeds legacy limit (${BleConstants.MAX_LEGACY_PAYLOAD_BYTES}B)")
+//             Log.w(TAG, "broadcastToken size (${tokenBytes.size}B) exceeds legacy limit (${BleConstants.MAX_LEGACY_PAYLOAD_BYTES}B)")
         }
 
         val data = AdvertiseData.Builder()
@@ -81,10 +81,10 @@ class BleAdvertiser(
                 override fun onAdvertisingEnabled(set: AdvertisingSet?, enabled: Boolean, status: Int) {
                     if (enabled && status == AdvertisingSetCallback.ADVERTISE_SUCCESS) {
                         activeSet = set
-                        Log.i(TAG, "Radio broadcasting started successfully (AdvertisingSet)")
+//                         Log.i(TAG, "Radio broadcasting started successfully (AdvertisingSet)")
                         onBroadcastingChanged(true)
                     } else {
-                        Log.e(TAG, "AdvertisingSet enable failed: status=$status")
+//                         Log.e(TAG, "AdvertisingSet enable failed: status=$status")
                         onBroadcastingChanged(false)
                     }
                 }
@@ -93,7 +93,7 @@ class BleAdvertiser(
                     if (status != AdvertisingSetCallback.ADVERTISE_SUCCESS) {
                         // The previous payload stays on the air — consumers
                         // (countdown) tolerate a stale value; the next update retries.
-                        Log.e(TAG, "Advertising data update failed: status=$status")
+//                         Log.e(TAG, "Advertising data update failed: status=$status")
                     }
                 }
             }
@@ -103,7 +103,7 @@ class BleAdvertiser(
             try {
                 advertiser.startAdvertisingSet(params, data, null, null, null, callback)
             } catch (e: Exception) {
-                Log.e(TAG, "Error starting AdvertisingSet: ${e.message}", e)
+//                 Log.e(TAG, "Error starting AdvertisingSet: ${e.message}", e)
                 onBroadcastingChanged(false)
             }
         } else {
@@ -120,7 +120,7 @@ class BleAdvertiser(
             try {
                 advertiser.startAdvertising(settings, data, advertiseCallback)
             } catch (e: Exception) {
-                Log.e(TAG, "Error starting advertising: ${e.message}", e)
+//                 Log.e(TAG, "Error starting advertising: ${e.message}", e)
                 onBroadcastingChanged(false)
             }
         }
@@ -133,7 +133,7 @@ class BleAdvertiser(
     fun updatePayload(broadcastToken: String) {
         val tokenBytes = broadcastToken.toByteArray(Charsets.UTF_8)
         if (tokenBytes.size > BleConstants.MAX_LEGACY_PAYLOAD_BYTES) {
-            Log.w(TAG, "broadcastToken size (${tokenBytes.size}B) exceeds legacy limit (${BleConstants.MAX_LEGACY_PAYLOAD_BYTES}B)")
+//             Log.w(TAG, "broadcastToken size (${tokenBytes.size}B) exceeds legacy limit (${BleConstants.MAX_LEGACY_PAYLOAD_BYTES}B)")
         }
         val data = AdvertiseData.Builder()
             .setIncludeDeviceName(false)
@@ -145,7 +145,7 @@ class BleAdvertiser(
             try {
                 set.setAdvertisingData(data)
             } catch (e: Exception) {
-                Log.e(TAG, "Error updating advertising payload: ${e.message}", e)
+//                 Log.e(TAG, "Error updating advertising payload: ${e.message}", e)
             }
         } else {
             startBroadcasting(lastAdvMode, lastTxPower, broadcastToken)
@@ -160,7 +160,7 @@ class BleAdvertiser(
             try {
                 bleAdvertiser?.stopAdvertising(advertiseCallback)
             } catch (e: Exception) {
-                Log.e(TAG, "Error stopping BLE advertisement: ${e.message}")
+//                 Log.e(TAG, "Error stopping BLE advertisement: ${e.message}")
             }
         }
         onBroadcastingChanged(false)

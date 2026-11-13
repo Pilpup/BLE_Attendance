@@ -11,7 +11,6 @@ object NetworkClient {
 
     val okHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .addInterceptor(HostSelectionInterceptor(ServerConfigManager.default))
             .addInterceptor(AuthInterceptor(SessionManager.default))
             .addInterceptor(
                 HttpLoggingInterceptor().apply {
@@ -56,7 +55,11 @@ object NetworkClient {
     suspend fun checkServerHealth(): Boolean = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
         try {
             val request = okhttp3.Request.Builder()
-                .url(ServerConfigManager.default.currentBaseUrl + "health")
+                .url(
+                    ServerConfigManager.DEFAULT_HTTP_URL.newBuilder()
+                        .addPathSegment("health")
+                        .build()
+                )
                 .header("No-Auth", "true")
                 .build()
             okHttpClient.newCall(request).execute().use { response ->

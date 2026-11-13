@@ -6,18 +6,21 @@ import com.college.core.model.User
 object DashboardRegistry {
 
     private val cards = mutableStateListOf<DashboardCard>()
+    private val lock = Any()
 
     fun register(card: DashboardCard) {
-        synchronized(cards) {
+        synchronized(lock) {
             if (cards.none { it.id == card.id }) cards.add(card)
         }
     }
 
     fun cardsFor(user: User): List<DashboardCard> =
-        cards.filter { it.isVisibleFor(user) }.sortedBy { it.priority }
+        synchronized(lock) {
+            cards.filter { it.isVisibleFor(user) }.sortedBy { it.priority }
+        }
 
     fun clear() {
-        synchronized(cards) {
+        synchronized(lock) {
             cards.clear()
         }
     }

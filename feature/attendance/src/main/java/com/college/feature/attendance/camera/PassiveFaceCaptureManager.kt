@@ -133,7 +133,7 @@ class PassiveFaceCaptureManager(
                     camera.cameraControl.startFocusAndMetering(action)
                 } catch (_: Exception) {}
             } catch (e: Exception) {
-                Log.e(TAG, "Camera start error: ${e.message}", e)
+//                 Log.e(TAG, "Camera start error: ${e.message}", e)
                 stopCamera()
             }
         }, ContextCompat.getMainExecutor(context))

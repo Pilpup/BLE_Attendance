@@ -472,7 +472,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     fun onBleScanStateChanged(active: Boolean) {
         bleScanActive = active
         if (!active) {
-            android.util.Log.w("AttendanceViewModel", "BLE scan stopped/failed (listener reports inactive)")
+            // if (BuildConfig.DEBUG) android.util.Log.w("AttendanceViewModel", "BLE scan stopped/failed (listener reports inactive)")
         }
     }
 
@@ -486,13 +486,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         currentRollNumber = SessionManager.default.currentUser?.rollNumber
             ?: prefs.getString("roll_number", defaultLocalId)
             ?: defaultLocalId
-        // R9 (review §3.4): ServerConfigManager is the ONLY URL owner. It was
-        // initialized just above; its persisted value is scheme-normalized,
-        // already live for every request via HostSelectionInterceptor, and
-        // AttendanceApiClient.baseUrl reads from it. The old block re-read the
-        // same file/key, re-adjudicated the value with hand-rolled LAN-string
-        // filters, then re-persisted through a second writer — three URL
-        // sources of truth adjudicating each other on every cold start.
+        // Server endpoint is hardcoded in core/network; dynamic URL switching removed.
         hydrateSessionFromPrefs()
         if (isTeacherMode) {
             loadCourses()
@@ -518,11 +512,16 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
      * login replaces it with the real backend profile.
      */
     private fun hydrateSessionFromPrefs() {
+        // Always purge legacy plaintext token if it still exists.
+        val legacyToken = prefs.getString("auth_token", null)
         if (SessionManager.default.isLoggedIn) {
             SessionManager.default.currentUser?.rollNumber?.let { currentRollNumber = it }
+            if (legacyToken != null) {
+                prefs.edit().remove("auth_token").apply()
+            }
             return
         }
-        val legacyToken = prefs.getString("auth_token", null) ?: return
+        if (legacyToken == null) return
         val role = Role.fromBackendName(prefs.getString("user_role", null)) ?: Role.STUDENT
         val roll = prefs.getString("roll_number", null)
         SessionManager.default.startSession(
@@ -584,13 +583,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // R9 (review §3.4): single write path — the AttendanceApiClient.baseUrl
-    // delegate persists through ServerConfigManager, which owns scheme
-    // normalization. The removed direct prefs write was a second writer on the
-    // same file/key, able to race the normalized value with raw user input.
-    fun setServerUrl(url: String) {
-        AttendanceApiClient.baseUrl = url
-    }
+    // Server endpoint is hardcoded; runtime URL switching disabled.
+    fun setServerUrl(@Suppress("UNUSED_PARAMETER") url: String) = Unit
 
     fun login(email: String, pass: String, onOtpRequired: (String) -> Unit = {}, onComplete: (Boolean) -> Unit = {}) {
         isAuthLoading = true
@@ -1048,7 +1042,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                 // gate's "Nice try lil bro" taunted students
                                 // mid-challenge. Log it; the window-end submit
                                 // surfaces the real outcome.
-                                android.util.Log.w("AttendanceViewModel", "Mid-window 403 suppressed from UI: $detail")
+                                // if (BuildConfig.DEBUG) android.util.Log.w("AttendanceViewModel", "Mid-window 403 suppressed from UI: $detail")
                             }
                         } else {
                             if (studentDiscoverySecondsRemaining <= 0) {
@@ -1061,7 +1055,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                 // Mid-window rejection (e.g. session state flipped mid-submit):
                                 // stay in the discovery view and keep probing — the window-end
                                 // submit retries and the audit poll resolves the final state
-                                android.util.Log.w("AttendanceViewModel", "Mid-window peer sync pending: ${result.code} - $detail")
+                                // if (BuildConfig.DEBUG) android.util.Log.w("AttendanceViewModel", "Mid-window peer sync pending: ${result.code} - $detail")
                             }
                         }
                     }
@@ -1074,7 +1068,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         } else {
                             // Mid-window network failure (e.g. cold backend latency): keep probing
                             // and let the window-end submit retry instead of freezing early
-                            android.util.Log.w("AttendanceViewModel", "Mid-window peer sync network error (retry at window end): ${result.throwable.message}")
+                            // if (BuildConfig.DEBUG) android.util.Log.w("AttendanceViewModel", "Mid-window peer sync network error (retry at window end): ${result.throwable.message}")
                         }
                     }
                 }
@@ -1142,16 +1136,16 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                 // submissions into that other session (resolves newest-wins),
                                 // so stay silent until the teacher picks a new ID.
                                 cloudStatusMessage = "Session ID $sessionId is already in use by an active session — pick a new ID before broadcasting"
-                                android.util.Log.e("AttendanceViewModel", "Session create rejected: HTTP 409 - ${result.message}")
+                                // if (BuildConfig.DEBUG) android.util.Log.e("AttendanceViewModel", "Session create rejected: HTTP 409 - ${result.message}")
                             } else {
                                 cloudStatusMessage = "Cloud sync warning (HTTP ${result.code}): session NOT created — students cannot check in until you STOP and start a new class with a new ID"
-                                android.util.Log.e("AttendanceViewModel", "Session create failed: HTTP ${result.code} - ${result.message}")
+                                // if (BuildConfig.DEBUG) android.util.Log.e("AttendanceViewModel", "Session create failed: HTTP ${result.code} - ${result.message}")
                                 onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
                             }
                         }
                         is NetworkResult.Exception -> {
                             cloudStatusMessage = "Cloud sync error: ${result.throwable.localizedMessage ?: "Offline"}"
-                            android.util.Log.e("AttendanceViewModel", "Session create exception", result.throwable)
+                            // if (BuildConfig.DEBUG) android.util.Log.e("AttendanceViewModel", "Session create exception", result.throwable)
                             onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
                         }
                     }
@@ -1572,7 +1566,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             // A device without a bound roll would broadcast a RANDOM default id —
             // every listener nearby would ingest it as a phantom classmate that
             // can never check in or reciprocate. Listen-only mode instead.
-            android.util.Log.w("AttendanceViewModel", "Probe broadcast suppressed: no real roll bound — default random id would fabricate a phantom peer for classmates")
+            // if (BuildConfig.DEBUG) android.util.Log.w("AttendanceViewModel", "Probe broadcast suppressed: no real roll bound — default random id would fabricate a phantom peer for classmates")
         } else {
             onStartBroadcasting?.invoke(probePayload, AdvertiseSettings.ADVERTISE_TX_POWER_LOW)
         }
@@ -1685,10 +1679,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     continue
                 }
                 lastWatchdogRestartElapsedMs = now
-                android.util.Log.w(
-                    "AttendanceViewModel",
-                    "Scan watchdog: no packets for 12s while listening — restarting scan (scanActive=$bleScanActive)"
-                )
+                // if (BuildConfig.DEBUG) android.util.Log.w(
+                //     "AttendanceViewModel",
+                //     "Scan watchdog: no packets for 12s while listening — restarting scan (scanActive=$bleScanActive)"
+                // )
                 onStartScanning?.invoke()
             }
         }
@@ -1701,10 +1695,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             return
         }
         beaconCandidates[sessionId] = BeaconCandidate(sessionId, sessionSalt, rssi)
-        android.util.Log.i(
-            "AttendanceViewModel",
-            "Beacon candidate: $sessionId @${rssi}dBm (pool size ${beaconCandidates.size})"
-        )
+        // if (BuildConfig.DEBUG) android.util.Log.i(
+        //     "AttendanceViewModel",
+        //     "Beacon candidate: $sessionId @${rssi}dBm (pool size ${beaconCandidates.size})"
+        // )
         if (beaconCandidates.size == 1) {
             val epoch = ++latchEpoch
             viewModelScope.launch {
@@ -1723,12 +1717,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val chosen = beaconCandidates.values
             .sortedWith(compareBy<BeaconCandidate> { -it.peakRssi }.thenBy { it.sessionId })
             .firstOrNull() ?: return
-        val pool = beaconCandidates.entries
-            .joinToString(",") { "${it.key}@${it.value.peakRssi}dBm" }
-        android.util.Log.i(
-            "AttendanceViewModel",
-            "Beacon latch: ${chosen.sessionId} @${chosen.peakRssi}dBm [candidates: $pool]"
-        )
+        // val pool = beaconCandidates.entries
+        //     .joinToString(",") { "${it.key}@${it.value.peakRssi}dBm" }
+        // if (BuildConfig.DEBUG) android.util.Log.i(
+        //     "AttendanceViewModel",
+        //     "Beacon latch: ${chosen.sessionId} @${chosen.peakRssi}dBm [candidates: $pool]"
+        // )
         val syncTarget = syncGameStartElapsedMs
         invalidateBeaconLatch()
         detectedSessionId = chosen.sessionId
@@ -1807,7 +1801,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 val profileSemester = SessionManager.default.currentUser?.semester
                 if (bSem != null && profileSemester != null && bSem != profileSemester) {
                     studentStatusMessage = "Nearby class is Semester $bSem — your profile says Semester $profileSemester"
-                    android.util.Log.i("AttendanceViewModel", "Beacon rejected by semester pre-filter: bSem=$bSem profile=$profileSemester")
+                    // if (BuildConfig.DEBUG) android.util.Log.i("AttendanceViewModel", "Beacon rejected by semester pre-filter: bSem=$bSem profile=$profileSemester")
                     return
                 }
                 // Synchronized game start estimate: (now + k) on the monotonic
@@ -1851,7 +1845,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 if (existing == null) {
                     // First sight of this peer this window — one diagnostic line
                     // so phantom emitters are identifiable from logcat alone
-                    android.util.Log.i("AttendanceViewModel", "Peer ingested: id=$peerId msg='$cleanMsg' rssi=$rssi session=$detectedSessionId")
+                    // if (BuildConfig.DEBUG) android.util.Log.i("AttendanceViewModel", "Peer ingested: id=$peerId msg='$cleanMsg' rssi=$rssi session=$detectedSessionId")
                     // Push updated peer list to server
                     submitMyNeighborsToCloud(keepRadioActive = true)
                 }
@@ -1882,7 +1876,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val nowMs = android.os.SystemClock.elapsedRealtime()
         if (nowMs - lastNeglectedPacketLogMs > 2000) {
             lastNeglectedPacketLogMs = nowMs
-            android.util.Log.i("AttendanceViewModel", "BLE packet not ingested: '$cleanMsg' (rssi=$rssi phase=$studentPhase session=$detectedSessionId)")
+            // if (BuildConfig.DEBUG) android.util.Log.i("AttendanceViewModel", "BLE packet not ingested: '$cleanMsg' (rssi=$rssi phase=$studentPhase session=$detectedSessionId)")
         }
     }
 /* [ULTRASONIC-DISABLED 2026-11] whole function off (see trigger call site).
