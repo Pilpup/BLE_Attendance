@@ -10,7 +10,11 @@ import httpx
 from app.config import settings
 from app.core.security import is_test_environment
 
-logger = logging.getLogger("email_service")
+# uvicorn.error is the app-wide logger with a Render-visible handler: the
+# generic "email_service" logger had no handler configured anywhere, so every
+# dispatch line (including successful Brevo 202s) vanished from production
+# logs and non-delivery was undiagnosable.
+logger = logging.getLogger("uvicorn.error")
 
 
 # Generates a cryptographically secure 6-digit numeric OTP code
@@ -88,6 +92,7 @@ async def send_otp_email(to_email: str, otp_code: str, purpose: str = "LOGIN") -
 
     # Falls back to SMTP server if configured
     if settings.SMTP_HOST:
+        logger.info(f"[OTP DISPATCH] Brevo unavailable — trying SMTP fallback for {to_email}")
         return await asyncio.to_thread(_send_smtp_email_sync, to_email, subject, text_content)
 
     # Return success for local test suites when mailers are disabled
