@@ -319,6 +319,14 @@ MAX_REQUEST_BODY_BYTES = 6_000_000
 
 @app.middleware("http")
 async def oversized_body_guard(request: Request, call_next):
+    # Chunked requests carry no content-length, so the declared-size check
+    # below cannot bound them — and uvicorn buffers the whole body before the
+    # handler runs. On the single-worker deployment that is a one-request OOM
+    # (full service outage), so streamed bodies are refused outright. Every
+    # real client (OkHttp JSON / raw image bytes) sends a fixed content-length.
+    transfer_encoding = request.headers.get("transfer-encoding", "").lower()
+    if transfer_encoding and transfer_encoding != "identity":
+        return PlainTextResponse("Length Required", status_code=411)
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > MAX_REQUEST_BODY_BYTES:
         return PlainTextResponse("Request body too large", status_code=413)
@@ -329,10 +337,12 @@ async def oversized_body_guard(request: Request, call_next):
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     path = request.url.path
-    if path in ("/health", "/"):
+    if path == "/health":
         return await call_next(request)
+    client_ip = request.client.host if request.client else "unknown"
+    raw_xff = request.headers.get("x-forwarded-for", "none")
     method = request.method
-    logger.info(f"==> Incoming {method} {path}")
+    logger.info(f"==> Incoming {method} {path} from {client_ip} | xff={raw_xff}")
     response = await call_next(request)
     logger.info(f"<== Finished {method} {path} - Status {response.status_code}")
     return response

@@ -80,3 +80,17 @@ login_ip_limiter = SlidingWindowRateLimiter(max_events=150, window_seconds=300.0
 # spraying from many addresses at once.
 otp_resend_email_limiter = SlidingWindowRateLimiter(max_events=3, window_seconds=1800.0)
 otp_resend_ip_limiter = SlidingWindowRateLimiter(max_events=60, window_seconds=1800.0)
+
+# Registration budgets: /auth/register is unauthenticated and dispatches a real
+# email on every call, so it needs the same two-layer defense as resend — but
+# sized for onboarding, not resends. Per-MAILBOX (5 / 30 min) stops inbox
+# flooding of one victim. Per-IP stays VERY generous: semester-start signup is
+# an entire classroom (60+ students) behind one college NAT address, so the
+# budget is a per-day quota-burn floor (~100/day), not a burst limiter.
+register_email_limiter = SlidingWindowRateLimiter(max_events=5, window_seconds=1800.0)
+register_ip_limiter = SlidingWindowRateLimiter(max_events=100, window_seconds=86400.0)
+
+# Face lab budget: the lab endpoints decode up to 5MB base64 and run cv2
+# inference in the thread pool. Teacher-gated, but one determined teacher can
+# pin the single worker's CPU — a small per-teacher budget keeps it diagnostic.
+face_lab_limiter = SlidingWindowRateLimiter(max_events=10, window_seconds=60.0)

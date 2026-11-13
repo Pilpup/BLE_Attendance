@@ -1,8 +1,14 @@
 from datetime import datetime
-from typing import Optional
+from typing import Annotated, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+
+# BLE discovery reports top-3 peers; the cap leaves retry headroom while
+# bounding the mesh-audit node degree and the persisted neighbor JSON.
+MAX_NEIGHBORS = 10
+# Peer IDs are roll numbers or device keys — well under 50 chars.
+NeighborId = Annotated[str, StringConstraints(min_length=1, max_length=50)]
 
 
 # Unit topic schemas
@@ -102,7 +108,8 @@ class BLEAuditRecordItem(BaseModel):
     )
     remarks: Optional[str] = Field(None, description="Human-readable audit note")
     game_score: Optional[int] = Field(
-        None, description="Chimp cognitive challenge score (client-attested, gated at submit)"
+        None, ge=0, le=100,
+        description="Chimp cognitive challenge score (client-attested, gated at submit)"
     )
     roll_number: Optional[str] = None
     student_name: Optional[str] = None
@@ -205,13 +212,15 @@ class SubmitNeighborsRequest(BaseModel):
         default=None,
         description="Student roll number or 4-char BLE ID if unauthenticated"
     )
-    neighbors: list[str] = Field(
+    neighbors: list[NeighborId] = Field(
         ...,
-        description="Top-3 discovered peer IDs or roll numbers (median RSSI >= -82 dBm)"
+        max_length=MAX_NEIGHBORS,
+        description="Top-3 discovered peer IDs or roll numbers (median RSSI >= -82 dBm)",
     )
-    close_neighbors: Optional[list[str]] = Field(
+    close_neighbors: Optional[list[NeighborId]] = Field(
         default=None,
-        description="Peers detected in close proximity cluster (RSSI >= -65 dBm)"
+        max_length=MAX_NEIGHBORS,
+        description="Peers detected in close proximity cluster (RSSI >= -65 dBm)",
     )
     session_salt: Optional[str] = Field(
         default=None,
@@ -239,7 +248,9 @@ class SubmitNeighborsRequest(BaseModel):
     )
     game_score: Optional[int] = Field(
         default=None,
-        description="Chimp memory challenge score; <15 is rejected as unverified."
+        ge=0,
+        le=100,
+        description="Chimp memory challenge score; <15 is rejected as unverified. Bounded so a malicious client cannot persist arbitrary integers.",
     )
 
     # Strips whitespace from student identifier

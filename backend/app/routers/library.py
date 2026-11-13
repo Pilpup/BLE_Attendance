@@ -18,14 +18,18 @@ from app.schemas.library import (
     BookResponse,
     BookUpdateRequest,
 )
+from app.services.book_lookup import _normalize_isbn as _strict_normalize_isbn
 from app.services.book_lookup import lookup_book_by_isbn
 
 router = APIRouter(prefix="/library", tags=["Library"])
 
 
-# Normalize ISBN string by removing hyphens and converting to uppercase
+# Normalize ISBN: delegates to the strict normalizer in book_lookup (strips
+# every non-[0-9X] char and uppercases). The old hyphen-only strip here let
+# "978 013 3594 140" store verbatim — duplicate rows and lookup misses against
+# the same ISBN typed differently.
 def _normalize_isbn(raw: str) -> str:
-    return raw.strip().replace("-", "").upper()
+    return _strict_normalize_isbn(raw)
 
 
 # Normalize category string to uppercase

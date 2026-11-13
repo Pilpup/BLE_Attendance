@@ -77,6 +77,7 @@ from app.schemas.attendance import (
 )
 from app.services.face_engine import face_registry
 from app.services.graph_engine import audit_classroom_mesh
+from app.services.rate_limiter import face_lab_limiter
 from app.services.submission_buffer import submission_buffer
 
 # --- H5: server-issued session salt helpers ---
@@ -321,6 +322,32 @@ async def _populate_course_metadata(session_obj: AttendanceSession, db: AsyncSes
     if course:
         session_obj.course_code = course.course_code
         session_obj.course_name = course.course_name
+
+
+# R5-consistent counter recompute, shared by both finalize paths and the
+# manual override route: counters must reflect committed DB rows, not
+# payload-computed tallies — prior VERIFIED rows absent from the current
+# request (grace-path additions, out-of-band verdicts, later overrides) would
+# otherwise be dropped from the visible counts. LEAVE rows count as neither
+# verified nor unverified (approved-leave overlay output).
+async def _recompute_session_counters(session_obj: AttendanceSession, db: AsyncSession) -> None:
+    await db.flush()
+    verified_res = await db.execute(
+        select(func.count()).select_from(AttendanceRecord).where(
+            AttendanceRecord.session_id == session_obj.id,
+            AttendanceRecord.status == "VERIFIED_PRESENT",
+        )
+    )
+    session_obj.total_verified = verified_res.scalar() or 0
+    # Count every record that did not end VERIFIED — witnessed offline
+    # students, isolated seats, spoofers, proxy flags, challenge failures.
+    unverified_res = await db.execute(
+        select(func.count()).select_from(AttendanceRecord).where(
+            AttendanceRecord.session_id == session_obj.id,
+            AttendanceRecord.status.not_in(["VERIFIED_PRESENT", "LEAVE"]),
+        )
+    )
+    session_obj.total_unverified = unverified_res.scalar() or 0
 
 
 # R11-B fix: the audit-and-finalize response is the teacher's LIVE post-class
@@ -806,7 +833,7 @@ async def list_teacher_sessions_history(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
 
     user_role = (current_user.role or "").upper()
-    if user_role not in ("TEACHER", "DEVELOPER", "STAFF", "FACULTY", "ADMIN"):
+    if user_role not in ("TEACHER", "HOD", "DEVELOPER", "STAFF", "FACULTY", "ADMIN"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only instructors can view session history")
 
     query = (
@@ -1321,27 +1348,9 @@ async def finalize_attendance_session(
     session_obj.status = "COMPLETED"
     session_obj.ended_at = datetime.now(timezone.utc)
 
-    # R5 (review §5 honesty): counters must reflect committed DB rows, not
-    # payload-computed tallies — prior VERIFIED rows absent from this request
-    # (grace-path additions, out-of-band verdicts) would otherwise be dropped
-    # from the visible counts.
-    await db.flush()
-    verified_res = await db.execute(
-        select(func.count()).select_from(AttendanceRecord).where(
-            AttendanceRecord.session_id == session_obj.id,
-            AttendanceRecord.status == "VERIFIED_PRESENT",
-        )
-    )
-    session_obj.total_verified = verified_res.scalar() or 0
-    # Count every record that did not end VERIFIED — witnessed offline
-    # students, isolated seats, spoofers, proxy flags, challenge failures.
-    unverified_res = await db.execute(
-        select(func.count()).select_from(AttendanceRecord).where(
-            AttendanceRecord.session_id == session_obj.id,
-            AttendanceRecord.status.not_in(["VERIFIED_PRESENT", "LEAVE"]),
-        )
-    )
-    session_obj.total_unverified = unverified_res.scalar() or 0
+    # R5 (review §5 honesty): counters must reflect committed DB rows — see
+    # _recompute_session_counters.
+    await _recompute_session_counters(session_obj, db)
 
     await db.commit()
     await db.refresh(session_obj)
@@ -1968,7 +1977,15 @@ async def audit_and_finalize_session(
         if staged_sub.student_id:
             user_map[dev_key] = staged_sub.student_id
 
-    combined_reports = {**cloud_reports, **payload.reports}
+    # Normalize teacher-reported keys/neighbors to match the staged/cloud
+    # convention (uppercased). graph_engine matches keys exactly, so a
+    # mixed-case payload key would never pair with its peers' reports and the
+    # honest node would land ISOLATED_FLAGGED.
+    normalized_payload_reports = {
+        k.strip().upper(): [n.strip().upper() for n in v]
+        for k, v in payload.reports.items()
+    }
+    combined_reports = {**cloud_reports, **normalized_payload_reports}
 
     # H3 (audit): anchor mesh verdicts to enrolled class size and to
     # server-observed face evidence so a colluder-only clique cannot
@@ -2161,23 +2178,7 @@ async def audit_and_finalize_session(
 
     # R5 (review §5 honesty): verified count is recounted from durable rows —
     # the payload-computed tally could be clobbered by grace-path increments.
-    verified_res = await db.execute(
-        select(func.count()).select_from(AttendanceRecord).where(
-            AttendanceRecord.session_id == session_obj.id,
-            AttendanceRecord.status == "VERIFIED_PRESENT",
-        )
-    )
-    session_obj.total_verified = verified_res.scalar() or 0
-
-    # Count every record that did not end VERIFIED — witnessed offline
-    # students, isolated seats, spoofers, proxy flags, challenge failures.
-    unverified_res = await db.execute(
-        select(func.count()).select_from(AttendanceRecord).where(
-            AttendanceRecord.session_id == session_obj.id,
-            AttendanceRecord.status.not_in(["VERIFIED_PRESENT", "LEAVE"]),
-        )
-    )
-    session_obj.total_unverified = unverified_res.scalar() or 0
+    await _recompute_session_counters(session_obj, db)
 
     await db.commit()
     await db.refresh(session_obj)
@@ -2212,6 +2213,18 @@ async def get_session_details(
     if not session_obj:
         raise HTTPException(status_code=404, detail="Attendance session not found")
 
+    # Ownership gate for non-students: TEACHER/STAFF/FACULTY/HOD callers may
+    # only read their own sessions (privileged auditors excepted). Without
+    # this, any authenticated instructor could read the full roster — names,
+    # roll numbers, statuses — of every other teacher's session.
+    user_role = (current_user.role or "").upper() if current_user else ""
+    if user_role not in ("STUDENT", ""):
+        if session_obj.teacher_id != current_user.id and user_role not in ("DEVELOPER", "ADMIN"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not authorized to view this attendance session",
+            )
+
     await _populate_course_metadata(session_obj, db)
 
     # Attach student names and roll numbers to records
@@ -2230,7 +2243,6 @@ async def get_session_details(
         # Own-key match uses the hashed device key derived from the JWT account
         # (the old roll[-4:] comparison never matched hashed keys, so rows with
         # an unbound student_id were invisible to the student they belonged to).
-        user_role = (current_user.role or "").upper() if current_user else ""
         if user_role == "STUDENT":
             own_key = user_device_key(current_user)
             session_obj.records = [
@@ -2239,7 +2251,18 @@ async def get_session_details(
                 or r.ble_device_id.upper() == own_key
             ]
 
-    return _attach_wire_salt(session_obj)
+    _attach_wire_salt(session_obj)
+    # H5 gate material must not travel to student clients: the wire salt's
+    # purpose is proving physical presence via the teacher's BLE beacon. The
+    # student app derives the salt from the beacon packet only — it never
+    # reads this route for it — so blanking both salts here raises the cost
+    # of remote check-ins without breaking any client flow. (The gate remains
+    # weak against two in-room colluders sharing the salt out-of-band.)
+    user_role = (current_user.role or "").upper() if current_user else ""
+    if user_role in ("STUDENT", ""):
+        session_obj.session_salt = None
+        session_obj.session_wire_salt = None
+    return session_obj
 
 
 # Return duplicate face pairs flagged during instructor session
@@ -2299,6 +2322,12 @@ async def override_attendance_record(
     if payload.remarks:
         record_obj.remarks = payload.remarks
 
+    # Deliberate chimp-gate exemption: the instructor's manual verdict is the
+    # trusted authority, so an override may set VERIFIED_PRESENT without a
+    # passing game_score (the schema whitelist at RecordOverrideRequest bounds
+    # what can be stamped). Counters are recomputed from durable rows (the
+    # helper flushes) so the dashboard reflects the override immediately.
+    await _recompute_session_counters(session_obj, db)
     await db.commit()
     await db.refresh(record_obj)
     return record_obj
@@ -2310,6 +2339,10 @@ async def lab_face_check(
     payload: FaceLabCheckRequest,
     current_user: User = Depends(require_teacher),
 ):
+    # Per-teacher budget: decode + cv2 inference is the heaviest CPU work in
+    # the app; the gate keeps a misbehaving client from pinning the worker.
+    if not await face_lab_limiter.check(str(current_user.id)):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many face lab requests; slow down")
     if len(payload.face_image_base64) > 5 * 1024 * 1024:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Image payload too large")
     try:
@@ -2335,6 +2368,8 @@ async def lab_face_compare(
     payload: FaceLabCompareRequest,
     current_user: User = Depends(require_teacher),
 ):
+    if not await face_lab_limiter.check(str(current_user.id)):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many face lab requests; slow down")
     if len(payload.image_a_base64) > 5 * 1024 * 1024 or len(payload.image_b_base64) > 5 * 1024 * 1024:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Image payload too large")
     try:

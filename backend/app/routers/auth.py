@@ -33,6 +33,8 @@ from app.services.rate_limiter import (
     login_ip_limiter,
     otp_resend_email_limiter,
     otp_resend_ip_limiter,
+    register_email_limiter,
+    register_ip_limiter,
 )
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -69,8 +71,24 @@ def _to_user_response(user: User) -> UserResponse:
 async def register_send_otp(
     payload: RegisterRequest,
     background_tasks: BackgroundTasks,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    # Registration budgets: the endpoint is unauthenticated and dispatches a
+    # real email on every call, so without this it is a free inbox-bombing and
+    # Brevo-plan-burn vector. Per-mailbox cap bounds flooding of one victim;
+    # per-IP is a generous onboarding floor (whole classroom behind one NAT).
+    # IP is checked FIRST: a pass on the email limiter records a stamp, so
+    # checking the abundant per-day IP budget first keeps a denied request
+    # from consuming a scarce per-mailbox slot.
+    email = payload.email.strip().lower()
+    client_ip = request.client.host if request.client else "unknown"
+    if not await register_ip_limiter.check(client_ip) or not await register_email_limiter.check(email):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many registration attempts. Please try again later.",
+        )
+
     # Validate requested role
     normalized_role = payload.role.strip().upper()
     if normalized_role not in ["STUDENT", "TEACHER", "STAFF"]:
@@ -107,6 +125,23 @@ async def register_send_otp(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="User with this email or roll number already registered",
         )
+
+    # Cooldown between registration codes for one mailbox (mirrors resend):
+    # bounds Brevo dispatch rate beyond the count budget.
+    recent = await db.execute(
+        select(EmailOTP)
+        .where(EmailOTP.email == email, EmailOTP.purpose == "REGISTER")
+        .order_by(EmailOTP.created_at.desc())
+    )
+    last_otp = recent.scalars().first()
+    if last_otp:
+        elapsed = (datetime.now(timezone.utc) - ensure_utc(last_otp.created_at)).total_seconds()
+        if elapsed < 45:
+            wait_time = int(45 - elapsed)
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Please wait {wait_time}s before requesting a new code.",
+            )
 
     # Generate 6-digit OTP and expiration
     otp_code = generate_otp()

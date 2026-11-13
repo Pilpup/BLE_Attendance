@@ -76,6 +76,43 @@ Living notes for work deferred or proposed beyond the completed hardening/KAZE i
 
 ---
 
+## F3 — Adaptive chimp-game difficulty (skill-based leveling)
+
+**Status:** proposed (not started). Strengthens game telemetry beyond the fixed hard cap (score 15) and makes dual-phone play progressively harder.
+
+### Why (vs current)
+- **Current:** round item counts are hardcoded (`ChimpGridGame.countForRound`: 5-6-7-8) and the pass gate is a flat 15. Skilled honest players saturate the cap → score distribution compresses → telemetry loses discriminative power; the game stops being a challenge for them.
+- **Adaptive leveling:** track how well a student plays at their current level; when they are consistently very good, raise their level so rounds show 6-7-8-9 (then 7-8-9-10, etc.). Honest students develop skill slowly over the term, scores stay mid-band (richer telemetry), and a higher per-round attention demand makes the "play two phones desynced" workaround measurably harder.
+- **Cheat-detection unlock:** with per-student level history, the strongest signal becomes a **personal-baseline anomaly** — compare a student to their OWN history (assigned level, accuracy, reaction-time distribution), not to classmates. "Plays level 6 at ~90% accuracy normally; today level 2 at 55% with 2× median RT" → remark for instructor review. Comparing to self, not peers, keeps the false-flag rate low.
+
+### Design constraints (non-negotiable, learned from the face-dedup false-positive round)
+1. **Pass threshold must scale with level.** A fixed 15 against larger counts would fail honest weak students → false "unverified". Rule: pass = fixed fraction of achievable at the assigned level (e.g. ~50%), floor 15. Leveling must never be able to fail an honest player.
+2. **Level must be server-assigned.** Round config derived client-side is forgeable (a modified APK pins level 1 forever). Level comes from the server's per-student history; round sequences derive deterministically from the existing server-seeded `seed` param so submitted telemetry can be validated against the schedule.
+3. **New signals are remark-grade only** (remarks / NEEDS_REVIEW / anomaly flags), never hard auto-reject verdicts.
+
+### Scope (high level)
+1. **Per-student skill profile (server):** from finalized records' chimp telemetry — level, per-round accuracy, reaction-time mean/variance, hit/miss pattern. Exponentially-weighted history per student.
+2. **Level assignment rule:** promotion after N consecutive sessions above a performance band; demotion (or hold) after prolonged underperformance so honest bad days never trap a student at an unpassable level.
+3. **Client:** round counts and pass line read from the server-assigned level (deterministic from seed); UI shows the level subtly (no shaming).
+4. **Anomaly pass at finalize:** score/RT far below personal baseline + soft signals (see anti-correlation companion note) → remark on the record, instructor decides.
+5. **Threshold calibration:** measure before/after — pass rate of honest students must be unchanged; dual-phone difficulty measured by attempt success rate dropping with level.
+
+### Explicit non-goals
+- No per-period day-splitting of leave semantics, no new sensors/permissions (mic layer is disabled; do not reintroduce hardware proximity).
+- No custom model training; personal baselines are simple statistics, not ML.
+
+### Open questions
+- Promotion cadence (per-session vs weekly) and whether level resets each term.
+- Minimum history before baselining (new students start at level 1 with the current counts).
+- How leveling interacts with the grace-window path (late arrivals with a legitimate score).
+- Whether reaction-time telemetry is already persisted per round or only the final score (may need a `challenge_report` schema extension — remark-grade, so self-reported is acceptable initially).
+
+### Dependencies
+- Phase-locked game rounds (server-issued absolute start epoch) — the personal-baseline and telemetry-validation signals assume a common schedule across the room.
+- Finalized-record chimp telemetry retention (game_score is persisted; round-level detail TBD, see open questions).
+
+---
+
 ## KAZE performance program (reference)
 
 Detailed in `~/Projects/KAZE_PLAN.md` (outside repo). Status snapshot: **#1 done, #5 done, #4 done (baseline-measured, structural after), #2 next but corpus-gated, #3 pending (golden-corpus-gated, doubles-only DSP)**. Order 1→5→4 done; remaining 2→3.
