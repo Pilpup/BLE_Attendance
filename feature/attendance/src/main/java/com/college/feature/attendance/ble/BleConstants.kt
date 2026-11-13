@@ -31,8 +31,9 @@ object BleConstants {
     }
 
     val cameraPermissions: Array<String> = arrayOf(Manifest.permission.CAMERA)
-    val audioPermissions: Array<String> = arrayOf(Manifest.permission.RECORD_AUDIO)
+    // [ULTRASONIC-DISABLED 2026-11] mic permission no longer needed while Layer 4 is off.
+    // val audioPermissions: Array<String> = arrayOf(Manifest.permission.RECORD_AUDIO)
 
     // Comprehensive runtime permission list required by host activity and security lab
-    val neededPermissions: Array<String> = bluetoothPermissions + cameraPermissions + audioPermissions
+    val neededPermissions: Array<String> = bluetoothPermissions + cameraPermissions // + audioPermissions
 }

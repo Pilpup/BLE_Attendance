@@ -65,8 +65,10 @@ interface AttendanceApiService {
         @Header("X-Student-Id") studentId: String?,
         @Header("X-Neighbors") neighbors: String?,
         @Header("X-Close-Neighbors") closeNeighbors: String?,
-        @Header("X-Co-Located-Peer-Id") coLocatedPeerId: String?,
-        @Header("X-Ultrasonic-Proximity-Detected") ultrasonicProximityDetected: Boolean?,
+        // [ULTRASONIC-DISABLED] Layer 4 headers removed (restore with the
+        // audio-stack call sites in AttendanceViewModel).
+        // @Header("X-Co-Located-Peer-Id") coLocatedPeerId: String?,
+        // @Header("X-Ultrasonic-Proximity-Detected") ultrasonicProximityDetected: Boolean?,
         @Header("X-Game-Score") gameScore: Int? = null,
         @Header("X-Relayed-Reports") relayedReportsJson: String?,
         @Body imageBytes: RequestBody

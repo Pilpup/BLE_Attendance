@@ -150,14 +150,15 @@ internal fun StudentSection(
                 context,
                 Manifest.permission.CAMERA
             ) == PackageManager.PERMISSION_GRANTED
-            val hasAudio = ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.RECORD_AUDIO
-            ) == PackageManager.PERMISSION_GRANTED
-
             val missing = mutableListOf<String>()
             if (!hasCamera) missing.add(Manifest.permission.CAMERA)
-            if (!hasAudio) missing.add(Manifest.permission.RECORD_AUDIO)
+            // [ULTRASONIC-DISABLED 2026-11] mic no longer required — do not gate
+            // face capture on it while Layer 4 is off.
+            // val hasAudio = ContextCompat.checkSelfPermission(
+            //     context,
+            //     Manifest.permission.RECORD_AUDIO
+            // ) == PackageManager.PERMISSION_GRANTED
+            // if (!hasAudio) missing.add(Manifest.permission.RECORD_AUDIO)
 
             if (missing.isNotEmpty()) {
                 permissionsLauncher.launch(missing.toTypedArray())

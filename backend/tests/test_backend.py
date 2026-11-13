@@ -1445,158 +1445,162 @@ async def test_debug_session_auto_provision_and_duplicate_rejection():
         assert "Biometric proxy rejected" in res2.json()["detail"]
 
 
+# [ULTRASONIC-DISABLED 2026-11] Layer 4 turned off — see note in
+# app/routers/attendance.py. The schema no longer accepts
+# ultrasonic_proximity_detected / co_located_peer_id, so these requests can
+# no longer stage claims; test commented out, code preserved for restore.
 # Verifies Layer 4 M3-lite: ultrasonic desk claims are DEFERRED, not vandalized.
 # A RECIPROCATED pair (both students claim each other) is materialized into
 # CO_LOCATED_SAME_DESK_PROXY rows for BOTH parties at finalize; an unreciprocated
 # claim is ignored; a post-finalize (grace) claim can no longer be evaluated and
 # never harms the straggler's record.
-@pytest.mark.anyio
-async def test_ultrasonic_proximity_mutual_pair_materialization():
-    import uuid
+#@pytest.mark.anyio
+#async def test_ultrasonic_proximity_mutual_pair_materialization():
+#     import uuid
 
-    from httpx import AsyncClient, ASGITransport
-    from sqlalchemy import select
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+#     from httpx import AsyncClient, ASGITransport
+#     from sqlalchemy import select
+#     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
-    from app.database import get_db
-    from app.models.attendance import AttendanceRecord, Base
+#     from app.database import get_db
+#     from app.models.attendance import AttendanceRecord, Base
 
-    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    pair_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+#     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+#     async with test_engine.begin() as conn:
+#         await conn.run_sync(Base.metadata.create_all)
+#     pair_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
 
-    async def override_get_db():
-        async with pair_db() as s:
-            yield s
+#     async def override_get_db():
+#         async with pair_db() as s:
+#             yield s
 
-    app.dependency_overrides[get_db] = override_get_db
+#     app.dependency_overrides[get_db] = override_get_db
 
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        from app.routers.attendance import derive_short_device_key
-        tok_teacher = await _register_test_teacher(client, pair_db, "Prof. Desk Pair", "desk.pair@univ.edu")
-        teacher_headers = {"Authorization": f"Bearer {tok_teacher}"}
-        tok_stud1 = await _register_roll_student(client, pair_db, "Pair Alpha", "pair.alpha1@univ.edu", "22B4451")
-        tok_stud2 = await _register_roll_student(client, pair_db, "Pair Beta", "pair.beta2@univ.edu", "22B4452")
-        tok_stud3 = await _register_roll_student(client, pair_db, "Pair Gamma", "pair.gamma3@univ.edu", "22B4453")
-        tok_stud4 = await _register_roll_student(client, pair_db, "Pair Delta", "pair.delta4@univ.edu", "22B4454")
-        k1 = derive_short_device_key("22B4451")
-        k2 = derive_short_device_key("22B4452")
-        k3 = derive_short_device_key("22B4453")
-        k4 = derive_short_device_key("22B4454")
+#     transport = ASGITransport(app=app)
+#     async with AsyncClient(transport=transport, base_url="http://test") as client:
+#         from app.routers.attendance import derive_short_device_key
+#         tok_teacher = await _register_test_teacher(client, pair_db, "Prof. Desk Pair", "desk.pair@univ.edu")
+#         teacher_headers = {"Authorization": f"Bearer {tok_teacher}"}
+#         tok_stud1 = await _register_roll_student(client, pair_db, "Pair Alpha", "pair.alpha1@univ.edu", "22B4451")
+#         tok_stud2 = await _register_roll_student(client, pair_db, "Pair Beta", "pair.beta2@univ.edu", "22B4452")
+#         tok_stud3 = await _register_roll_student(client, pair_db, "Pair Gamma", "pair.gamma3@univ.edu", "22B4453")
+#         tok_stud4 = await _register_roll_student(client, pair_db, "Pair Delta", "pair.delta4@univ.edu", "22B4454")
+#         k1 = derive_short_device_key("22B4451")
+#         k2 = derive_short_device_key("22B4452")
+#         k3 = derive_short_device_key("22B4453")
+#         k4 = derive_short_device_key("22B4454")
 
-        s_res = await client.post(
-            "/api/v1/attendance/sessions",
-            headers=teacher_headers,
-            json={"session_token": "M3P1", "total_enrolled": 5},
-        )
-        assert s_res.status_code == 201
-        session_id = s_res.json()["id"]
-        wire_salt = s_res.json()["session_wire_salt"]
-        session_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
+#         s_res = await client.post(
+#             "/api/v1/attendance/sessions",
+#             headers=teacher_headers,
+#             json={"session_token": "M3P1", "total_enrolled": 5},
+#         )
+#         assert s_res.status_code == 201
+#         session_id = s_res.json()["id"]
+#         wire_salt = s_res.json()["session_wire_salt"]
+#         session_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
 
         # Reciprocated desk mates: both claim the < 20 cm ultrasonic handshake
-        res1 = await client.post(
-            session_url,
-            headers={"Authorization": f"Bearer {tok_stud1}"},
-            json={"game_score": 20, "student_id": k1,
-                "neighbors": [k2],
-                "session_salt": wire_salt,
-                "ultrasonic_proximity_detected": True,
-                "co_located_peer_id": k2,
-            },
-        )
-        assert res1.status_code == 200, res1.text  # staged normally — no instant 403
+#         res1 = await client.post(
+#             session_url,
+#             headers={"Authorization": f"Bearer {tok_stud1}"},
+#             json={"game_score": 20, "student_id": k1,
+#                 "neighbors": [k2],
+#                 "session_salt": wire_salt,
+#                 "ultrasonic_proximity_detected": True,
+#                 "co_located_peer_id": k2,
+#             },
+#         )
+#         assert res1.status_code == 200, res1.text  # staged normally — no instant 403
 
-        res2 = await client.post(
-            session_url,
-            headers={"Authorization": f"Bearer {tok_stud2}"},
-            json={"game_score": 20, "student_id": k2,
-                "neighbors": [k1, k3],
-                "session_salt": wire_salt,
-                "ultrasonic_proximity_detected": True,
-                "co_located_peer_id": k1,
-            },
-        )
-        assert res2.status_code == 200, res2.text
+#         res2 = await client.post(
+#             session_url,
+#             headers={"Authorization": f"Bearer {tok_stud2}"},
+#             json={"game_score": 20, "student_id": k2,
+#                 "neighbors": [k1, k3],
+#                 "session_salt": wire_salt,
+#                 "ultrasonic_proximity_detected": True,
+#                 "co_located_peer_id": k1,
+#             },
+#         )
+#         assert res2.status_code == 200, res2.text
 
         # Mutual BLE chain 4451-4452-4453-4454 so the clean pair verifies; but
         # ONLY 4453 claims an ultrasonic desk handshake (unreciprocated claim)
-        res3 = await client.post(
-            session_url,
-            headers={"Authorization": f"Bearer {tok_stud3}"},
-            json={"game_score": 20, "student_id": k3,
-                "neighbors": [k2, k4],
-                "session_salt": wire_salt,
-                "ultrasonic_proximity_detected": True,
-                "co_located_peer_id": k4,
-            },
-        )
-        assert res3.status_code == 200, res3.text
+#         res3 = await client.post(
+#             session_url,
+#             headers={"Authorization": f"Bearer {tok_stud3}"},
+#             json={"game_score": 20, "student_id": k3,
+#                 "neighbors": [k2, k4],
+#                 "session_salt": wire_salt,
+#                 "ultrasonic_proximity_detected": True,
+#                 "co_located_peer_id": k4,
+#             },
+#         )
+#         assert res3.status_code == 200, res3.text
 
-        res4 = await client.post(
-            session_url,
-            headers={"Authorization": f"Bearer {tok_stud4}"},
-            json={"game_score": 20, "student_id": k4,
-             "neighbors": [k3], "session_salt": wire_salt},
-        )
-        assert res4.status_code == 200, res4.text
+#         res4 = await client.post(
+#             session_url,
+#             headers={"Authorization": f"Bearer {tok_stud4}"},
+#             json={"game_score": 20, "student_id": k4,
+#              "neighbors": [k3], "session_salt": wire_salt},
+#         )
+#         assert res4.status_code == 200, res4.text
 
-        audit_res = await client.post(
-            f"/api/v1/attendance/sessions/{session_id}/audit-and-finalize",
-            headers=teacher_headers,
-            json={"reports": {}},
-        )
-        assert audit_res.status_code == 200
-        audit_data = audit_res.json()
+#         audit_res = await client.post(
+#             f"/api/v1/attendance/sessions/{session_id}/audit-and-finalize",
+#             headers=teacher_headers,
+#             json={"reports": {}},
+#         )
+#         assert audit_res.status_code == 200
+#         audit_data = audit_res.json()
 
-        assert audit_data["status"] == "COMPLETED"
-        assert len(audit_data["records"]) == 4  # one row per student is preserved
-        record_map = {r["ble_device_id"]: r for r in audit_data["records"]}
+#         assert audit_data["status"] == "COMPLETED"
+#         assert len(audit_data["records"]) == 4  # one row per student is preserved
+#         record_map = {r["ble_device_id"]: r for r in audit_data["records"]}
 
         # Reciprocated pair: both verdict rows transformed into the proxy violation
-        assert record_map[k1]["status"] == "CO_LOCATED_SAME_DESK_PROXY"
-        assert record_map[k1]["verification_method"] == "ULTRASONIC_ACOUSTIC_MATCH"
-        assert f"with {k2}" in record_map[k1]["remarks"]
-        assert record_map[k2]["status"] == "CO_LOCATED_SAME_DESK_PROXY"
-        assert record_map[k2]["verification_method"] == "ULTRASONIC_ACOUSTIC_MATCH"
-        assert f"with {k1}" in record_map[k2]["remarks"]
+#         assert record_map[k1]["status"] == "CO_LOCATED_SAME_DESK_PROXY"
+#         assert record_map[k1]["verification_method"] == "ULTRASONIC_ACOUSTIC_MATCH"
+#         assert f"with {k2}" in record_map[k1]["remarks"]
+#         assert record_map[k2]["status"] == "CO_LOCATED_SAME_DESK_PROXY"
+#         assert record_map[k2]["verification_method"] == "ULTRASONIC_ACOUSTIC_MATCH"
+#         assert f"with {k1}" in record_map[k2]["remarks"]
 
         # Unreciprocated claim: the benign BLE mesh verdict stands untouched
-        assert record_map[k3]["status"] == "VERIFIED_PRESENT"
-        assert record_map[k4]["status"] == "VERIFIED_PRESENT"
+#         assert record_map[k3]["status"] == "VERIFIED_PRESENT"
+#         assert record_map[k4]["status"] == "VERIFIED_PRESENT"
 
-        assert audit_data["total_verified"] == 2
-        assert audit_data["total_unverified"] == 2  # ignored claim is not counted
+#         assert audit_data["total_verified"] == 2
+#         assert audit_data["total_unverified"] == 2  # ignored claim is not counted
 
         # Post-finalize grace claim: mutuality is unevaluable (buffer already
         # popped) — the straggler gets a normal grace record, NOT a proxy row.
-        tok_stud5 = await _register_roll_student(client, pair_db, "Pair Epsilon", "pair.epsilon5@univ.edu", "22B4455")
-        k5 = derive_short_device_key("22B4455")
-        grace = await client.post(
-            session_url,
-            headers={"Authorization": f"Bearer {tok_stud5}"},
-            json={"game_score": 20, "student_id": k5,
-                "neighbors": [],
-                "session_salt": wire_salt,
-                "ultrasonic_proximity_detected": True,
-                "co_located_peer_id": k1,
-            },
-        )
-        assert grace.status_code == 200, grace.text
+#         tok_stud5 = await _register_roll_student(client, pair_db, "Pair Epsilon", "pair.epsilon5@univ.edu", "22B4455")
+#         k5 = derive_short_device_key("22B4455")
+#         grace = await client.post(
+#             session_url,
+#             headers={"Authorization": f"Bearer {tok_stud5}"},
+#             json={"game_score": 20, "student_id": k5,
+#                 "neighbors": [],
+#                 "session_salt": wire_salt,
+#                 "ultrasonic_proximity_detected": True,
+#                 "co_located_peer_id": k1,
+#             },
+#         )
+#         assert grace.status_code == 200, grace.text
 
-        async with pair_db() as s:
-            grace_rows = (
-                await s.execute(
-                    select(AttendanceRecord).where(
-                        AttendanceRecord.session_id == uuid.UUID(session_id),
-                        AttendanceRecord.ble_device_id == k5,
-                    )
-                )
-            ).scalars().all()
-            assert len(grace_rows) == 1
-            assert grace_rows[0].status == "ISOLATED_FLAGGED"
+#         async with pair_db() as s:
+#             grace_rows = (
+#                 await s.execute(
+#                     select(AttendanceRecord).where(
+#                         AttendanceRecord.session_id == uuid.UUID(session_id),
+#                         AttendanceRecord.ble_device_id == k5,
+#                     )
+#                 )
+#             ).scalars().all()
+#             assert len(grace_rows) == 1
+#             assert grace_rows[0].status == "ISOLATED_FLAGGED"
 
 
 # Verifies M2 hygiene: a live session's token cannot be re-issued by ANOTHER

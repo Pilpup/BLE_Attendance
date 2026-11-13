@@ -221,14 +221,18 @@ class SubmitNeighborsRequest(BaseModel):
         default=None,
         description="Base64-encoded cropped front-camera face image captured during check-in"
     )
-    ultrasonic_proximity_detected: Optional[bool] = Field(
-        default=None,
-        description="Whether an ultrasonic handshake (<25cm) was detected with a neighbor device"
-    )
-    co_located_peer_id: Optional[str] = Field(
-        default=None,
-        description="The peer student ID detected within ultrasonic range on the same desk"
-    )
+    # [ULTRASONIC-DISABLED 2026-11] Layer 4 fields removed from the intake
+    # contract. Old APKs that still send these JSON keys are unaffected
+    # (pydantic ignores unknown extras). To restore, uncomment both fields and
+    # the app-side call sites.
+    # ultrasonic_proximity_detected: Optional[bool] = Field(
+    #     default=None,
+    #     description="Whether an ultrasonic handshake (<25cm) was detected with a neighbor device"
+    # )
+    # co_located_peer_id: Optional[str] = Field(
+    #     default=None,
+    #     description="The peer student ID detected within ultrasonic range on the same desk"
+    # )
     challenge_report: Optional[dict] = Field(
         default=None,
         description="Client-computed challenge report (e.g. chimp_score). Used for challenge integrity checks."

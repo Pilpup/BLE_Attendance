@@ -1189,19 +1189,25 @@ async def finalize_attendance_session(
     # commit leaves the staged check-ins intact for a finalize retry.
     staged = await submission_buffer.peek_submissions(str(session_obj.id))
 
-    # M3-lite: materialize RECIPROCATED ultrasonic desk claims into the staged
-    # drain — both parties must claim each other; one-sided claims are ignored.
+    # [ULTRASONIC-DISABLED 2026-11] Layer 4 (ultrasonic co-location) is turned
+    # OFF. Field testing showed the reciprocal handshake never fires (0%
+    # efficacy), and phase-locked chimp-game rounds make dual-phone play
+    # impossible anyway. ultrasonic_pairs is kept as an always-empty dict so
+    # the override branches below compile; they are dead while disabled.
+    # To restore: uncomment the pairing loop here, the override branches in
+    # both finalize paths, the M3-lite claim staging in the submit endpoint,
+    # the schema fields, and the app-side audio stack call sites.
     ultrasonic_pairs: dict[str, str] = {}
-    for claim_key, claim_sub in staged.items():
-        claim_peer = claim_sub.claimed_ultrasonic
-        if not claim_peer:
-            continue
-        peer_sub = staged.get(claim_peer)
-        if peer_sub and peer_sub.claimed_ultrasonic == claim_key:
-            ultrasonic_pairs[claim_key] = claim_peer
-            ultrasonic_pairs[claim_peer] = claim_key
-        else:
-            logger.warning(f"[Layer 4] Unreciprocated ultrasonic claim ignored: {claim_key} -> {claim_peer}")
+    # for claim_key, claim_sub in staged.items():
+    #     claim_peer = claim_sub.claimed_ultrasonic
+    #     if not claim_peer:
+    #         continue
+    #     peer_sub = staged.get(claim_peer)
+    #     if peer_sub and peer_sub.claimed_ultrasonic == claim_key:
+    #         ultrasonic_pairs[claim_key] = claim_peer
+    #         ultrasonic_pairs[claim_peer] = claim_key
+    #     else:
+    #         logger.warning(f"[Layer 4] Unreciprocated ultrasonic claim ignored: {claim_key} -> {claim_peer}")
 
     # Leniency seal: a staged student earns VERIFIED_PRESENT only with at least
     # one RECIPROCATED BLE neighbor (mirrors the audit engine's direct-mutual
@@ -1224,26 +1230,28 @@ async def finalize_attendance_session(
         if staged_sub.student_id:
             seen_students.add(staged_sub.student_id)
 
-        pair_peer = ultrasonic_pairs.get(dev_upper)
-        if pair_peer:
-            # Mutual ultrasonic confirmation overrides the benign staged verdict;
-            # NO blanket 1.00 VERIFIED_PRESENT for desk co-located partners.
-            spoofer_count += 1
-            records_to_create.append(
-                AttendanceRecord(
-                    id=uuid.uuid4(),
-                    session_id=session_obj.id,
-                    student_id=staged_sub.student_id,
-                    ble_device_id=dev_upper,
-                    status="CO_LOCATED_SAME_DESK_PROXY",
-                    verification_method="ULTRASONIC_ACOUSTIC_MATCH",
-                    affinity_score=0.00,
-                    reported_neighbors=staged_sub.reported_neighbors,
-                    remarks=f"Ultrasonic proximity rejected: Co-located on same desk (< 20 cm) with {pair_peer}",
-                    recorded_at=datetime.now(timezone.utc),
-                )
-            )
-            continue
+        # [ULTRASONIC-DISABLED] pair override branch — dead while disabled
+        # (ultrasonic_pairs is always empty).
+        # pair_peer = ultrasonic_pairs.get(dev_upper)
+        # if pair_peer:
+        #     # Mutual ultrasonic confirmation overrides the benign staged verdict;
+        #     # NO blanket 1.00 VERIFIED_PRESENT for desk co-located partners.
+        #     spoofer_count += 1
+        #     records_to_create.append(
+        #         AttendanceRecord(
+        #             id=uuid.uuid4(),
+        #             session_id=session_obj.id,
+        #             student_id=staged_sub.student_id,
+        #             ble_device_id=dev_upper,
+        #             status="CO_LOCATED_SAME_DESK_PROXY",
+        #             verification_method="ULTRASONIC_ACOUSTIC_MATCH",
+        #             affinity_score=0.00,
+        #             reported_neighbors=staged_sub.reported_neighbors,
+        #             remarks=f"Ultrasonic proximity rejected: Co-located on same desk (< 20 cm) with {pair_peer}",
+        #             recorded_at=datetime.now(timezone.utc),
+        #         )
+        #     )
+        #     continue
 
         confirmed_peers = [
             peer.strip().upper()
@@ -1372,9 +1380,10 @@ async def submit_student_neighbors(
         neighbors = [n.strip() for n in neighbors_raw.split(",") if n.strip()] if neighbors_raw else []
         close_raw = request.headers.get("x-close-neighbors", "")
         close_neighbors = [n.strip() for n in close_raw.split(",") if n.strip()] if close_raw else []
-        co_located_peer_id = request.headers.get("x-co-located-peer-id")
-        ultrasonic_proximity_str = request.headers.get("x-ultrasonic-proximity-detected")
-        ultrasonic_proximity = ultrasonic_proximity_str.lower() in ("true", "1") if ultrasonic_proximity_str is not None else False
+        # [ULTRASONIC-DISABLED] Layer 4 headers no longer parsed.
+        # co_located_peer_id = request.headers.get("x-co-located-peer-id")
+        # ultrasonic_proximity_str = request.headers.get("x-ultrasonic-proximity-detected")
+        # ultrasonic_proximity = ultrasonic_proximity_str.lower() in ("true", "1") if ultrasonic_proximity_str is not None else False
         challenge_report_hdr = request.headers.get("x-challenge-report")
         challenge_report = None
         game_score = None
@@ -1409,8 +1418,9 @@ async def submit_student_neighbors(
             close_neighbors=close_neighbors,
             session_salt=session_salt,
             face_image_base64=None,
-            ultrasonic_proximity_detected=ultrasonic_proximity,
-            co_located_peer_id=co_located_peer_id,
+            # [ULTRASONIC-DISABLED] Layer 4 fields dropped from the payload.
+            # ultrasonic_proximity_detected=ultrasonic_proximity,
+            # co_located_peer_id=co_located_peer_id,
             challenge_report=challenge_report,
             game_score=game_score,
         )
@@ -1542,7 +1552,8 @@ async def submit_student_neighbors(
         student_key,
         hashlib.sha256((payload.session_salt or "").encode()).hexdigest()[:8],
         ",".join(sorted(normalized_neighbors)),
-        f"ultra:{1 if payload.ultrasonic_proximity_detected else 0}:{(payload.co_located_peer_id or '-').upper()}",
+        # [ULTRASONIC-DISABLED] Layer 4 component removed.
+        # f"ultra:{1 if payload.ultrasonic_proximity_detected else 0}:{(payload.co_located_peer_id or '-').upper()}",
         f"facebytes:{len(payload.face_image_base64) if payload.face_image_base64 else 0}",
     ])
     logger.info(
@@ -1601,9 +1612,10 @@ async def submit_student_neighbors(
         # Compile proximity cluster peers: close peers (RSSI >= -65), reported desk neighbors, and co-located peer
         cluster_peers = set(normalized_close)
         cluster_peers.update(normalized_neighbors)
-        if payload.co_located_peer_id:
-            co_key = payload.co_located_peer_id[-6:].upper() if len(payload.co_located_peer_id) >= 6 else payload.co_located_peer_id.upper()
-            cluster_peers.add(co_key)
+        # [ULTRASONIC-DISABLED] co-located peer no longer joins the face cluster.
+        # if payload.co_located_peer_id:
+        #     co_key = payload.co_located_peer_id[-6:].upper() if len(payload.co_located_peer_id) >= 6 else payload.co_located_peer_id.upper()
+        #     cluster_peers.add(co_key)
 
         # Run facial biometric matching in background thread pool
         face_check_result = await asyncio.to_thread(
@@ -1665,17 +1677,19 @@ async def submit_student_neighbors(
     # each other) is materialized into CO_LOCATED_SAME_DESK_PROXY rows at finalize.
     # One-sided claims are logged and ignored, so a prankster can never vandalize
     # a classmate's record with a fake "we sat together" claim.
-    ultrasonic_claim: Optional[str] = None
-    if payload.ultrasonic_proximity_detected:
-        raw_claim = (payload.co_located_peer_id or "").strip()
-        # Keys are already last-4-normalized everywhere on this route — mirror it
-        # so the claim can pair against the partner's staged device key.
-        normalized_claim = raw_claim[-6:].upper() if len(raw_claim) >= 6 else raw_claim.upper()
-        if not normalized_claim or normalized_claim == "UNKNOWN" or normalized_claim == student_key:
-            logger.warning(f"[Layer 4] Ultrasonic claim from {student_key} dropped: invalid co-located peer '{raw_claim}'")
-        else:
-            ultrasonic_claim = normalized_claim
-            logger.info(f"[Layer 4] Ultrasonic claim received from {student_key}: co-located with {normalized_claim} (deferred to finalize for reciprocal confirmation)")
+    # [ULTRASONIC-DISABLED] claim staging removed — stage_submission no longer
+    # receives a claimed_ultrasonic value (defaults to None in the buffer).
+    # ultrasonic_claim: Optional[str] = None
+    # if payload.ultrasonic_proximity_detected:
+    #     raw_claim = (payload.co_located_peer_id or "").strip()
+    #     # Keys are already last-4-normalized everywhere on this route — mirror it
+    #     # so the claim can pair against the partner's staged device key.
+    #     normalized_claim = raw_claim[-6:].upper() if len(raw_claim) >= 6 else raw_claim.upper()
+    #     if not normalized_claim or normalized_claim == "UNKNOWN" or normalized_claim == student_key:
+    #         logger.warning(f"[Layer 4] Ultrasonic claim from {student_key} dropped: invalid co-located peer '{raw_claim}'")
+    #     else:
+    #         ultrasonic_claim = normalized_claim
+    #         logger.info(f"[Layer 4] Ultrasonic claim received from {student_key}: co-located with {normalized_claim} (deferred to finalize for reciprocal confirmation)")
 
     # R2 (review §3.1): the gate MUST span both the stage and the post-stage
     # committed-status re-read — a stage entering between finalize's drain and
@@ -1689,7 +1703,8 @@ async def submit_student_neighbors(
             device_key=student_key,
             student_id=user_id,
             reported_neighbors=normalized_neighbors,
-            claimed_ultrasonic=ultrasonic_claim,
+            # [ULTRASONIC-DISABLED] claim staging removed.
+            # claimed_ultrasonic=ultrasonic_claim,
             game_score=challenge_score,
         )
 
@@ -1707,10 +1722,11 @@ async def submit_student_neighbors(
             detail="Attendance session has been cancelled",
         )
 
-    if ultrasonic_claim and session_obj.status == "COMPLETED":
-        # M3-lite: finalize already popped the staging buffer, so reciprocity for
-        # this late claim can no longer be evaluated. Log only — never vandalize.
-        logger.warning(f"[Layer 4] Post-finalize ultrasonic claim ignored (mutuality unevaluable): {student_key} -> {ultrasonic_claim}")
+    # [ULTRASONIC-DISABLED] late-claim logging removed with claim staging.
+    # if ultrasonic_claim and session_obj.status == "COMPLETED":
+    #     # M3-lite: finalize already popped the staging buffer, so reciprocity for
+    #     # this late claim can no longer be evaluated. Log only — never vandalize.
+    #     logger.warning(f"[Layer 4] Post-finalize ultrasonic claim ignored (mutuality unevaluable): {student_key} -> {ultrasonic_claim}")
 
     # For in-flight submissions arriving during the grace period of an already COMPLETED session,
     # immediately evaluate and record their attendance so they don't get orphaned without an AttendanceRecord.
@@ -1981,25 +1997,28 @@ async def audit_and_finalize_session(
     # claim each other from their staged submissions; the matched pair's benign
     # audit verdict rows are transformed in place into the proxy violation row —
     # preserving the one-row-per-student shape. Unreciprocated claims are ignored.
+    # [ULTRASONIC-DISABLED 2026-11] Layer 4 pairing loop off (see legacy path
+    # note above). Kept as always-empty dict so the override block compiles.
     ultrasonic_pairs: dict[str, str] = {}
-    for claim_key, claim_sub in staged.items():
-        claim_peer = claim_sub.claimed_ultrasonic
-        if not claim_peer:
-            continue
-        peer_sub = staged.get(claim_peer)
-        if peer_sub and peer_sub.claimed_ultrasonic == claim_key:
-            ultrasonic_pairs[claim_key] = claim_peer
-            ultrasonic_pairs[claim_peer] = claim_key
-        else:
-            logger.warning(f"[Layer 4] Unreciprocated ultrasonic claim ignored: {claim_key} -> {claim_peer}")
+    # for claim_key, claim_sub in staged.items():
+    #     claim_peer = claim_sub.claimed_ultrasonic
+    #     if not claim_peer:
+    #         continue
+    #     peer_sub = staged.get(claim_peer)
+    #     if peer_sub and peer_sub.claimed_ultrasonic == claim_key:
+    #         ultrasonic_pairs[claim_key] = claim_peer
+    #         ultrasonic_pairs[claim_peer] = claim_key
+    #     else:
+    #         logger.warning(f"[Layer 4] Unreciprocated ultrasonic claim ignored: {claim_key} -> {claim_peer}")
 
-    if ultrasonic_pairs:
-        for item in audit_results:
-            pair_peer = ultrasonic_pairs.get(item["ble_device_id"].upper())
-            if pair_peer:
-                item["status"] = "CO_LOCATED_SAME_DESK_PROXY"
-                item["verification_method"] = "ULTRASONIC_ACOUSTIC_MATCH"
-                item["remarks"] = f"Ultrasonic proximity rejected: Co-located on same desk (< 20 cm) with {pair_peer}"
+    # [ULTRASONIC-DISABLED] verdict override block — dead while disabled.
+    # if ultrasonic_pairs:
+    #     for item in audit_results:
+    #         pair_peer = ultrasonic_pairs.get(item["ble_device_id"].upper())
+    #         if pair_peer:
+    #             item["status"] = "CO_LOCATED_SAME_DESK_PROXY"
+    #             item["verification_method"] = "ULTRASONIC_ACOUSTIC_MATCH"
+    #             item["remarks"] = f"Ultrasonic proximity rejected: Co-located on same desk (< 20 cm) with {pair_peer}"
 
     # Attach client-attested chimp challenge scores (best seen per device) so the
     # finalized attendance records carry them for instructor review.

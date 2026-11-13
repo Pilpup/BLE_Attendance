@@ -8,6 +8,10 @@ from typing import Dict, List, Optional
 
 # Staged check-in submission record
 class StagedSubmission:
+    # [ULTRASONIC-DISABLED 2026-11] claimed_ultrasonic is inert plumbing kept
+    # for a no-churn restore path: the submit endpoint no longer passes a
+    # claim, so it is always None. All consumers (pairing loops, override
+    # branches) are commented out in app/routers/attendance.py.
     __slots__ = ("device_key", "student_id", "reported_neighbors", "claimed_ultrasonic", "game_score")
 
     def __init__(

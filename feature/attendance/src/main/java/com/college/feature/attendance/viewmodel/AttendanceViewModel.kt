@@ -31,11 +31,13 @@ import com.college.feature.attendance.network.MeshAuditRunRequest
 import com.college.feature.attendance.network.RecordOverrideRequest
 import com.college.feature.attendance.network.SessionCreateRequest
 import com.college.feature.attendance.network.SubmitNeighborsRequest
-import com.college.feature.attendance.audio.AcousticStatisticalSummary
-import com.college.feature.attendance.audio.EnsembleVerdict
+// [ULTRASONIC-DISABLED] Layer 4 imports (restore with audio stack).
+// import com.college.feature.attendance.audio.AcousticStatisticalSummary
+// import com.college.feature.attendance.audio.EnsembleVerdict
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.RequestBody.Companion.toRequestBody
-import kotlin.math.roundToInt
+// [ULTRASONIC-DISABLED] used only by the Layer 4 ensemble handler.
+// import kotlin.math.roundToInt
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -267,7 +269,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     private var deferredStartScanning: Boolean = false
 
     val hasLocalDefenseFailed: Boolean
-        get() = faceProxyDetected || ultrasonicProximityDetected || chimpChallengeFailed
+        // [ULTRASONIC-DISABLED] ultrasonic term removed.
+        get() = faceProxyDetected || chimpChallengeFailed
 
     var capturedFaceBase64 by mutableStateOf<String?>(null)
     var capturedFaceBytes by mutableStateOf<ByteArray?>(null)
@@ -337,26 +340,28 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     // Layer 3 and Layer 4 anti-proxy state flags
     var faceProxyDetected by mutableStateOf(false)
         private set
-    var ultrasonicProximityDetected by mutableStateOf(false)
-        private set
-    var coLocatedPeerId by mutableStateOf<String?>(null)
-        private set
-    var ultrasonicSnrDb by mutableStateOf(0.0)
-        private set
+    // [ULTRASONIC-DISABLED] Layer 4 state flags removed.
+    // var ultrasonicProximityDetected by mutableStateOf(false)
+    //     private set
+    // var coLocatedPeerId by mutableStateOf<String?>(null)
+    //     private set
+    // var ultrasonicSnrDb by mutableStateOf(0.0)
+    //     private set
     var auditedRecord by mutableStateOf<AttendanceRecordItem?>(null)
         private set
-    var ultrasonicWasTriggered by mutableStateOf(false)
-        private set
+    // var ultrasonicWasTriggered by mutableStateOf(false)
+    //     private set
     var isRefreshingAudit by mutableStateOf(false)
         private set
     private var auditPollingJob: Job? = null
     private var airVerdictJob: Job? = null
     private var finalizedRefreshJob: Job? = null
 
-    val proximityManager by lazy {
-        com.college.feature.attendance.audio.UltrasonicProximityManager(application.applicationContext)
-    }
-    private val testedUltrasonicPeers = mutableSetOf<String>()
+    // [ULTRASONIC-DISABLED] audio engine and tested-peer registry removed.
+    // val proximityManager by lazy {
+    //     com.college.feature.attendance.audio.UltrasonicProximityManager(application.applicationContext)
+    // }
+    // private val testedUltrasonicPeers = mutableSetOf<String>()
 
     // R11-C (review §2.2): bumped by the peer-ingest path on every map write
     // (new peer or RSSI sample refresh); peerBatchJob flushes only when this
@@ -984,8 +989,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         studentId = studentShortId,
                         neighbors = neighborsHeader,
                         closeNeighbors = closeHeader,
-                        coLocatedPeerId = coLocatedPeerId,
-                        ultrasonicProximityDetected = ultrasonicProximityDetected,
+                        // [ULTRASONIC-DISABLED] Layer 4 fields removed.
+                        // coLocatedPeerId = coLocatedPeerId,
+                        // ultrasonicProximityDetected = ultrasonicProximityDetected,
                         gameScore = chimpScore,
                         relayedReportsJson = null,
                         imageBytes = requestBody
@@ -998,8 +1004,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     closeNeighbors = closeNeighborIds,
                     sessionSalt = detectedSessionSalt.takeIf { it != "------" },
                     faceImageBase64 = facePayload,
-                    ultrasonicProximityDetected = ultrasonicProximityDetected,
-                    coLocatedPeerId = coLocatedPeerId,
+                    // [ULTRASONIC-DISABLED] Layer 4 fields removed.
+                    // ultrasonicProximityDetected = ultrasonicProximityDetected,
+                    // coLocatedPeerId = coLocatedPeerId,
                     challengeReport = chimpScore?.let { mapOf("chimp_score" to it) },
                     gameScore = chimpScore,
                 )
@@ -1025,9 +1032,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             if (detail.contains("Biometric", ignoreCase = true) || detail.contains("Duplicate face", ignoreCase = true)) {
                                 faceProxyDetected = true
                             }
-                            if (detail.contains("Ultrasonic", ignoreCase = true) || detail.contains("desk", ignoreCase = true)) {
-                                ultrasonicProximityDetected = true
-                            }
+                            // [ULTRASONIC-DISABLED] Layer 4 verdict no longer produced by the server.
+                            // if (detail.contains("Ultrasonic", ignoreCase = true) || detail.contains("desk", ignoreCase = true)) {
+                            //     ultrasonicProximityDetected = true
+                            // }
                             if (studentDiscoverySecondsRemaining <= 0) {
                                 studentStatusMessage = detail
                                 studentPhase = StudentPhase.UNVERIFIED_FLAGGED
@@ -1426,12 +1434,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         deferredStopBroadcasting = false
         deferredStartScanning = false
         faceProxyDetected = false
-        ultrasonicProximityDetected = false
-        coLocatedPeerId = null
-        ultrasonicSnrDb = 0.0
-        testedUltrasonicPeers.clear()
+        // [ULTRASONIC-DISABLED] Layer 4 state resets removed.
+        // ultrasonicProximityDetected = false
+        // coLocatedPeerId = null
+        // ultrasonicSnrDb = 0.0
+        // testedUltrasonicPeers.clear()
         auditedRecord = null
-        ultrasonicWasTriggered = false
+        // ultrasonicWasTriggered = false
         isRefreshingAudit = false
         auditPollingJob?.cancel()
         auditPollingJob = null
@@ -1490,14 +1499,15 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         deferredStopBroadcasting = false
         deferredStartScanning = false
         faceProxyDetected = false
-        ultrasonicProximityDetected = false
+        // [ULTRASONIC-DISABLED] Layer 4 state resets removed.
+        // ultrasonicProximityDetected = false
         chimpChallengeFailed = false
         chimpScore = null
-        coLocatedPeerId = null
-        ultrasonicSnrDb = 0.0
-        testedUltrasonicPeers.clear()
+        // coLocatedPeerId = null
+        // ultrasonicSnrDb = 0.0
+        // testedUltrasonicPeers.clear()
         auditedRecord = null
-        ultrasonicWasTriggered = false
+        // ultrasonicWasTriggered = false
         isRefreshingAudit = false
         detectedSessionId = "----"
         detectedSessionSalt = "------"
@@ -1545,7 +1555,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         // Fresh discovery window → fresh peer graph: stale claims from a prior
         // session (rapid back-to-back retests) must never leak into this report
         rawDiscoveredPeers.clear()
-        testedUltrasonicPeers.clear()
+        // [ULTRASONIC-DISABLED] Layer 4 registry reset removed.
+        // testedUltrasonicPeers.clear()
         topDeskNeighbours = emptyList()
         startPeerBatchUpdates()
         // R11-C (review §2.1): the only phase that needs packet density —
@@ -1848,11 +1859,16 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 // Layer 4 Ultrasonic Proximity Evaluation:
                 // Close proximity (RSSI >= -68 dBm) activates the ultrasonic acoustic distance handshake.
                 // Neither radio nor ultrasonic alone can flag a student: both must independently agree.
-                val isClosePeer = rssi >= -68 || updatedPeer.medianRssi >= -68
-                if (isClosePeer && !testedUltrasonicPeers.contains(peerId)) {
-                    testedUltrasonicPeers.add(peerId)
-                    triggerUltrasonicProximityHandshake(peerId)
-                }
+                // [ULTRASONIC-DISABLED 2026-11] Layer 4 turned off: field testing showed the
+                // reciprocal handshake never fires (0% efficacy), and phase-locked chimp-game
+                // rounds make dual-phone play impossible anyway. To restore: uncomment this
+                // trigger, the handler functions below, the state flags, the proximityManager,
+                // and the audio/* sources (kept intact, unreferenced).
+                // val isClosePeer = rssi >= -68 || updatedPeer.medianRssi >= -68
+                // if (isClosePeer && !testedUltrasonicPeers.contains(peerId)) {
+                //     testedUltrasonicPeers.add(peerId)
+                //     triggerUltrasonicProximityHandshake(peerId)
+                // }
                 return
             }
             // Shaped-but-invalid probe (own echo / malformed id) falls through to
@@ -1869,6 +1885,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             android.util.Log.i("AttendanceViewModel", "BLE packet not ingested: '$cleanMsg' (rssi=$rssi phase=$studentPhase session=$detectedSessionId)")
         }
     }
+/* [ULTRASONIC-DISABLED 2026-11] whole function off (see trigger call site).
 
     // Layer 4 ultrasonic proximity handshake using multi-burst statistical consensus
     private fun triggerUltrasonicProximityHandshake(peerId: String) {
@@ -1905,6 +1922,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             }
         }
     }
+ */
+/* [ULTRASONIC-DISABLED 2026-11] whole function off (see trigger call site).
 
     // Handles statistical ensemble results: only flags when BOTH radio touching (RSSI >= -55 dBm)
     // AND ultrasonic acoustic distance (< 25 cm) independently agree, preventing false positives from either sensor alone.
@@ -1934,6 +1953,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             }
         }
     }
+ */
 
     fun startPollingForAudit(sessionId: String) {
         if (sessionId.isBlank() || sessionId == "----") return
@@ -2037,9 +2057,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         capturedFaceBytes = null
         chimpScore = null
         chimpChallengeFailed = false
-        testedUltrasonicPeers.clear()
-        ultrasonicProximityDetected = false
-        coLocatedPeerId = null
+        // [ULTRASONIC-DISABLED] Layer 4 state resets removed.
+        // testedUltrasonicPeers.clear()
+        // ultrasonicProximityDetected = false
+        // coLocatedPeerId = null
         auditedRecord = null
         invalidateBeaconLatch()
         detectedSessionId = "----"
@@ -2066,9 +2087,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         capturedFaceBytes = null
         chimpScore = null
         chimpChallengeFailed = false
-        testedUltrasonicPeers.clear()
-        ultrasonicProximityDetected = false
-        coLocatedPeerId = null
+        // [ULTRASONIC-DISABLED] Layer 4 state resets removed.
+        // testedUltrasonicPeers.clear()
+        // ultrasonicProximityDetected = false
+        // coLocatedPeerId = null
         auditedRecord = null
         invalidateBeaconLatch()
         detectedSessionId = "----"
@@ -2158,7 +2180,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         onStopBroadcasting = null
         onStartScanning = null
         onStopScanning = null
-        proximityManager.release()
+        // [ULTRASONIC-DISABLED] audio engine removed.
+        // proximityManager.release()
     }
 
     // Leave applications (student)
