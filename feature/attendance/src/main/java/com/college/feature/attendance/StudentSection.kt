@@ -177,19 +177,10 @@ internal fun StudentSection(
     val isUnverified = studentPhase == StudentPhase.UNVERIFIED_FLAGGED
     var lastGameScore by remember { mutableStateOf<Int?>(null) }
 
-    var showLeavePanel by rememberSaveable { mutableStateOf(false) }
-
     LaunchedEffect(studentPhase) {
         if (studentPhase == StudentPhase.STANDBY || studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
             lastGameScore = null
         }
-        if (studentPhase != StudentPhase.STANDBY) {
-            showLeavePanel = false
-        }
-    }
-
-    LaunchedEffect(showLeavePanel) {
-        if (showLeavePanel) onLoadMyLeaves()
     }
     DisposableEffect(studentPhase) {
         if (studentPhase == StudentPhase.PROBING_NEIGHBORS) {
@@ -232,12 +223,8 @@ internal fun StudentSection(
         ) {
             IconButton(
                 onClick = {
-                    if (showLeavePanel) {
-                        showLeavePanel = false
-                    } else {
-                        onStopScanning()
-                        onDone()
-                    }
+                    onStopScanning()
+                    onDone()
                 }
             ) {
                 Icon(
@@ -251,7 +238,7 @@ internal fun StudentSection(
             Spacer(modifier = Modifier.width(6.dp))
 
             Text(
-                text = if (showLeavePanel) "Leave" else "Attendance",
+                text = "Attendance",
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold,
                 color = AppTheme.colors.textPrimary,
@@ -260,19 +247,6 @@ internal fun StudentSection(
         }
 
         when {
-            showLeavePanel && studentPhase == StudentPhase.STANDBY -> {
-                LeaveStudentPanel(
-                    applications = myLeaveApplications,
-                    isLoading = isLoadingLeave,
-                    isSubmitting = isSubmittingLeave,
-                    message = leaveMessage,
-                    onSubmit = onSubmitLeave,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                )
-            }
-
             // Probing: chimp memory challenge, then capture face and advance
             studentPhase == StudentPhase.PROBING_NEIGHBORS -> {
                 ChimpGridGame(
@@ -412,7 +386,7 @@ internal fun StudentSection(
                                 modifier = Modifier.width(26.dp)
                             )
                             Text(
-                                text = "Play the memory game: memorize the numbers, then tap them in order.",
+                                text = "Numbers flash on the grid — memorize their positions. When they hide, tap the squares in order from 1 upward. Each correct tap counts; a wrong tap ends the round.",
                                 fontSize = 15.5.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = AppTheme.colors.textPrimary,
@@ -448,6 +422,62 @@ internal fun StudentSection(
                                 modifier = Modifier.weight(1f)
                             )
                         }
+
+                        HorizontalDivider(
+                            color = AppTheme.colors.surfaceBorder.copy(alpha = 0.5f),
+                            thickness = 1.dp,
+                            modifier = Modifier.padding(start = 26.dp, top = 14.dp, bottom = 14.dp)
+                        )
+
+                        // Step 4
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Text(
+                                text = "4.",
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = AppTheme.colors.accentOrange,
+                                modifier = Modifier.width(26.dp)
+                            )
+                            Text(
+                                text = "One student, one device. Do not use someone else's phone or check in for anyone else.",
+                                fontSize = 15.5.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = AppTheme.colors.textPrimary,
+                                lineHeight = 22.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+
+                        HorizontalDivider(
+                            color = AppTheme.colors.surfaceBorder.copy(alpha = 0.5f),
+                            thickness = 1.dp,
+                            modifier = Modifier.padding(start = 26.dp, top = 14.dp, bottom = 14.dp)
+                        )
+
+                        // Step 5
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Text(
+                                text = "5.",
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = AppTheme.colors.accentOrange,
+                                modifier = Modifier.width(26.dp)
+                            )
+                            Text(
+                                text = "Keep your phone still while checking in.",
+                                fontSize = 15.5.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = AppTheme.colors.textPrimary,
+                                lineHeight = 22.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
                     }
                 }
 
@@ -470,7 +500,7 @@ internal fun StudentSection(
                     shadowElevation = 4.dp,
                     modifier = Modifier
                         .align(Alignment.CenterHorizontally)
-                        .padding(bottom = 8.dp)
+                        .padding(bottom = 28.dp)
                         .height(50.dp)
                         .defaultMinSize(minWidth = 160.dp)
                 ) {
@@ -502,24 +532,6 @@ internal fun StudentSection(
                             )
                         }
                     }
-                }
-
-                if (!isScanning) {
-                    TextButton(
-                        onClick = { showLeavePanel = true },
-                        modifier = Modifier
-                            .align(Alignment.CenterHorizontally)
-                            .padding(bottom = 20.dp)
-                    ) {
-                        Text(
-                            text = "Apply for leave",
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = AppTheme.colors.textSecondary
-                        )
-                    }
-                } else {
-                    Spacer(modifier = Modifier.height(20.dp))
                 }
             }
         }
@@ -707,7 +719,7 @@ private fun UnverifiedStatusAnimation(key: Any? = null) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun LeaveStudentPanel(
+internal fun LeaveStudentPanel(
     applications: List<LeaveApplicationResponse>,
     isLoading: Boolean,
     isSubmitting: Boolean,

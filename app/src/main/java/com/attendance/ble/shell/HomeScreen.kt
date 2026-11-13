@@ -30,6 +30,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.EventNote
 import androidx.compose.material.icons.automirrored.filled.FactCheck
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.filled.History
@@ -107,6 +108,13 @@ fun HomeScreen(
                 add(
                     FeatureItem("Older Sessions", Icons.Default.History, colors.primaryPurple) {
                         onNavigate("${AttendanceDashboardCard.NAV_ROUTE}/older")
+                    }
+                )
+            }
+            if (user?.hasRole(Role.STUDENT) == true) {
+                add(
+                    FeatureItem("Leave Application", Icons.AutoMirrored.Filled.EventNote, colors.successGreen) {
+                        onNavigate("leave_application")
                     }
                 )
             }

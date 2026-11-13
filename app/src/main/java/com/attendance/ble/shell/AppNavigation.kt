@@ -15,6 +15,7 @@ import com.college.core.ui.DashboardRegistry
 import com.college.feature.attendance.AttendanceDashboardCard
 import com.college.feature.attendance.AttendanceScreen
 import com.college.feature.attendance.AttendanceScreenCallbacks
+import com.college.feature.attendance.LeaveApplicationScreen
 import com.college.feature.attendance.viewmodel.AttendanceViewModel
 import com.college.feature.attendance.viewmodel.TeacherViewMode
 import com.college.feature.library.LibraryDashboardCard
@@ -64,6 +65,7 @@ fun AppNavigation(
                             Destination.ATTENDANCE
                         }
                         route == LibraryDashboardCard.NAV_ROUTE -> Destination.LIBRARY
+                        route == "leave_application" -> Destination.LEAVE
                         else -> Destination.HOME
                     }
                 },
@@ -122,7 +124,24 @@ fun AppNavigation(
         } else {
             destination = Destination.HOME
         }
+
+        Destination.LEAVE -> if (user != null) {
+            BackHandler(enabled = true) {
+                destination = Destination.HOME
+            }
+            LeaveApplicationScreen(
+                applications = viewModel.myLeaveApplications,
+                isLoading = viewModel.isLoadingLeave,
+                isSubmitting = viewModel.isSubmittingLeave,
+                message = viewModel.leaveMessage,
+                onLoad = { viewModel.loadMyLeaveApplications() },
+                onSubmit = { f, t, r -> viewModel.submitLeaveApplication(f, t, r) },
+                onBack = { destination = Destination.HOME }
+            )
+        } else {
+            destination = Destination.HOME
+        }
     }
 }
 
-private enum class Destination { HOME, AUTH, ATTENDANCE, LIBRARY }
+private enum class Destination { HOME, AUTH, ATTENDANCE, LIBRARY, LEAVE }
