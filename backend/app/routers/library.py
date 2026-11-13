@@ -246,6 +246,19 @@ async def reserve_book(
     if not book:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
 
+    existing_active = await db.execute(
+        select(BookReservation.id).where(
+            BookReservation.book_id == book_id,
+            BookReservation.user_id == current_user.id,
+            BookReservation.status == "ACTIVE",
+        )
+    )
+    if existing_active.scalars().first() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="You already have an active reservation for this book",
+        )
+
     # Per-user hoarding guard (review §1.3.2): count this account's ACTIVE holds
     active_hold_count = (
         await db.execute(
@@ -314,6 +327,8 @@ async def cancel_reservation(
 
     reservation.status = "CANCELLED"
     await db.commit()
+    if not book:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Book not found")
     await db.refresh(book)
     return book
 

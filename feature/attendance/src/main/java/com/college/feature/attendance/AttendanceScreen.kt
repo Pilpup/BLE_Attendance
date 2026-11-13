@@ -60,6 +60,21 @@ fun AttendanceScreen(
             callbacks.onStopStudentScanning()
             onBack()
         }
+        if (viewModel.showAuthDialog) {
+            AuthServerDialog(
+                isLoggedIn = viewModel.isLoggedIn,
+                userName = viewModel.currentUserName,
+                userRole = viewModel.currentUserRole,
+                rollNumber = viewModel.studentId,
+                isAuthLoading = viewModel.isAuthLoading,
+                authErrorText = viewModel.authErrorText,
+                onDismiss = { viewModel.showAuthDialog = false },
+                onLogin = { email, pass -> viewModel.login(email, pass) },
+                onRegister = { viewModel.register(it) },
+                onLogout = { viewModel.logout() },
+                onUpdateRollNumber = callbacks.onUpdateRollNumber
+            )
+        }
         StudentSection(
             user = user,
             studentPhase = viewModel.studentPhase,
@@ -127,7 +142,7 @@ fun AttendanceScreen(
                         } else if (viewModel.isSessionActive) {
                             viewModel.resetSession()
                         } else if (viewModel.finalizedRecords.isNotEmpty()) {
-                            viewModel.resetSession()
+                            onBack()
                         } else if (user.hasRole(Role.STUDENT) && viewModel.studentPhase != StudentPhase.STANDBY) {
                             viewModel.resetStudentSession()
                         } else if (user.canTakeAttendance() && viewModel.teacherViewMode == TeacherViewMode.LEAVE_REQUESTS) {

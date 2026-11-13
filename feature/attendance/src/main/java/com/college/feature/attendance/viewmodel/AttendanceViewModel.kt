@@ -41,6 +41,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -354,8 +355,46 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var isRefreshingAudit by mutableStateOf(false)
         private set
     private var auditPollingJob: Job? = null
-    private var airVerdictJob: Job? = null
     private var finalizedRefreshJob: Job? = null
+
+    private data class AirVerdictBatch(val ids: List<String>, val rounds: Int)
+    private val airVerdictQueue = Channel<AirVerdictBatch>(Channel.UNLIMITED)
+    private var airVerdictConsumerJob: Job? = null
+
+    private fun ensureAirVerdictConsumer() {
+        if (airVerdictConsumerJob?.isActive == true) return
+        airVerdictConsumerJob = viewModelScope.launch(Dispatchers.Default) {
+            for (batch in airVerdictQueue) {
+                repeat(batch.rounds) {
+                    if (!isActive) return@launch
+                    for (id in batch.ids) {
+                        if (!isActive) return@launch
+                        withContext(Dispatchers.Main) {
+                            onStartBroadcasting?.invoke("\\$id", teacherTxPower)
+                        }
+                        delay(350L)
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    onStopBroadcasting?.invoke()
+                }
+            }
+        }
+    }
+
+    private fun enqueueAirVerdicts(ids: List<String>, rounds: Int) {
+        val clean = ids.filter { it.isNotBlank() }.distinct()
+        if (clean.isEmpty()) return
+        ensureAirVerdictConsumer()
+        airVerdictQueue.trySend(AirVerdictBatch(clean, rounds))
+    }
+
+    private fun stopAirVerdicts() {
+        airVerdictConsumerJob?.cancel()
+        airVerdictConsumerJob = null
+        while (airVerdictQueue.tryReceive().isSuccess) { /* drain */ }
+        onStopBroadcasting?.invoke()
+    }
 
     // [ULTRASONIC-DISABLED] audio engine and tested-peer registry removed.
     // val proximityManager by lazy {
@@ -545,8 +584,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val sessId = backendSessionId
         val wasSessionActive = isSessionActive
         stopTeacherSession()
-        airVerdictJob?.cancel()
-        airVerdictJob = null
+        stopAirVerdicts()
 
         if (wasSessionActive && SessionManager.default.isLoggedIn && sessId != null) {
             isCancelling = true
@@ -1292,30 +1330,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val verified = records.filter { it.status == "VERIFIED_PRESENT" }
         if (verified.isEmpty()) return
 
-        airVerdictJob?.cancel()
-        airVerdictJob = viewModelScope.launch(Dispatchers.Default) {
-            repeat(2) {
-                for (rec in verified) {
-                    if (!isActive) break
-                    val ids = mutableListOf(rec.bleDeviceId)
-                    rec.rollNumber?.let { roll ->
-                        if (roll.isNotBlank() && roll != rec.bleDeviceId) {
-                            ids.add(roll)
-                        }
-                    }
-                    for (id in ids) {
-                        if (!isActive) break
-                        withContext(Dispatchers.Main) {
-                            onStartBroadcasting?.invoke("\\$id", teacherTxPower)
-                        }
-                        delay(350L)
-                    }
-                }
-            }
-            withContext(Dispatchers.Main) {
-                onStopBroadcasting?.invoke()
+        val ids = buildList {
+            for (rec in verified) {
+                add(rec.bleDeviceId)
+                rec.rollNumber?.takeIf { it.isNotBlank() && it != rec.bleDeviceId }?.let { add(it) }
             }
         }
+        enqueueAirVerdicts(ids, rounds = 2)
     }
 
     private fun recordSessionToHistory(records: List<AttendanceRecordItem>) {
@@ -1359,25 +1380,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         // Option 2: Blast air verdict over BLE for manually confirmed student (\<ID>)
-        val idsToBroadcast = mutableListOf(recordOrDeviceId)
-        target?.bleDeviceId?.let { if (it !in idsToBroadcast) idsToBroadcast.add(it) }
-        target?.rollNumber?.let { if (it.isNotBlank() && it !in idsToBroadcast) idsToBroadcast.add(it) }
-
-        airVerdictJob?.cancel()
-        airVerdictJob = viewModelScope.launch(Dispatchers.Default) {
-            repeat(4) {
-                for (id in idsToBroadcast) {
-                    if (!isActive) break
-                    withContext(Dispatchers.Main) {
-                        onStartBroadcasting?.invoke("\\$id", teacherTxPower)
-                    }
-                    delay(350L)
-                }
-            }
-            withContext(Dispatchers.Main) {
-                onStopBroadcasting?.invoke()
-            }
-        }
+        val idsToBroadcast = buildList {
+            add(recordOrDeviceId)
+            target?.bleDeviceId?.let { add(it) }
+            target?.rollNumber?.takeIf { it.isNotBlank() }?.let { add(it) }
+        }.distinct()
+        enqueueAirVerdicts(idsToBroadcast, rounds = 4)
     }
 
     fun loadSessionHistory() {
@@ -1406,8 +1414,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         teacherTimer = null
         isSessionActive = false
         remainingSeconds = 0
-        airVerdictJob?.cancel()
-        airVerdictJob = null
+        stopAirVerdicts()
         onStopBroadcasting?.invoke()
     }
 
@@ -2161,8 +2168,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         teacherTimer = null
         studentTimer?.cancel()
         studentTimer = null
-        airVerdictJob?.cancel()
-        airVerdictJob = null
+        stopAirVerdicts()
         auditPollingJob?.cancel()
         auditPollingJob = null
         // R8 (review §0.2): drop the Activity-wired BLE bridge lambdas. The

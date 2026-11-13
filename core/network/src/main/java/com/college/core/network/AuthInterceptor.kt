@@ -12,7 +12,8 @@ class AuthInterceptor(
         val token = sessionManager.activeToken
         val path = request.url.encodedPath.trimEnd('/')
         val isExplicitNoAuth = request.header(NO_AUTH_HEADER)?.equals("true", ignoreCase = true) == true
-        val isAuthEndpoint = isExplicitNoAuth || (path.contains("/auth/") && !path.endsWith("/me"))
+        val isAuthEndpoint = isExplicitNoAuth ||
+            (path.contains("/auth/") && !path.endsWith("/me") && !path.endsWith("/logout"))
 
         val requestBuilder = request.newBuilder()
         if (isExplicitNoAuth) {

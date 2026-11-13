@@ -130,16 +130,14 @@ class LibraryViewModel : ViewModel() {
         LibraryCatalogStore.books[index] = book.copy(availableCopies = book.availableCopies - 1)
 
         syncAfterMutation(
-            onFailure = { failureCode ->
-                // On any HTTP failure (e.g. 409 Conflict, 400, etc.), rollback the optimistic decrement
-                if (failureCode != -1) {
-                    val idx = LibraryCatalogStore.books.indexOfFirst { it.id == bookId }
-                    if (idx != -1) {
-                        val curr = LibraryCatalogStore.books[idx]
-                        LibraryCatalogStore.books[idx] = curr.copy(
-                            availableCopies = (curr.availableCopies + 1).coerceAtMost(curr.totalCopies)
-                        )
-                    }
+            onFailure = { _ ->
+                // Roll back optimistic decrement on any failure, including transport/offline errors.
+                val idx = LibraryCatalogStore.books.indexOfFirst { it.id == bookId }
+                if (idx != -1) {
+                    val curr = LibraryCatalogStore.books[idx]
+                    LibraryCatalogStore.books[idx] = curr.copy(
+                        availableCopies = (curr.availableCopies + 1).coerceAtMost(curr.totalCopies)
+                    )
                 }
             },
             onComplete = {

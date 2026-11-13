@@ -22,7 +22,7 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(120), nullable=False)
     roll_number: Mapped[Optional[str]] = mapped_column(String(50), unique=True, nullable=True, index=True)
     role: Mapped[str] = mapped_column(String(50), default="STUDENT")
-    department: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    department: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     program: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     semester: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     section: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
