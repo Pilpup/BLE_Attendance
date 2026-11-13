@@ -341,8 +341,9 @@ async def log_requests(request: Request, call_next):
         return await call_next(request)
     client_ip = request.client.host if request.client else "unknown"
     raw_xff = request.headers.get("x-forwarded-for", "none")
+    raw_cf = request.headers.get("cf-connecting-ip", "none")
     method = request.method
-    logger.info(f"==> Incoming {method} {path} from {client_ip} | xff={raw_xff}")
+    logger.info(f"==> Incoming {method} {path} from {client_ip} | xff={raw_xff} | cf={raw_cf}")
     response = await call_next(request)
     logger.info(f"<== Finished {method} {path} - Status {response.status_code}")
     return response
