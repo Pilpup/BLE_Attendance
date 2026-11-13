@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
-    <cache-path name="shared_csv" path="." />
+    <!-- Limit FileProvider grants to exported CSVs only, not the whole cache dir. -->
+    <cache-path name="shared_csv" path="exports/" />
 </paths>

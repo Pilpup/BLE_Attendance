@@ -181,6 +181,7 @@ fun HomeScreen(
             val activeRole = user?.primaryRole ?: user?.roles?.firstOrNull() ?: Role.STUDENT
             val activeRoleLabel = when (activeRole) {
                 Role.TEACHER -> "Teacher"
+                Role.HOD -> "HOD"
                 Role.STUDENT -> "Student"
                 Role.STAFF -> "Staff"
                 Role.DEVELOPER -> "Developer"
@@ -403,7 +404,7 @@ private fun DevActingDialog(onDismiss: () -> Unit) {
                     color = colors.textSecondary
                 )
                 Spacer(Modifier.height(10.dp))
-                listOf(Role.STUDENT, Role.TEACHER, Role.STAFF, Role.DEVELOPER).forEach { role ->
+                listOf(Role.STUDENT, Role.TEACHER, Role.HOD, Role.STAFF, Role.DEVELOPER).forEach { role ->
                     val isActive = acting == role
                     Surface(
                         modifier = Modifier

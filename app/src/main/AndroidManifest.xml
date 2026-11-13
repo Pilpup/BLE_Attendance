@@ -15,7 +15,8 @@
     <application
         android:label="BLE Attendance"
         android:theme="@style/Theme.CollegeApp"
-        android:usesCleartextTraffic="true">
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:usesCleartextTraffic="false">
 
         
         <activity

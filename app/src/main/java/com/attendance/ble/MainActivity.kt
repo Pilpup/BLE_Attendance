@@ -224,8 +224,9 @@ class MainActivity : ComponentActivity() {
     // Exports attendance records and session details as a .csv file
     private fun shareAttendanceCsv(csvContent: String, sessionId: String) {
         try {
+            val exportDir = java.io.File(cacheDir, "exports").apply { mkdirs() }
             val fileName = "attendance_${sessionId.lowercase().ifBlank { "session" }}.csv"
-            val file = java.io.File(cacheDir, fileName)
+            val file = java.io.File(exportDir, fileName)
             file.writeText(csvContent)
 
             val uri = androidx.core.content.FileProvider.getUriForFile(
@@ -237,7 +238,6 @@ class MainActivity : ComponentActivity() {
             val sendIntent = Intent().apply {
                 action = Intent.ACTION_SEND
                 putExtra(Intent.EXTRA_STREAM, uri)
-                putExtra(Intent.EXTRA_TEXT, csvContent)
                 putExtra(Intent.EXTRA_SUBJECT, "Attendance - Session $sessionId")
                 type = "text/csv"
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -245,6 +245,7 @@ class MainActivity : ComponentActivity() {
             val shareIntent = Intent.createChooser(sendIntent, "Export Attendance CSV")
             startActivity(shareIntent)
         } catch (_: Exception) {
+            // Fallback: share content directly when file/URI export is unavailable.
             val fallbackIntent = Intent().apply {
                 action = Intent.ACTION_SEND
                 putExtra(Intent.EXTRA_TEXT, csvContent)
