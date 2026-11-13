@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -256,7 +256,9 @@ class LeaveApplication(Base):
     student_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
-    department: Mapped[str] = mapped_column(String(50), nullable=False)
+    # Width 100 mirrors User.department (String(100)) — a narrower column 500s
+    # on commit for students with long department names.
+    department: Mapped[str] = mapped_column(String(100), nullable=False)
     from_date: Mapped[date] = mapped_column(Date, nullable=False)
     to_date: Mapped[date] = mapped_column(Date, nullable=False)
     reason: Mapped[str] = mapped_column(Text, nullable=False)
@@ -273,4 +275,10 @@ class LeaveApplication(Base):
     __table_args__ = (
         Index("ix_leave_apps_dept_status", "department", "status"),
         Index("ix_leave_apps_student_created", "student_id", "created_at"),
+        # Declared in the ORM so Base.metadata.create_all (which runs BEFORE
+        # POSTGRES_SCHEMA_SYNC_BLOCK) produces the same guarded table the sync
+        # block's CREATE TABLE IF NOT EXISTS expects — on a fresh Postgres DB
+        # the sync block's no-op must not leave the guards missing.
+        CheckConstraint("to_date >= from_date", name="ck_leave_apps_dates"),
+        CheckConstraint("status IN ('PENDING', 'APPROVED', 'REJECTED')", name="ck_leave_apps_status"),
     )

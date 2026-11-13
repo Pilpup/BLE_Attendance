@@ -3728,3 +3728,271 @@ async def test_leave_overlay_in_audit_finalize():
 def _leave_model():
     from app.models.attendance import LeaveApplication
     return LeaveApplication
+
+
+# Bug bounty round 2 fixes — regression tests.
+
+
+# Fix: LeaveApplication.department must hold any value User.department (String(100))
+# accepts; the old String(50) column 500'd the leave submit for long departments.
+@pytest.mark.anyio
+async def test_leave_department_accepts_100_chars():
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base, EmailOTP
+    from sqlalchemy import select
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with test_session_factory() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    long_dept = "OFFICE-ELECTRONICS-AND-COMMUNICATION-ENGINEERING-SECTION-B-2026-CAMPUS-2"
+    assert len(long_dept) == 72  # beyond the old 50-char column, within 100
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        email = "longdept.stud@univ.edu"
+        reg = await client.post(
+            "/api/v1/auth/register",
+            json={
+                "name": "Long Dept Student", "email": email, "password": "Password123!",
+                "role": "STUDENT", "roll_number": "22B8801", "department": long_dept,
+                "program": "B.Tech", "semester": 1, "section": "A",
+            },
+        )
+        assert reg.status_code == 200, reg.text
+        async with test_session_factory() as s:
+            otp_row = (await s.execute(select(EmailOTP).where(EmailOTP.email == email, EmailOTP.purpose == "REGISTER"))).scalars().first()
+        verified = await client.post(
+            "/api/v1/auth/register/verify-otp",
+            json={"email": email, "otp_code": otp_row.otp_code},
+        )
+        assert verified.status_code == 201, verified.text
+        tok = verified.json()["access_token"]
+
+        r = await client.post(
+            "/api/v1/leave/applications",
+            headers={"Authorization": f"Bearer {tok}"},
+            json={"from_date": "2026-11-13", "to_date": "2026-11-14", "reason": "Long department regression test"},
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["department"] == long_dept
+
+
+# Fix: the ORM model now declares the leave check constraints so a fresh
+# create_all database (which runs BEFORE POSTGRES_SCHEMA_SYNC_BLOCK) enforces
+# the same guards the sync block's CREATE TABLE installs.
+@pytest.mark.anyio
+async def test_fresh_createall_enforces_leave_constraints():
+    import pytest as _pytest
+    from datetime import date
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.models.attendance import Base, LeaveApplication, User
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with factory() as s:
+        user = User(
+            email="freshguard@univ.edu", full_name="Fresh Guard", roll_number="22B9001",
+            role="STUDENT", hashed_password="x", is_active=True,
+        )
+        s.add(user)
+        await s.commit()
+
+        base = dict(
+            student_id=user.id, department="CSE",
+            from_date=date(2026, 11, 13), to_date=date(2026, 11, 14), reason="Guard test",
+        )
+
+        # Backwards range must be rejected by the table CHECK
+        with _pytest.raises(IntegrityError):
+            bad = LeaveApplication(**{**base, "from_date": date(2026, 11, 14), "to_date": date(2026, 11, 13)})
+            s.add(bad)
+            await s.commit()
+        await s.rollback()
+
+        # Unknown status must be rejected by the table CHECK
+        with _pytest.raises(IntegrityError):
+            bad_status = LeaveApplication(**{**base, "status": "MAYBE"})
+            s.add(bad_status)
+            await s.commit()
+        await s.rollback()
+
+        # A well-formed row still inserts
+        ok = LeaveApplication(**base)
+        s.add(ok)
+        await s.commit()
+        rows = (await s.execute(select(LeaveApplication))).scalars().all()
+        assert len(rows) == 1 and rows[0].status == "PENDING"
+
+
+# Fix: leave overlay must match the IST calendar day. A session starting
+# 18:30 UTC is already the NEXT day in IST; leave approved for that local
+# day must produce a LEAVE row even though the UTC date differs.
+@pytest.mark.anyio
+async def test_leave_overlay_matches_ist_calendar_day():
+    import uuid as _uuid
+    from datetime import datetime, timezone
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import AttendanceSession, Base
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with test_session_factory() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_teacher = await _register_test_teacher(client, test_session_factory, "Prof. IST Leave", "ist.leave@univ.edu")
+        tok_a = await _register_roll_student(client, test_session_factory, "IST Leave Stud", "ist.stud@univ.edu", "22B7101")
+
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={
+                "session_token": "ISTL",
+                "total_enrolled": 0,
+                "course_program": "B.Tech",
+                "course_semester": 1,
+            },
+        )
+        assert s_res.status_code == 201, s_res.text
+        session_id = s_res.json()["id"]
+
+        # 2026-11-13 18:30 UTC == 2026-11-14 00:00 IST
+        async with test_session_factory() as s:
+            sess = (await s.execute(select(AttendanceSession).where(AttendanceSession.id == _uuid.UUID(session_id)))).scalars().first()
+            sess.started_at = datetime(2026, 11, 13, 18, 30, tzinfo=timezone.utc)
+            await s.commit()
+
+        # Leave approved ONLY for the IST calendar day (2026-11-14)
+        r = await client.post(
+            "/api/v1/leave/applications",
+            headers={"Authorization": f"Bearer {tok_a}"},
+            json={"from_date": "2026-11-14", "to_date": "2026-11-14", "reason": "IST calendar day coverage test"},
+        )
+        assert r.status_code == 201, r.text
+        async with test_session_factory() as s:
+            pending = (await s.execute(select(_leave_model()))).scalars().all()
+            for row in pending:
+                row.status = "APPROVED"
+            await s.commit()
+
+        fin = await client.post(
+            f"/api/v1/attendance/sessions/{session_id}/audit-and-finalize",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"reports": {}},
+        )
+        assert fin.status_code == 200, fin.text
+        records = fin.json()["records"]
+        assert len(records) == 1
+        assert records[0]["status"] == "LEAVE"
+        assert records[0]["verification_method"] == "LEAVE_APPROVAL"
+
+
+# Fix: when student B's face matches student A's earlier registration, ONLY B
+# is flagged. A must NOT receive a DUPLICATE_FACE_PROXY row (innocent student,
+# and that row was always created with student_id=None — the null-student-id
+# record the teacher dashboard showed).
+@pytest.mark.anyio
+async def test_duplicate_face_does_not_vandalize_matched_student():
+    import base64
+    import io
+    from PIL import Image
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import AttendanceRecord, AttendanceSession, Base
+    from app.routers.attendance import derive_short_device_key
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with test_session_factory() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    img = Image.new("RGB", (100, 100), color=(180, 140, 120))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    b64_img = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_a = await _register_battery_student(client, test_session_factory)
+        tok_b = await _register_battery_student(client, test_session_factory)
+
+        res_a = await client.post(
+            "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
+            headers={"Authorization": f"Bearer {tok_a}"},
+            json={"game_score": 20, "student_id": "STUDA",
+                "neighbors": [], "session_salt": "DEMO1",
+                "face_image_base64": b64_img},
+        )
+        assert res_a.status_code == 200, res_a.text
+
+        res_b = await client.post(
+            "/api/v1/attendance/sessions/AUTO-101/submit-neighbors",
+            headers={"Authorization": f"Bearer {tok_b}"},
+            json={"game_score": 20, "student_id": "STUDB",
+                "neighbors": [], "session_salt": "DEMO1",
+                "face_image_base64": b64_img},
+        )
+        assert res_b.status_code == 403, res_b.text
+
+        async with test_session_factory() as s:
+            sess_row = (await s.execute(
+                select(AttendanceSession).where(AttendanceSession.session_token == "AUTO-101")
+            )).scalars().first()
+            rows = (await s.execute(
+                select(AttendanceRecord).where(AttendanceRecord.session_id == sess_row.id)
+            )).scalars().all()
+
+        roll_a_key = None
+        # Resolve both battery students' device keys from their accounts
+        from app.models.attendance import User
+        async with test_session_factory() as s:
+            users = (await s.execute(select(User))).scalars().all()
+            key_by_roll = {u.roll_number: derive_short_device_key(u.roll_number) for u in users}
+            dup_rows = [r for r in rows if r.status == "DUPLICATE_FACE_PROXY"]
+
+        assert len(dup_rows) == 1, f"expected only the submitter flagged, got {[(r.ble_device_id, r.status) for r in rows]}"
+        assert dup_rows[0].ble_device_id in key_by_roll.values()
+        assert dup_rows[0].student_id is not None
+        # The matched (innocent) student has no row at all — their clean
+        # submission stays staged for the finalize audit.
+        for r in rows:
+            if r.status == "DUPLICATE_FACE_PROXY":
+                continue
+            assert r.status != "DUPLICATE_FACE_PROXY"

@@ -23,6 +23,8 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -116,6 +118,8 @@ fun AuthScreen(
         else -> null
     }
 
+    var passwordVisible by remember { mutableStateOf(false) }
+
     val fieldColors = appTextFieldColors()
     val formScrollState = rememberScrollState()
 
@@ -203,6 +207,7 @@ fun AuthScreen(
                         Surface(
                             onClick = {
                                 isRegisterMode = false
+                                passwordVisible = false
                                 authErrorText = null
                             },
                             shape = RoundedCornerShape(12.dp),
@@ -225,6 +230,7 @@ fun AuthScreen(
                         Surface(
                             onClick = {
                                 isRegisterMode = true
+                                passwordVisible = false
                                 authErrorText = null
                             },
                             shape = RoundedCornerShape(12.dp),
@@ -277,8 +283,16 @@ fun AuthScreen(
                                 onValueChange = { passwordInput = it },
                                 label = { Text("Password") },
                                 placeholder = { Text("Enter your password") },
-                                visualTransformation = PasswordVisualTransformation(),
+                                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                                 singleLine = true,
+                                trailingIcon = {
+                                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                        Icon(
+                                            imageVector = if (passwordVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                            contentDescription = if (passwordVisible) "Hide password" else "Show password"
+                                        )
+                                    }
+                                },
                                 colors = fieldColors,
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier.fillMaxWidth()
@@ -312,9 +326,17 @@ fun AuthScreen(
                                 onValueChange = { passwordInput = it },
                                 label = { Text("Password") },
                                 placeholder = { Text("Min. 6 characters") },
-                                visualTransformation = PasswordVisualTransformation(),
+                                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                                 singleLine = true,
                                 isError = passwordError != null,
+                                trailingIcon = {
+                                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                        Icon(
+                                            imageVector = if (passwordVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                            contentDescription = if (passwordVisible) "Hide password" else "Show password"
+                                        )
+                                    }
+                                },
                                 colors = fieldColors,
                                 shape = RoundedCornerShape(12.dp),
                                 modifier = Modifier.fillMaxWidth()

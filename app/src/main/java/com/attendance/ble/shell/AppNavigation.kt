@@ -42,7 +42,8 @@ fun AppNavigation(
     // Route unauthenticated users away from feature screens, allowing home and auth navigation
     val effectiveDestination = when {
         user != null -> if (destination == Destination.AUTH) Destination.HOME else destination
-        destination == Destination.ATTENDANCE || destination == Destination.LIBRARY -> Destination.AUTH
+        destination == Destination.ATTENDANCE || destination == Destination.LIBRARY ||
+        destination == Destination.LEAVE -> Destination.AUTH
         else -> destination
     }
 

@@ -177,7 +177,7 @@ BEGIN
     CREATE TABLE IF NOT EXISTS leave_applications (
         id UUID PRIMARY KEY,
         student_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        department VARCHAR(50) NOT NULL,
+        department VARCHAR(100) NOT NULL,
         from_date DATE NOT NULL,
         to_date DATE NOT NULL,
         reason TEXT NOT NULL,

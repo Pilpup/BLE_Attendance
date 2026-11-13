@@ -15,7 +15,7 @@ from typing import AsyncGenerator, Dict, List, Optional, Union
 logger = logging.getLogger("uvicorn.error")
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, func, and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -362,9 +362,15 @@ async def _apply_approved_leave_overlay(
 ) -> int:
     semester = session_obj.eligibility_semester
     program = (session_obj.eligibility_program or "").strip()
-    session_date = session_obj.started_at.date() if session_obj.started_at else None
+    started = session_obj.started_at
+    session_date = started.date() if started else None
     if semester is None or not program or session_date is None:
         return 0
+    # IST calendar day: started_at is stored in UTC, so a session beginning
+    # 00:00–05:30 IST lands on the PREVIOUS UTC calendar day and slicing
+    # .date() alone never matches a leave approved for the student's local
+    # date. A leave covering EITHER calendar day now matches.
+    session_date_ist = (started + timedelta(hours=5, minutes=30)).date()
 
     candidates = await db.execute(
         select(User).where(
@@ -381,13 +387,25 @@ async def _apply_approved_leave_overlay(
         return 0
 
     roster_ids = [u.id for u in roster]
+    coverage = [
+        and_(
+            LeaveApplication.from_date <= session_date,
+            LeaveApplication.to_date >= session_date,
+        )
+    ]
+    if session_date_ist != session_date:
+        coverage.append(
+            and_(
+                LeaveApplication.from_date <= session_date_ist,
+                LeaveApplication.to_date >= session_date_ist,
+            )
+        )
     leave_res = await db.execute(
         select(LeaveApplication)
         .where(
             LeaveApplication.student_id.in_(roster_ids),
             LeaveApplication.status == "APPROVED",
-            LeaveApplication.from_date <= session_date,
-            LeaveApplication.to_date >= session_date,
+            or_(*coverage),
         )
         .order_by(LeaveApplication.created_at)
     )
@@ -1567,18 +1585,15 @@ async def submit_student_neighbors(
             )
 
         if face_check_result.is_duplicate:
-            # Flag earlier matched student if known
-            if face_check_result.matched_student_key:
-                await _record_proxy_violation(
-                    db=db,
-                    session_id=session_obj.id,
-                    device_id=face_check_result.matched_student_key,
-                    status="DUPLICATE_FACE_PROXY",
-                    verification_method="FACE_BIOMETRIC_MATCH",
-                    remarks=f"Proxy match with {raw_roll} ({student_key})",
-                )
-
-            # Flag current submitting student
+            # Flag ONLY the submitting student. The matched earlier student is
+            # innocent — writing them a DUPLICATE_FACE_PROXY row at submit time
+            # (a) vandalized an honest classmate's record, (b) blocked their
+            # audit verdict at finalize via the violation-status skip list, and
+            # (c) created their row with student_id=None (no account binding on
+            # a matched key). The registry already marks the matched student
+            # flagged=True, which excludes them from finalize's face-anchor set
+            # so the component falls to instructor review, and the flagged
+            # pair (both images + similarity) stays available for that review.
             await _record_proxy_violation(
                 db=db,
                 session_id=session_obj.id,

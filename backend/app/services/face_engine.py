@@ -25,6 +25,13 @@ logger = logging.getLogger("uvicorn.error")
 
 # Standard OpenCV SFace cosine distance threshold (0.363 achieves 99.9% verification accuracy, FAR < 0.1%)
 DEFAULT_SIMILARITY_THRESHOLD = 0.363
+# Duplicate threshold for DESK-CLUSTER peers. 0.363 is calibrated on aligned
+# LFW-style portraits; classroom desk selfies (front camera, arm's length,
+# phone-on-desk angle, small blurred faces) inflate cross-person cosine well
+# past 0.363 and flagged two different honest students as one proxy in the
+# field. Same-face proxy captures (two phones, one student) still land far
+# above 0.50, so the desk-cluster gate stays meaningful at this level.
+CLUSTER_DUPLICATE_THRESHOLD = 0.50
 YUNET_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "weights", "face_detection_yunet.onnx")
 SFACE_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "weights", "face_recognition_sface.onnx")
 MAX_PAYLOAD_BYTES = 4_000_000
@@ -448,14 +455,17 @@ class SessionFaceRegistry:
         if matrix is not None and len(keys) > 0:
             scores = matrix @ q_vec
 
-            # Apply cluster-aware similarity thresholds per student
+            # Apply cluster-aware similarity thresholds per student. Desk
+            # neighbors get the classroom-calibrated CLUSTER_DUPLICATE_THRESHOLD
+            # (see constant comment); distant students keep the stricter 0.70
+            # because they are not a physically plausible proxy vector.
             thresholds = np.full(len(keys), 0.70, dtype=np.float32)
             for idx, (ex_key, ex_cluster) in enumerate(zip(keys, clusters)):
                 if ex_key == student_key:
                     thresholds[idx] = 999.0
                     continue
                 if target_cluster is None or ex_key in target_cluster or student_key in ex_cluster:
-                    thresholds[idx] = threshold
+                    thresholds[idx] = CLUSTER_DUPLICATE_THRESHOLD
 
             # Identify duplicate proxy candidates exceeding cluster thresholds
             valid_mask = (scores >= thresholds) & (np.array(keys) != student_key)

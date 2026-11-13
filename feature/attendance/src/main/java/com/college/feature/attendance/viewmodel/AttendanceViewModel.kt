@@ -320,7 +320,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     fun recordChimpChallengeScore(score: Int) {
         chimpScore = score
-        // Verification threshold: 12 (server enforces the same gate)
+        // Verification threshold: 15 (server enforces the same gate)
         chimpChallengeFailed = score < 15
         if (chimpChallengeFailed) {
             studentStatusMessage = "Cognitive challenge failed: score $score < 15"
@@ -1814,14 +1814,13 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         // Check for student peer discovery packet. Wire contract is EXACT:
-        // "<latched session token (4 chars)><peer short id (4 chars)>". Anything
+        // "<latched session token (4 chars)><peer short id (6 chars)>". Anything
         // else — foreign advertisers sharing our service UUID, stray app
-        // instances, garbled fragments — must never fabricate a classmate via
-        // takeLast(4) of arbitrary-length text (the phantom-peer vector).
+        // instances, garbled fragments — must never fabricate a classmate.
         // Ingest peer probes only during active probing phase to keep submitted snapshot stable
         val canReceiveProbe = studentPhase == StudentPhase.PROBING_NEIGHBORS
         val sessionLen = detectedSessionId.length
-        val isPeerProbe = cleanMsg.length == sessionLen + 4 &&
+        val isPeerProbe = cleanMsg.length == sessionLen + 6 &&
                 cleanMsg.startsWith(detectedSessionId) &&
                 !cleanMsg.startsWith("S:") && !cleanMsg.startsWith("SESSION:") &&
                 !cleanMsg.startsWith("/") && !cleanMsg.startsWith("\\")

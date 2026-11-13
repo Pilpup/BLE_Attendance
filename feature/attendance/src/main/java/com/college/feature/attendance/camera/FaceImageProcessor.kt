@@ -11,7 +11,11 @@ import kotlin.math.min
 object FaceImageProcessor {
 
     private const val TAG = "FaceImageProcessor"
-    private const val TARGET_DIMENSION = 224
+    // 320px keeps the desk-distance face larger inside the square crop: the
+    // server downscales anything above 640px anyway, and a bigger face region
+    // measurably improves SFace cross-person separation (fewer false
+    // "duplicate face" flags between different students sitting nearby).
+    private const val TARGET_DIMENSION = 320
     private const val JPEG_COMPRESSION_QUALITY = 80
     private const val INITIAL_JPEG_STREAM_CAPACITY = 16 * 1024
 

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_student, require_teacher
@@ -168,10 +168,26 @@ async def review_leave_application(
             detail=f"Application already {app_obj.status}",
         )
 
-    app_obj.status = payload.decision
-    app_obj.reviewed_by = current_user.id
-    app_obj.reviewed_at = datetime.now(timezone.utc)
-    app_obj.review_comment = payload.comment
+    # Atomic PENDING→verdict transition: the WHERE status='PENDING' clause
+    # closes the read-then-write race where two concurrent HOD reviews both
+    # pass the stale PENDING check above and the second commit silently
+    # overwrites the first verdict. rowcount==0 ⇒ someone else decided first.
+    verdict_result = await db.execute(
+        update(LeaveApplication)
+        .where(LeaveApplication.id == application_id, LeaveApplication.status == "PENDING")
+        .values(
+            status=payload.decision,
+            reviewed_by=current_user.id,
+            reviewed_at=datetime.now(timezone.utc),
+            review_comment=payload.comment,
+        )
+    )
+    if verdict_result.rowcount == 0:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Application already decided by another reviewer",
+        )
     await db.commit()
     await db.refresh(app_obj)
 

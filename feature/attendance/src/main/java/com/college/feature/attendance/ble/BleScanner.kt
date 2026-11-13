@@ -21,8 +21,8 @@ class BleScanner(
 
         // R11 + H5: payload shapes the VM consumes — teacher beacon (legacy
         // S:/SESSION: and H5 compact '/'+token+wire[+sem]), air verdict (legacy
-        // V: and H5 compact '\'+id), and 8-char peer probe "<session4><peer4>".
-        // VM further constrains probes to the latched session; length==8 stays
+        // V: and H5 compact '\'+id), and 10-char peer probe "<session4><peer6>".
+        // VM further constrains probes to the latched session; length==10 stays
         // the looser superset here. Legacy prefixes kept for mixed-version safety.
         fun looksLikeAttendanceMessage(messageText: String): Boolean {
             val msg = messageText.trim()
@@ -32,7 +32,7 @@ class BleScanner(
                     msg.startsWith("S:") ||
                     msg.startsWith("SESSION:") ||
                     msg.startsWith("V:") ||
-                    msg.length == 8
+                    msg.length == 10
         }
     }
 
@@ -112,7 +112,7 @@ class BleScanner(
             // (heap/GC cut), then raw-byte shape precheck rejects non-
             // attendance payloads without String alloc. Accepted shapes:
             // beacon '/' (H5) or S:/SESSION: (legacy), verdict '\' (H5) or V:
-            // (legacy), and 8-char peer probe (length==8 superset).
+            // (legacy), and 10-char peer probe (length==10 superset, 4-char session + 6-char key).
             val rssi = result.rssi
             if (rssi < -95) return
 
@@ -130,14 +130,14 @@ class BleScanner(
             if (serviceDataBytes == null || serviceDataBytes.isEmpty()) return
 
             // Raw-byte shape precheck (allocation-free): pass beacons, verdicts,
-            // or exact 8-byte probe candidates.
+            // or exact 10-byte probe candidates.
             val len = serviceDataBytes.size
             val b0 = serviceDataBytes[0]
             val isBeacon = b0 == 0x2F.toByte() || // '/' H5 beacon
                 (b0 == 0x53.toByte() && len >= 2 && serviceDataBytes[1] == 0x3A.toByte()) // 'S:'
             val isVerdict = b0 == 0x5C.toByte() || // '\' H5 verdict
                 (b0 == 0x56.toByte() && len >= 2 && serviceDataBytes[1] == 0x3A.toByte()) // 'V:'
-            if (!isBeacon && !isVerdict && len != 8) return
+            if (!isBeacon && !isVerdict && len != 10) return
 
             val messageText = String(serviceDataBytes, Charsets.UTF_8)
             // Second gate: canonical shape check (trim-aware, SESSION: prefix).
