@@ -29,8 +29,3 @@ __pycache__/
 # Secrets & Local Databases
 *.env
 *.db
-
-# Large/local files (do not commit)
-backend/app/models/weights/
-run_emulator.sh
-
