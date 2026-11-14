@@ -2,6 +2,10 @@
 # suite (70 tests) actually runs against, so the image is reproducible and
 # matches the verified set. Upgrade deliberately: change the pin, run the
 # suite, re-tag the image.
+#
+# Local dev (uv): uv venv --python 3.11 .venv && uv pip install -r requirements.txt
+# Test-only extras NOT shipped in the image (restore before running pytest):
+#   pytest, pillow==13.0.0, onnxruntime==1.31.1
 fastapi==0.159.0
 uvicorn[standard]==0.54.0
 sqlalchemy[asyncio]==2.1.6

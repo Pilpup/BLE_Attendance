@@ -101,10 +101,17 @@ fun AppNavigation(
                     } else if (viewModel.isSessionActive) {
                         viewModel.resetSession()
                     } else if (viewModel.finalizedRecords.isNotEmpty()) {
-                        viewModel.resetSession()
+                        // Teacher post-session attendance list: back to home.
+                        destination = Destination.HOME
                     } else if (viewModel.teacherViewMode == TeacherViewMode.LEAVE_REQUESTS) {
                         // Sub-view inside take-attendance; back returns to the form.
                         viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
+                    } else if (
+                        user.hasRole(com.college.core.model.Role.STUDENT) &&
+                        viewModel.studentPhase != com.college.feature.attendance.viewmodel.StudentPhase.STANDBY
+                    ) {
+                        // Student check-in/status flow: back to home.
+                        destination = Destination.HOME
                     } else {
                         // OLDER_SESSIONS list and take-attendance root return home.
                         destination = Destination.HOME
