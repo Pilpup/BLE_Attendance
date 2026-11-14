@@ -6,7 +6,7 @@ import os
 import traceback
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, ORJSONResponse, PlainTextResponse
 
 from sqlalchemy import delete, text
 from app.config import settings, validate_production_secrets
@@ -275,6 +275,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="BLE Attendance Verification API",
     version="1.0.0",
+    # orjson (Rust) serialization: records/courses payloads are the large
+    # JSON paths; stdlib json remains for the hand-built JSONResponse above.
+    default_response_class=ORJSONResponse,
     docs_url="/docs" if settings.APP_ENV != "production" else None,
     redoc_url="/redoc" if settings.APP_ENV != "production" else None,
     lifespan=lifespan,
