@@ -29,3 +29,8 @@ __pycache__/
 # Secrets & Local Databases
 *.env
 *.db
+
+# Simulation outputs (generated)
+backend/simulations/layer*_out/
+backend/simulations/**/results.json
+backend/simulations/**/report.txt
