@@ -464,10 +464,14 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 val seen = peerRevision
                 if (seen == lastSeenRevision) continue
                 lastSeenRevision = seen
+                // v3.1 engine: report ALL discovered peers (RSSI floor -92 stays);
+                // threshold scales with list size, truncation breaks mesh math.
+                // Hard cap 64 = backend MAX_NEIGHBORS / engine FULL_LIST_CAP;
+                // closest-first order means the cap keeps the strongest links.
                 val top = rawDiscoveredPeers.values
                     .filter { it.medianRssi >= -92 }
                     .sortedByDescending { it.medianRssi }
-                    .take(3)
+                    .take(64)
                 withContext(Dispatchers.Main) {
                     topDeskNeighbours = top
                 }
@@ -481,11 +485,18 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun flushPeerBatchImmediately() {
+        // v3.1 engine: full list (hard cap 64 = backend MAX_NEIGHBORS /
+        // engine FULL_LIST_CAP, closest-first; see peerBatchUpdates note).
         topDeskNeighbours = rawDiscoveredPeers.values
             .filter { it.medianRssi >= -92 }
             .sortedByDescending { it.medianRssi }
-            .take(3)
+            .take(64)
     }
+
+    // Two-flag era (graph engine v3.1): records carry VERIFIED/UNVERIFIED;
+    // legacy sessions still carry VERIFIED_PRESENT. Both count as verified.
+    private fun isVerified(status: String?): Boolean =
+        status == "VERIFIED" || status == "VERIFIED_PRESENT"
 
     // Radio callbacks bound by host activity
     var onStartBroadcasting: ((token: String, txPower: Int) -> Unit)? = null
@@ -1004,7 +1015,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val neighborIds = topDeskNeighbours.map { it.peerId }
         val closeNeighborIds = rawDiscoveredPeers.values
             .filter { it.medianRssi >= -65 }
-            .map { it.peerId }
+            .sortedByDescending { it.medianRssi }
+            .take(64)   // backend MAX_NEIGHBORS / engine FULL_LIST_CAP
         val facePayload = capturedFaceBase64
         val faceBytes = capturedFaceBytes
         viewModelScope.launch(Dispatchers.IO) {
@@ -1256,8 +1268,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         val body = result.data
                         finalizedRecords = body.records ?: emptyList()
                         recordSessionToHistory(finalizedRecords)
-                        val verifiedCount = finalizedRecords.count { it.status == "VERIFIED_PRESENT" }
-                        val reviewCount = finalizedRecords.count { it.status == "ISOLATED_FLAGGED" || it.status == "FLAGGED_WITNESSED" || it.status == "UNVERIFIED" }
+                        val verifiedCount = finalizedRecords.count { isVerified(it.status) }
+                        val reviewCount = finalizedRecords.count { it.status == "UNVERIFIED" || it.status == "ISOLATED_FLAGGED" || it.status == "FLAGGED_WITNESSED" || it.status == "NEEDS_REVIEW" }
                         cloudStatusMessage = if (reviewCount > 0) {
                             "Completed • $verifiedCount present, $reviewCount need review"
                         } else {
@@ -1299,14 +1311,14 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     if (session.status == "CANCELLED" || session.status == "EXPIRED") return@launch
                     val records = session.records ?: return@launch
                     val previousVerified = finalizedRecords
-                        .filter { it.status == "VERIFIED_PRESENT" }
+                        .filter { isVerified(it.status) }
                         .map { it.bleDeviceId }
                         .toSet()
                     withContext(Dispatchers.Main) {
                         finalizedRecords = records
-                        val verifiedCount = records.count { it.status == "VERIFIED_PRESENT" }
+                        val verifiedCount = records.count { isVerified(it.status) }
                         val reviewCount = records.count {
-                            it.status == "ISOLATED_FLAGGED" || it.status == "FLAGGED_WITNESSED" || it.status == "UNVERIFIED"
+                            it.status == "UNVERIFIED" || it.status == "ISOLATED_FLAGGED" || it.status == "FLAGGED_WITNESSED" || it.status == "NEEDS_REVIEW"
                         }
                         cloudStatusMessage = if (reviewCount > 0) {
                             "Completed • $verifiedCount present, $reviewCount need review"
@@ -1315,7 +1327,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         }
                     }
                     val newlyVerified = records.filter {
-                        it.status == "VERIFIED_PRESENT" && it.bleDeviceId !in previousVerified
+                        isVerified(it.status) && it.bleDeviceId !in previousVerified
                     }
                     if (newlyVerified.isNotEmpty()) {
                         broadcastAirVerdicts(newlyVerified)
@@ -1327,7 +1339,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Option 2: Sequentially broadcast BLE air verdicts (\<ID>) for verified students
     fun broadcastAirVerdicts(records: List<AttendanceRecordItem>) {
-        val verified = records.filter { it.status == "VERIFIED_PRESENT" }
+        val verified = records.filter { isVerified(it.status) }
         if (verified.isEmpty()) return
 
         val ids = buildList {
@@ -1346,8 +1358,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             courseId = selectedCourse?.id ?: "",
             sessionToken = sessionId,
             status = "COMPLETED",
-            totalVerified = records.count { it.status == "VERIFIED_PRESENT" },
-            totalUnverified = records.count { it.status != "VERIFIED_PRESENT" && it.status != "LEAVE" },
+            totalVerified = records.count { isVerified(it.status) },
+            totalUnverified = records.count { !isVerified(it.status) && it.status != "LEAVE" },
             startedAt = timestamp,
             records = records,
             courseCode = selectedCourse?.courseCode ?: "",
@@ -1362,7 +1374,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         finalizedRecords = finalizedRecords.map { rec ->
             if (rec.bleDeviceId == recordOrDeviceId || rec.rollNumber == recordOrDeviceId) {
                 rec.copy(
-                    status = "VERIFIED_PRESENT",
+                    status = "VERIFIED",
                     verificationMethod = "MANUAL_OVERRIDE",
                     affinityScore = 1.0,
                     remarks = "Confirmed by instructor"
@@ -1980,7 +1992,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             withContext(Dispatchers.Main) {
                                 auditedRecord = myRecord
                                 if (myRecord != null) {
-                                    if (myRecord.status == "VERIFIED_PRESENT") {
+                                    if (isVerified(myRecord.status)) {
                                         applyOrDeferStudentPhase(
                                             StudentPhase.VERIFIED_PRESENT,
                                             "Attendance Confirmed",
@@ -2006,6 +2018,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                             myRecord.status == "SALT_REJECTED" -> "In-room beacon verification failed"
                                             myRecord.status == "SPOOFER_REJECTED" && myRecord.verificationMethod == "SALT_REJECTED" -> "In-room beacon verification failed"
                                             myRecord.status == "SPOOFER_REJECTED" -> "Peer claims unconfirmed — please ask your instructor to review"
+                                            myRecord.status == "UNVERIFIED" -> "Attendance not confirmed — instructor will verify"
                                             myRecord.status == "ISOLATED_FLAGGED" -> "Needs instructor confirmation"
                                             myRecord.status == "FLAGGED_WITNESSED" -> "Verified classmates witnessed you — instructor confirmation needed"
                                             else -> myRecord.remarks ?: "Attendance not confirmed"
@@ -2016,7 +2029,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                     applyOrDeferStudentPhase(StudentPhase.UNVERIFIED_FLAGGED, "Attendance not confirmed", startScan = true)
                                 }
                             }
-                            if (myRecord?.status == "VERIFIED_PRESENT") {
+                            if (isVerified(myRecord?.status)) {
                                 break
                             }
                         } else if (session?.status == "CANCELLED") {
@@ -2121,7 +2134,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         withContext(Dispatchers.Main) {
                             auditedRecord = myRecord
                             if (myRecord != null) {
-                                if (myRecord.status == "VERIFIED_PRESENT" && !hasLocalDefenseFailed) {
+                                if (isVerified(myRecord.status) && !hasLocalDefenseFailed) {
                                     applyOrDeferStudentPhase(
                                         StudentPhase.VERIFIED_PRESENT,
                                         "Attendance Confirmed",
@@ -2137,6 +2150,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                     val msg = when {
                                         hasLocalDefenseFailed -> "Attendance not confirmed. Please see instructor."
                                         myRecord.status == "SPOOFER_REJECTED" -> "Peer claims unconfirmed — please ask your instructor to review"
+                                        myRecord.status == "UNVERIFIED" -> "Attendance not confirmed — instructor will verify"
                                         myRecord.status == "ISOLATED_FLAGGED" -> "Needs instructor confirmation"
                                         myRecord.status == "FLAGGED_WITNESSED" -> "Verified classmates witnessed you — instructor confirmation needed"
                                         else -> "Attendance not confirmed"

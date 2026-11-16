@@ -1,0 +1,46 @@
+==============================================================================
+LAYER 3 - ADVERSARIAL SUITE: gang shapes and sizes (engine v3.1)
+==============================================================================
+
+SCENARIO buddy2: 2 corridor devices submit as absent S68,S69 (68 present)
+  cell = classV/gangV (modal; '*' = mixed outcomes), 5 seeds per cell
+R_WALL  p=0.25    p=1.0     
+1.4     68/0       68/0       
+2.6     68/0*      68/2       
+gang-verified (leak) seeds out of 5:
+R_WALL  p=0.25    p=1.0     
+1.4     0         0         
+2.6     1         5         
+
+SCENARIO cluster25: 25 corridor devices (x=7.3, y=0..24) submit as absent S45..S69 (45 present)
+  cell = classV/gangV (modal; '*' = mixed outcomes), 5 seeds per cell
+R_WALL  p=0.25    p=1.0     
+1.4     45/0       45/0       
+2.6     45/25*      45/25       
+gang-verified (leak) seeds out of 5:
+R_WALL  p=0.25    p=1.0     
+1.4     0         0         
+2.6     4         5         
+
+SCENARIO split5: 5 corridor devices split 3 @(y1-3) + 2 @(y8-9), submit as absent S65..S69
+  cell = classV/gangV (modal; '*' = mixed outcomes), 5 seeds per cell
+R_WALL  p=0.25    p=1.0     
+1.4     65/0       65/0       
+2.6     65/3*      65/5       
+gang-verified (leak) seeds out of 5:
+R_WALL  p=0.25    p=1.0     
+1.4     0         0         
+2.6     3         5         
+
+SCENARIO gang_only: ONLY the 5 gang devices submit (real class absent) - accepted residual
+  gang-only session: gangV=5 in 5/5 seeds (classV=0 - no real students submit). ACCEPTED residual: largest component = gang -> teacher sees a tiny session for a 70-student class.
+
+SCENARIO ghost1: 1 ghost device submits as absent S69 (69 present) - T(1)=1 safety check
+  cell = classV/gangV (modal; '*' = mixed outcomes), 5 seeds per cell
+R_WALL  p=0.25    p=1.0     
+1.4     69/0       69/0       
+2.6     69/0       69/1       
+gang-verified (leak) seeds out of 5:
+R_WALL  p=0.25    p=1.0     
+1.4     0         0         
+2.6     0         5         

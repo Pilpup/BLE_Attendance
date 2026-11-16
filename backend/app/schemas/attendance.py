@@ -4,9 +4,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-# BLE discovery reports top-3 peers; the cap leaves retry headroom while
-# bounding the mesh-audit node degree and the persisted neighbor JSON.
-MAX_NEIGHBORS = 10
+# Graph engine v3.1: clients report FULL visible-peer lists (up to the
+# engine's FULL_LIST_CAP = 64); the direct threshold scales with reported
+# list size, so truncating the list breaks the mesh math. The cap bounds
+# the persisted neighbor JSON and audit node degree only.
+MAX_NEIGHBORS = 64
 # Peer IDs are roll numbers or device keys — well under 50 chars.
 NeighborId = Annotated[str, StringConstraints(min_length=1, max_length=50)]
 
@@ -90,7 +92,9 @@ class BLEAuditRecordItem(BaseModel):
     )
     student_id: Optional[UUID] = Field(None, description="Linked user UUID (optional, set after JWT)")
     status: str = Field(
-        ..., description="VERIFIED_PRESENT | SPOOFER_REJECTED | ISOLATED_FLAGGED | FLAGGED_WITNESSED | ABSENT"
+        ..., description="Two-flag era: VERIFIED | UNVERIFIED (graph engine v3.1); "
+        "legacy VERIFIED_PRESENT | SPOOFER_REJECTED | ISOLATED_FLAGGED | FLAGGED_WITNESSED | ABSENT "
+        "accepted from old clients and normalized on ingest"
     )
     verification_method: str = Field(
         default="NONE", description="DIRECT_MUTUAL | TRIADIC_CLOSURE | MANUAL_OVERRIDE | NONE"
@@ -124,16 +128,31 @@ class AttendanceRecordResponse(BLEAuditRecordItem):
     model_config = ConfigDict(from_attributes=True)
 
 
-# Canonical status enums for request validation (docs of record: BLEAuditRecordItem / RecordOverrideRequest docstrings)
-_ALLOWED_OVERRIDE_STATUSES = {"VERIFIED_PRESENT", "ABSENT", "ISOLATED_FLAGGED", "LEAVE"}
-_ALLOWED_FINALIZE_STATUSES = {"VERIFIED_PRESENT", "ABSENT", "ISOLATED_FLAGGED", "SPOOFER_REJECTED"}
+# Canonical status enums for request validation (docs of record: BLEAuditRecordItem / RecordOverrideRequest docstrings).
+# Two-flag era (graph engine v3.1): verification statuses are VERIFIED and
+# UNVERIFIED only. Legacy vocabulary (VERIFIED_PRESENT / NEEDS_REVIEW /
+# ISOLATED_FLAGGED / FLAGGED_WITNESSED / SPOOFER_REJECTED) is still ACCEPTED
+# from old clients and normalized to the two flags below, so pre-migration
+# APKs keep working against this backend. ABSENT and LEAVE are attendance
+# states, not verification flags - they stay.
+_ALLOWED_OVERRIDE_STATUSES = {"VERIFIED", "UNVERIFIED", "ABSENT", "LEAVE"}
+_ALLOWED_FINALIZE_STATUSES = {"VERIFIED", "UNVERIFIED", "ABSENT"}
+# Legacy -> two-flag mapping applied by the validators below.
+_LEGACY_STATUS_MAP = {
+    "VERIFIED_PRESENT": "VERIFIED",
+    "NEEDS_REVIEW": "UNVERIFIED",
+    "ISOLATED_FLAGGED": "UNVERIFIED",
+    "FLAGGED_WITNESSED": "UNVERIFIED",
+    "SPOOFER_REJECTED": "UNVERIFIED",
+}
 
 
 # Manual attendance status override request by instructor
 class RecordOverrideRequest(BaseModel):
     status: str = Field(
-        default="VERIFIED_PRESENT",
-        description="New attendance status: VERIFIED_PRESENT | ABSENT | ISOLATED_FLAGGED | LEAVE",
+        default="VERIFIED",
+        description="New attendance status: VERIFIED | UNVERIFIED | ABSENT | LEAVE "
+                    "(legacy VERIFIED_PRESENT / ISOLATED_FLAGGED accepted and normalized)",
     )
     remarks: Optional[str] = Field(
         default="Manual override by instructor",
@@ -145,8 +164,9 @@ class RecordOverrideRequest(BaseModel):
         # Strict whitelist: an unknown status on the override route would write
         # an unclassifiable row the teacher dashboard cannot render.
         normalized = str(v if v is not None else "").strip().upper()
+        normalized = _LEGACY_STATUS_MAP.get(normalized, normalized)
         if normalized not in _ALLOWED_OVERRIDE_STATUSES:
-            raise ValueError("status must be one of: VERIFIED_PRESENT | ABSENT | ISOLATED_FLAGGED | LEAVE")
+            raise ValueError("status must be one of: VERIFIED | UNVERIFIED | ABSENT | LEAVE")
         return normalized
 
 
@@ -185,14 +205,17 @@ class SessionFinalizeRequest(BaseModel):
         # (Kept off BLEAuditRecordItem: it is the from_attributes base of
         # AttendanceSessionResponse and would 500 sessions containing
         # violation rows produced by other defense layers.)
+        # Two-flag era: legacy statuses from pre-v3.1 teacher phones are
+        # normalized to VERIFIED/UNVERIFIED on ingest.
         if not isinstance(records, list):
             return records
         cleaned: list = []
         for item in records:
             if isinstance(item, dict) and "status" in item:
                 normalized = str(item.get("status") or "").strip().upper()
+                normalized = _LEGACY_STATUS_MAP.get(normalized, normalized)
                 if normalized not in _ALLOWED_FINALIZE_STATUSES:
-                    raise ValueError("record status must be one of: VERIFIED_PRESENT | ABSENT | ISOLATED_FLAGGED | SPOOFER_REJECTED")
+                    raise ValueError("record status must be one of: VERIFIED | UNVERIFIED | ABSENT")
                 item = {**item, "status": normalized}
             cleaned.append(item)
         return cleaned

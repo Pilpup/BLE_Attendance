@@ -85,7 +85,8 @@ import java.util.Locale
 
 // Determines if a student record is marked Present (via BLE consensus or manual teacher verification)
 internal fun isRecordPresent(rec: AttendanceRecordItem): Boolean {
-    if (rec.status == "VERIFIED_PRESENT" || rec.status.equals("PRESENT", ignoreCase = true)) return true
+    // Two-flag era (graph engine v3.1): VERIFIED (new) / VERIFIED_PRESENT (legacy).
+    if (rec.status == "VERIFIED" || rec.status == "VERIFIED_PRESENT" || rec.status.equals("PRESENT", ignoreCase = true)) return true
     if (rec.verificationMethod == "MANUAL_OVERRIDE" ||
         rec.verificationMethod == "TEACHER_MANUAL" ||
         rec.remarks?.contains("instructor", ignoreCase = true) == true ||
@@ -98,7 +99,7 @@ internal fun isRecordPresent(rec: AttendanceRecordItem): Boolean {
 
 // Maps attendance audit records to display status categories (Verified or Unverified)
 private fun getRecordAuditStatus(rec: AttendanceRecordItem): String {
-    return if (rec.status == "VERIFIED_PRESENT") "Verified" else "Unverified"
+    return if (rec.status == "VERIFIED" || rec.status == "VERIFIED_PRESENT") "Verified" else "Unverified"
 }
 
 // Extracts the last two digits of the student's roll number for avatar badge icon

@@ -1,0 +1,21 @@
+==============================================================================
+V3.1 VALIDATION - 50%-even threshold, floor-4 federation, triangle corroboration, two-flag VERIFIED/UNVERIFIED
+==============================================================================
+
+FULL-LIST mode (v3 client: report ALL visible peers) - radius 4.0, 201 seeds per gap | two-flag taxonomy: VERIFIED / UNVERIFIED
+
+--- gap 2 (dx3) --- avg full-list size 17.9 peers
+  201x  component sizes [70]  statuses {'VERIFIED': 70}
+  VERDICT: 201/201 seeds form one anchored room; students auto-verified 70/70, UNVERIFIED for teacher check 0
+
+--- gap 3 (dx4) --- avg full-list size 14.9 peers
+  201x  component sizes [70]  statuses {'VERIFIED': 70}
+  VERDICT: 201/201 seeds form one anchored room; students auto-verified 70/70, UNVERIFIED for teacher check 0
+
+--- gap 4 (dx5) --- avg full-list size 14.3 peers
+  201x  component sizes [20, 20, 30]  statuses {'UNVERIFIED': 40, 'VERIFIED': 30}
+  VERDICT: 0/201 seeds form one anchored room; students auto-verified 30/70, UNVERIFIED for teacher check 40
+
+--- gap 5 (dx6) --- avg full-list size 14.3 peers
+  201x  component sizes [20, 20, 30]  statuses {'UNVERIFIED': 40, 'VERIFIED': 30}
+  VERDICT: 0/201 seeds form one anchored room; students auto-verified 30/70, UNVERIFIED for teacher check 40

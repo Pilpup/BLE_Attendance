@@ -1,0 +1,62 @@
+==============================================================================
+LAYER 1 SATELLITE SIMULATION - deterministic nearest-K, geometry only
+Layout: blocks [2, 3, 2] x 10 rows = 70 students | visibility radius 4.0 seat-lengths | K=10 | 201 tie-break configs per variant
+==============================================================================
+
+--- Aisle reading: dx3 ---
+Component structures across all 201 tie-break configs:
+  201x  component sizes [70]  statuses {'VERIFIED_PRESENT': 70}
+
+Component detail (dx3, deterministic tie-break):
+  [A] size  70 x(0, 10) y(0, 9) | internal claims 696, outbound 0 (reciprocated 0) | farthest listed peer 4.0, nearest external visible peer None
+  min cross-component distance: None
+  bridge thresholds (K where a cross mutual edge becomes POSSIBLE):
+  dominant size 70 | anchor floor max(4, ceil(0.35*70)) = 25 | enroll_ratio 1.0 (needs >= 0.5)
+  engine statuses: {'VERIFIED_PRESENT': 70}
+  students NOT auto-verified: 0/70
+
+Grid (deterministic tie-break):
+AA  AAA  AA
+VV  VVV  VV
+AA  AAA  AA
+AA  AAA  AA
+AA  AAA  AA
+AA  AAA  AA
+AA  AAA  AA
+AA  AAA  AA
+AA  AAA  AA
+AA  AAA  AA
+AA  AAA  AA
+Top grid: component letter per seat. Bottom row (first row only): V=VERIFIED_PRESENT R=NEEDS_REVIEW X=ISOLATED_FLAGGED
+
+--- Aisle reading: dx2 ---
+Component structures across all 201 tie-break configs:
+  201x  component sizes [70]  statuses {'VERIFIED_PRESENT': 70}
+
+Component detail (dx2, deterministic tie-break):
+  [A] size  70 x(0, 8) y(0, 9) | internal claims 700, outbound 0 (reciprocated 0) | farthest listed peer 3.606, nearest external visible peer None
+  min cross-component distance: None
+  bridge thresholds (K where a cross mutual edge becomes POSSIBLE):
+  dominant size 70 | anchor floor max(4, ceil(0.35*70)) = 25 | enroll_ratio 1.0 (needs >= 0.5)
+  engine statuses: {'VERIFIED_PRESENT': 70}
+  students NOT auto-verified: 0/70
+
+Grid (deterministic tie-break):
+AA AAA AA
+VV VVV VV
+AA AAA AA
+AA AAA AA
+AA AAA AA
+AA AAA AA
+AA AAA AA
+AA AAA AA
+AA AAA AA
+AA AAA AA
+AA AAA AA
+Top grid: component letter per seat. Bottom row (first row only): V=VERIFIED_PRESENT R=NEEDS_REVIEW X=ISOLATED_FLAGGED
+
+==============================================================================
+VERDICT
+Internal satellites formed in 0/402 layer-1 configurations at K=10 across both aisle readings ().
+Auto-verified students: see status counts above.
+==============================================================================

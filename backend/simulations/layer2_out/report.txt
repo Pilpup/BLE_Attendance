@@ -1,0 +1,46 @@
+==============================================================================
+LAYER 2 - RANK NOISE + FLAPPING + SEAT SHUFFLE: v3.1 vs production v1
+feedings: v1@K3 = current app client | v1@K10 = schema cap | v31@full = new design
+==============================================================================
+
+BLOCK 1 - RANK NOISE (no flapping) | gap 2 (dx3)
+cell = V/U (modal of 201 seeds; '*' = seed-dependent)
+feeding   sigma=0.0    sigma=0.2    sigma=0.5    sigma=1.0    
+v1@K3     0V/70U   0V/70U   0V/70U   0V/70U   
+v1@K10    70V/0U   70V/0U*  70V/0U*  70V/0U*  
+v31@full  70V/0U   70V/0U   70V/0U   70V/0U   
+
+BLOCK 1 - RANK NOISE (no flapping) | gap 3 (dx4)
+cell = V/U (modal of 201 seeds; '*' = seed-dependent)
+feeding   sigma=0.0    sigma=0.2    sigma=0.5    sigma=1.0    
+v1@K3     0V/70U   0V/70U   0V/70U   0V/70U   
+v1@K10    0V/70U   0V/70U   0V/70U*  50V/20U*  
+v31@full  70V/0U   70V/0U   70V/0U   70V/0U   
+
+BLOCK 2 - VISIBILITY FLAPPING (no rank noise) | gap 2 (dx3)
+feeding   drop=0.0    drop=0.05   drop=0.1    drop=0.2    drop=0.3    
+v1@K3     0V/70U   0V/70U   0V/70U   0V/70U   0V/70U   
+v1@K10    70V/0U   70V/0U*  70V/0U*  70V/0U*  70V/0U*  
+v31@full  70V/0U   70V/0U   70V/0U   70V/0U*  69V/1U*  
+
+BLOCK 2 - VISIBILITY FLAPPING (no rank noise) | gap 3 (dx4)
+feeding   drop=0.0    drop=0.05   drop=0.1    drop=0.2    drop=0.3    
+v1@K3     0V/70U   0V/70U   0V/70U   0V/70U   0V/70U   
+v1@K10    0V/70U   0V/70U*  0V/70U*  50V/20U*  70V/0U*  
+v31@full  70V/0U   70V/0U*  70V/0U*  70V/0U*  50V/20U*  
+
+BLOCK 3 - SEAT SHUFFLE (clean radio) | gap 2 (dx3)
+front 35 seats (rows 0-4) always full; remaining present students sit at random empty seats in rows 5-9
+cell = V/U (modal of 201 seeds; '*' = seed-dependent)
+feeding   att60%=42   att70%=49   att80%=56   att90%=63   
+v1@K3     0V/42U   0V/49U   0V/56U   0V/63U   
+v1@K10    42V/0U*  49V/0U*  56V/0U   63V/0U   
+v31@full  42V/0U*  49V/0U*  56V/0U*  63V/0U   
+
+BLOCK 3 - SEAT SHUFFLE (clean radio) | gap 3 (dx4)
+front 35 seats (rows 0-4) always full; remaining present students sit at random empty seats in rows 5-9
+cell = V/U (modal of 201 seeds; '*' = seed-dependent)
+feeding   att60%=42   att70%=49   att80%=56   att90%=63   
+v1@K3     0V/42U   0V/49U   0V/56U   0V/63U   
+v1@K10    0V/42U*  0V/49U*  0V/56U*  0V/63U*  
+v31@full  42V/0U*  49V/0U*  56V/0U*  63V/0U*  

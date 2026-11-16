@@ -1,0 +1,167 @@
+{
+  "layer": 1,
+  "layout": {
+    "blocks": [
+      2,
+      3,
+      2
+    ],
+    "rows": 10,
+    "total": 70
+  },
+  "radius": 4.0,
+  "k_list": [
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15
+  ],
+  "gaps": [
+    2,
+    3,
+    4,
+    5
+  ],
+  "random_seeds": 200,
+  "total_enrolled": 70,
+  "cells": {},
+  "radsweep": {
+    "R4.0/gap2": {
+      "verified": {
+        "70": 201
+      },
+      "signatures": {
+        "((70,), (('VERIFIED_PRESENT', 70),))": 201
+      }
+    },
+    "R4.0/gap3": {
+      "verified": {
+        "70": 201
+      },
+      "signatures": {
+        "((70,), (('VERIFIED_PRESENT', 70),))": 201
+      }
+    },
+    "R4.0/gap4": {
+      "verified": {
+        "0": 201
+      },
+      "signatures": {
+        "((20, 20, 30), (('ISOLATED_FLAGGED', 40), ('NEEDS_REVIEW', 30)))": 201
+      }
+    },
+    "R4.0/gap5": {
+      "verified": {
+        "0": 201
+      },
+      "signatures": {
+        "((20, 20, 30), (('ISOLATED_FLAGGED', 40), ('NEEDS_REVIEW', 30)))": 201
+      }
+    },
+    "R5.0/gap2": {
+      "verified": {
+        "70": 201
+      },
+      "signatures": {
+        "((70,), (('VERIFIED_PRESENT', 70),))": 201
+      }
+    },
+    "R5.0/gap3": {
+      "verified": {
+        "70": 201
+      },
+      "signatures": {
+        "((70,), (('VERIFIED_PRESENT', 70),))": 201
+      }
+    },
+    "R5.0/gap4": {
+      "verified": {
+        "70": 201
+      },
+      "signatures": {
+        "((70,), (('VERIFIED_PRESENT', 70),))": 201
+      }
+    },
+    "R5.0/gap5": {
+      "verified": {
+        "0": 201
+      },
+      "signatures": {
+        "((20, 20, 30), (('ISOLATED_FLAGGED', 40), ('NEEDS_REVIEW', 30)))": 201
+      }
+    },
+    "R6.0/gap2": {
+      "verified": {
+        "70": 201
+      },
+      "signatures": {
+        "((70,), (('VERIFIED_PRESENT', 70),))": 201
+      }
+    },
+    "R6.0/gap3": {
+      "verified": {
+        "70": 201
+      },
+      "signatures": {
+        "((70,), (('VERIFIED_PRESENT', 70),))": 201
+      }
+    },
+    "R6.0/gap4": {
+      "verified": {
+        "70": 201
+      },
+      "signatures": {
+        "((70,), (('VERIFIED_PRESENT', 70),))": 201
+      }
+    },
+    "R6.0/gap5": {
+      "verified": {
+        "70": 201
+      },
+      "signatures": {
+        "((70,), (('VERIFIED_PRESENT', 70),))": 201
+      }
+    },
+    "R7.0/gap2": {
+      "verified": {
+        "70": 201
+      },
+      "signatures": {
+        "((70,), (('VERIFIED_PRESENT', 70),))": 201
+      }
+    },
+    "R7.0/gap3": {
+      "verified": {
+        "70": 201
+      },
+      "signatures": {
+        "((70,), (('VERIFIED_PRESENT', 70),))": 201
+      }
+    },
+    "R7.0/gap4": {
+      "verified": {
+        "70": 201
+      },
+      "signatures": {
+        "((70,), (('VERIFIED_PRESENT', 70),))": 201
+      }
+    },
+    "R7.0/gap5": {
+      "verified": {
+        "70": 201
+      },
+      "signatures": {
+        "((70,), (('VERIFIED_PRESENT', 70),))": 201
+      }
+    }
+  }
+}

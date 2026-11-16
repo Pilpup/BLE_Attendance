@@ -1,0 +1,35 @@
+==============================================================================
+LAYER 1 SATELLITE SIMULATION - deterministic nearest-K, geometry only
+Single-K detailed mode: K=12 | radius 4.0 | 201 tie-break configs
+==============================================================================
+
+--- Aisle gap 2 (block-to-block dx=3), K=12 ---
+Component structures across all tie-break configs:
+  201x  component sizes [70]  statuses {'ISOLATED_FLAGGED': 40, 'VERIFIED_PRESENT': 30}
+
+Component detail (deterministic tie-break):
+  [A] size  70 x(0, 10) y(0, 9) | internal claims 824, outbound 0 (reciprocated 0) | farthest listed peer 4.0, nearest external visible peer None
+  min cross-component distance: None
+  bridge thresholds (K where a cross mutual edge becomes POSSIBLE):
+    none - no cross-visible pairs at this radius
+  dominant size 70 | anchor floor max(4, ceil(0.35*70)) = 25 | enroll_ratio 1.0 (needs >= 0.5)
+  engine statuses: {'ISOLATED_FLAGGED': 40, 'VERIFIED_PRESENT': 30}
+  students NOT auto-verified: 40/70
+
+Grid (deterministic tie-break):
+AA  AAA  AA
+XX  VVV  XX
+AA  AAA  AA
+AA  AAA  AA
+AA  AAA  AA
+AA  AAA  AA
+AA  AAA  AA
+AA  AAA  AA
+AA  AAA  AA
+AA  AAA  AA
+AA  AAA  AA
+Top grid: component letter per seat. Row 2: V=VERIFIED_PRESENT R=NEEDS_REVIEW X=ISOLATED_FLAGGED
+
+VERDICT
+gap 2 (dx3) at K=12: 0/201 seeds fully merge (70/70 VERIFIED_PRESENT); component structures above.
+==============================================================================

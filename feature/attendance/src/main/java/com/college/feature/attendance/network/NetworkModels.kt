@@ -80,7 +80,7 @@ data class AttendanceRecordItem(
 )
 
 data class RecordOverrideRequest(
-    val status: String = "VERIFIED_PRESENT",
+    val status: String = "VERIFIED",
     val remarks: String? = "Verified by instructor"
 )
 

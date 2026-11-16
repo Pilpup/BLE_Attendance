@@ -1,0 +1,13 @@
+==============================================================================
+LAYER 1 SATELLITE SIMULATION - deterministic nearest-K, geometry only
+v3 special mode | radius 4.0 | engine v3
+==============================================================================
+
+L2 VISIBILITY FLAP - full lists, each listed peer dropped independently with probability p per observer | radius 4.0 | 201 configs per cell
+gap(dx)   p=0.0   p=0.1   p=0.2   p=0.3   p=0.4   p=0.5   
+g2(dx3)   70      70      70      70   *  70   *  69   *  
+g3(dx4)   70      70      70      70   *  70   *  69   *  
+g4(dx5)   0       0       0       0       0       0       
+g5(dx6)   0       0       0       0       0       0       
+
+T self-adapts to flapping (T is half of the SHRUNK observed list), so honest nodes keep verifying; deficits fall to bridges and the witness rescue. Any cell below 70 degrades to review, never to 'outside classroom'.

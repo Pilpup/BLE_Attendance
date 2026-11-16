@@ -336,7 +336,9 @@ async def _recompute_session_counters(session_obj: AttendanceSession, db: AsyncS
     verified_res = await db.execute(
         select(func.count()).select_from(AttendanceRecord).where(
             AttendanceRecord.session_id == session_obj.id,
-            AttendanceRecord.status == "VERIFIED_PRESENT",
+            # Two-flag engine writes VERIFIED; legacy rows (pre-migration
+            # sessions, old-APK finalize payloads) carry VERIFIED_PRESENT.
+            AttendanceRecord.status.in_(["VERIFIED", "VERIFIED_PRESENT"]),
         )
     )
     session_obj.total_verified = verified_res.scalar() or 0
@@ -345,7 +347,9 @@ async def _recompute_session_counters(session_obj: AttendanceSession, db: AsyncS
     unverified_res = await db.execute(
         select(func.count()).select_from(AttendanceRecord).where(
             AttendanceRecord.session_id == session_obj.id,
-            AttendanceRecord.status.not_in(["VERIFIED_PRESENT", "LEAVE"]),
+            AttendanceRecord.status.not_in(
+                ["VERIFIED", "VERIFIED_PRESENT", "LEAVE"]
+            ),
         )
     )
     session_obj.total_unverified = unverified_res.scalar() or 0
@@ -1168,7 +1172,7 @@ async def finalize_attendance_session(
                 "SPOOFER_REJECTED",
             ):
                 continue
-            if item.status == "VERIFIED_PRESENT":
+            if item.status == "VERIFIED_PRESENT" or item.status == "VERIFIED":
                 verified_count += 1
             elif item.status == "SPOOFER_REJECTED":
                 spoofer_count += 1
@@ -1191,7 +1195,7 @@ async def finalize_attendance_session(
         if item.student_id:
             seen_students.add(item.student_id)
 
-        if item.status == "VERIFIED_PRESENT":
+        if item.status == "VERIFIED_PRESENT" or item.status == "VERIFIED":
             verified_count += 1
         elif item.status == "SPOOFER_REJECTED":
             spoofer_count += 1
@@ -1290,20 +1294,20 @@ async def finalize_attendance_session(
         is_ver = bool(confirmed_peers)
         if is_ver:
             verified_count += 1
-            rec_status = "VERIFIED_PRESENT"
+            rec_status = "VERIFIED"
             verif_method = "BLE_MESH"
             rec_affinity = 1.00
             rec_remarks = f"Cloud staged check-in confirmed via mutual desk neighbor [{', '.join(confirmed_peers)}]"
         elif staged_sub.reported_neighbors:
-            rec_status = "ISOLATED_FLAGGED"
-            verif_method = "NONE"
-            rec_affinity = 0.50
-            rec_remarks = f"Cloud staged check-in without confirmed desk neighbor (Reported: [{', '.join(staged_sub.reported_neighbors)}]) - manual review recommended"
-        else:
-            rec_status = "ISOLATED_FLAGGED"
+            rec_status = "UNVERIFIED"
             verif_method = "NONE"
             rec_affinity = 0.00
-            rec_remarks = "Zero desk neighbors detected (isolated seat)"
+            rec_remarks = f"Cloud staged check-in without confirmed desk neighbor (Reported: [{', '.join(staged_sub.reported_neighbors)}]) - Teacher check"
+        else:
+            rec_status = "UNVERIFIED"
+            verif_method = "NONE"
+            rec_affinity = 0.00
+            rec_remarks = "Zero desk neighbors detected (isolated seat) - Teacher check"
         records_to_create.append(
             AttendanceRecord(
                 id=uuid.uuid4(),
@@ -1325,7 +1329,9 @@ async def finalize_attendance_session(
     # previously produced VERIFIED rows with a NULL game_score, silently
     # bypassing the challenge gate.
     for rec in [*prior_records, *records_to_create]:
-        if rec.status == "VERIFIED_PRESENT" and (rec.game_score is None or rec.game_score < 15):
+        if rec.status in ("VERIFIED", "VERIFIED_PRESENT") and (
+            rec.game_score is None or rec.game_score < 15
+        ):
             rec.status = "COGNITIVE_CHALLENGE_FAILED"
             rec.verification_method = "COGNITIVE_CHALLENGE"
             rec.remarks = (
@@ -1787,7 +1793,7 @@ async def submit_student_neighbors(
                         mutual = True
                         break
                 if mutual:
-                    existing_record.status = "VERIFIED_PRESENT"
+                    existing_record.status = "VERIFIED"
                     existing_record.verification_method = "IN_FLIGHT_GRACE_PEER"
                     existing_record.affinity_score = 1.00
                     existing_record.remarks = (
@@ -1806,19 +1812,19 @@ async def submit_student_neighbors(
                     )
                     logger.info(
                         f"[In-Flight Grace Audit] Rescued late arrival {student_key} "
-                        f"-> VERIFIED_PRESENT (score {challenge_score}, mutual neighbor)"
+                        f"-> VERIFIED (score {challenge_score}, mutual neighbor)"
                     )
                 else:
-                    existing_record.status = "ISOLATED_FLAGGED"
+                    existing_record.status = "UNVERIFIED"
                     existing_record.verification_method = "IN_FLIGHT_GRACE"
-                    existing_record.affinity_score = 0.50
+                    existing_record.affinity_score = 0.00
                     existing_record.remarks = (
                         f"In-flight check-in after finalize without reciprocal neighbor "
                         f"(score {challenge_score}, Reported: [{', '.join(normalized_neighbors)}])"
                     )
                     logger.info(
                         f"[In-Flight Grace Audit] Late arrival {student_key} scored "
-                        f"{challenge_score} but no reciprocal neighbor — ISOLATED_FLAGGED"
+                        f"{challenge_score} but no reciprocal neighbor — UNVERIFIED"
                     )
             try:
                 await db.commit()
@@ -1831,13 +1837,15 @@ async def submit_student_neighbors(
                 v_stmt = select(AttendanceRecord).where(
                     AttendanceRecord.session_id == target_session_id,
                     AttendanceRecord.ble_device_id.in_(normalized_neighbors),
-                    AttendanceRecord.status == "VERIFIED_PRESENT",
+                    # Two-flag engine writes VERIFIED; legacy rows carry
+                    # VERIFIED_PRESENT.
+                    AttendanceRecord.status.in_(["VERIFIED", "VERIFIED_PRESENT"]),
                 )
                 v_res = await db.execute(v_stmt)
                 verified_neighbors = [r.ble_device_id for r in v_res.scalars().all()]
 
             if verified_neighbors:
-                rec_status = "VERIFIED_PRESENT"
+                rec_status = "VERIFIED"
                 verif_method = "IN_FLIGHT_GRACE_PEER"
                 affinity = 1.00
                 bridge = None
@@ -1852,17 +1860,17 @@ async def submit_student_neighbors(
                     .execution_options(synchronize_session=False)
                 )
             elif normalized_neighbors:
-                rec_status = "ISOLATED_FLAGGED"
+                rec_status = "UNVERIFIED"
                 verif_method = "IN_FLIGHT_GRACE"
-                affinity = 0.50
+                affinity = 0.00
                 bridge = None
-                remarks = f"In-flight check-in during grace period without verified neighbor (Reported: [{', '.join(normalized_neighbors)}]) - manual review recommended"
+                remarks = f"In-flight check-in during grace period without verified neighbor (Reported: [{', '.join(normalized_neighbors)}]) - Teacher check"
             else:
-                rec_status = "ISOLATED_FLAGGED"
+                rec_status = "UNVERIFIED"
                 verif_method = "NONE"
                 affinity = 0.00
                 bridge = None
-                remarks = "Zero desk neighbors detected (isolated seat)"
+                remarks = "Zero desk neighbors detected (isolated seat) - Teacher check"
 
             # M5 (audit): identity is the JWT account ONLY. The old ilike
             # substring fallback could bind a crafted id prefix to another
@@ -1982,7 +1990,7 @@ async def audit_and_finalize_session(
     # Normalize teacher-reported keys/neighbors to match the staged/cloud
     # convention (uppercased). graph_engine matches keys exactly, so a
     # mixed-case payload key would never pair with its peers' reports and the
-    # honest node would land ISOLATED_FLAGGED.
+    # honest node would land UNVERIFIED.
     normalized_payload_reports = {
         k.strip().upper(): [n.strip().upper() for n in v]
         for k, v in payload.reports.items()
@@ -2057,7 +2065,7 @@ async def audit_and_finalize_session(
     # 90 s grace path rescues late arrivals that do carry a legitimate score.
     for item in audit_results:
         score = item.get("game_score")
-        if item["status"] == "VERIFIED_PRESENT" and (score is None or score < 15):
+        if item["status"] == "VERIFIED" and (score is None or score < 15):
             item["status"] = "COGNITIVE_CHALLENGE_FAILED"
             item["verification_method"] = "COGNITIVE_CHALLENGE"
             item["remarks"] = (
@@ -2070,7 +2078,7 @@ async def audit_and_finalize_session(
         verdict_counts[item["status"]] = verdict_counts.get(item["status"], 0) + 1
     logger.info(f"[Audit Verdict] Session: {session_obj.id} -> {verdict_counts}")
     for item in audit_results:
-        if item["status"] != "VERIFIED_PRESENT":
+        if item["status"] != "VERIFIED":
             logger.info(
                 f"[Audit Detail] Session: {session_obj.id} node {item['ble_device_id']} "
                 f"-> {item['status']} :: {item['remarks']}"
@@ -2114,7 +2122,7 @@ async def audit_and_finalize_session(
             ):
                 continue
             # Update existing record in place without duplicate insert
-            if item["status"] == "VERIFIED_PRESENT":
+            if item["status"] == "VERIFIED":
                 verified_count += 1
             elif item["status"] == "SPOOFER_REJECTED":
                 spoofer_count += 1
@@ -2139,7 +2147,7 @@ async def audit_and_finalize_session(
         if resolved_student_id:
             seen_students.add(resolved_student_id)
 
-        if item["status"] == "VERIFIED_PRESENT":
+        if item["status"] == "VERIFIED":
             verified_count += 1
         elif item["status"] == "SPOOFER_REJECTED":
             spoofer_count += 1
@@ -2325,7 +2333,7 @@ async def override_attendance_record(
         record_obj.remarks = payload.remarks
 
     # Deliberate chimp-gate exemption: the instructor's manual verdict is the
-    # trusted authority, so an override may set VERIFIED_PRESENT without a
+    # trusted authority, so an override may set VERIFIED without a
     # passing game_score (the schema whitelist at RecordOverrideRequest bounds
     # what can be stamped). Counters are recomputed from durable rows (the
     # helper flushes) so the dashboard reflects the override immediately.

@@ -1,0 +1,13 @@
+==============================================================================
+V3.1 VALIDATION - 50%-even threshold, floor-4 federation, triangle corroboration, two-flag VERIFIED/UNVERIFIED
+==============================================================================
+
+RADIUS x GAP matrix - FULL neighbor lists (no truncation), 201 tie-break seeds per cell
+cell = V/U students: V = auto-verified, U = UNVERIFIED for teacher check
+radius   gap2(dx3)  gap3(dx4)  gap4(dx5)  gap5(dx6)  
+R=4.0    70V/0U    70V/0U    30V/40U    30V/40U    
+R=5.0    70V/0U    70V/0U    70V/0U    30V/40U    
+R=6.0    70V/0U    70V/0U    70V/0U    70V/0U    
+R=7.0    70V/0U    70V/0U    70V/0U    70V/0U    
+
+Rule: a cell fully auto-verifies when radius >= aisle dx (gap + 1); below that the engine marks EVERYONE UNVERIFIED for the teacher instead of guessing - no one is ever auto-labeled 'outside classroom'.
