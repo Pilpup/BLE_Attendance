@@ -493,7 +493,7 @@ internal fun TeacherSection(
                     label = "Wave2Alpha"
                 )
 
-                val progress = (remainingSeconds.coerceIn(0, 40) / 40f)
+                val progress = (remainingSeconds.coerceIn(0, 60) / 60f)
                 val pulseColor = AppTheme.colors.primaryPurple
                 val arcAccentColor = AppTheme.colors.accentOrange
                 val trackRingColor = AppTheme.colors.surface

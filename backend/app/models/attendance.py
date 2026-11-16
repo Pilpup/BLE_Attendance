@@ -135,6 +135,12 @@ class AttendanceSession(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 60s timeline: server-owned schedule anchors (set once at create).
+    # Null on legacy sessions created before the timeline migration.
+    game_starts_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    game_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set in the same transaction as committed audit verdicts; null means no audit ran.
+    audit_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     total_enrolled: Mapped[int] = mapped_column(default=0)
     total_verified: Mapped[int] = mapped_column(default=0)
     # Honest-counter rename (was total_spoofers): this is the session's

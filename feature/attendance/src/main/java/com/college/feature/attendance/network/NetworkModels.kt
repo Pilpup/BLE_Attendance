@@ -97,6 +97,8 @@ data class AttendanceSessionResponse(
     @SerializedName("total_unverified") val totalUnverified: Int,
     @SerializedName("started_at") val startedAt: String? = null,
     @SerializedName("ended_at") val endedAt: String? = null,
+    @SerializedName("game_starts_at") val gameStartsAt: String? = null,
+    @SerializedName("game_ends_at") val gameEndsAt: String? = null,
     val records: List<AttendanceRecordItem>? = null,
     @SerializedName("course_code") val courseCode: String? = null,
     @SerializedName("course_name") val courseName: String? = null,
@@ -107,6 +109,18 @@ data class AttendanceSessionResponse(
     @SerializedName("unit") val unit: String? = null,
     @SerializedName("topic_covered") val topicCovered: String? = null,
     @SerializedName("subject_name") val subjectName: String? = null
+)
+
+data class SessionJoinRequest(
+    @SerializedName("session_salt") val sessionSalt: String
+)
+
+data class SessionJoinResponse(
+    val eligible: Boolean,
+    @SerializedName("game_starts_at") val gameStartsAt: String? = null,
+    @SerializedName("game_ends_at") val gameEndsAt: String? = null,
+    @SerializedName("server_time") val serverTime: String? = null,
+    val reason: String? = null
 )
 
 // Payload when posting BLE mesh graph

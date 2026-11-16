@@ -112,8 +112,8 @@ class BLEAuditRecordItem(BaseModel):
     )
     remarks: Optional[str] = Field(None, description="Human-readable audit note")
     game_score: Optional[int] = Field(
-        None, ge=0, le=100,
-        description="Chimp cognitive challenge score (client-attested, gated at submit)"
+        None, ge=0, le=26,
+        description="Chimp cognitive challenge score (0-26, client-attested; engine stamps UNVERIFIED below gate)"
     )
     roll_number: Optional[str] = None
     student_name: Optional[str] = None
@@ -272,8 +272,8 @@ class SubmitNeighborsRequest(BaseModel):
     game_score: Optional[int] = Field(
         default=None,
         ge=0,
-        le=100,
-        description="Chimp memory challenge score; <15 is rejected as unverified. Bounded so a malicious client cannot persist arbitrary integers.",
+        le=26,
+        description="Chimp memory challenge score (0-26). Stored on upload; engine stamps UNVERIFIED when below gate.",
     )
 
     # Strips whitespace from student identifier
@@ -306,6 +306,9 @@ class AttendanceSessionResponse(BaseModel):
     status: str
     started_at: datetime
     ended_at: Optional[datetime] = None
+    # 60s timeline: server-owned schedule anchors (null for legacy sessions).
+    game_starts_at: Optional[datetime] = None
+    game_ends_at: Optional[datetime] = None
     total_enrolled: int
     total_verified: int
     total_unverified: int
@@ -320,6 +323,29 @@ class AttendanceSessionResponse(BaseModel):
     enrolled_roll_numbers: Optional[list[str]] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# Student latch preflight: proves in-room beacon possession + enrollment before radio/game.
+class SessionJoinRequest(BaseModel):
+    session_salt: str = Field(
+        ..., min_length=1, max_length=64,
+        description="Wire salt captured from the in-room beacon",
+    )
+
+    @field_validator("session_salt", mode="before")
+    @classmethod
+    def clean_join_salt(cls, v: Optional[str]) -> Optional[str]:
+        if isinstance(v, str):
+            return v.strip().upper()
+        return v
+
+
+class SessionJoinResponse(BaseModel):
+    game_starts_at: datetime
+    game_ends_at: datetime
+    server_time: datetime = Field(
+        ..., description="Server UTC time at response; client computes offset = server_time - local_now"
+    )
 
 
 # Developer lab test request for face detection validation

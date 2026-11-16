@@ -87,6 +87,9 @@ BEGIN
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'ACTIVE';
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS ended_at TIMESTAMP WITH TIME ZONE;
+    ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS game_starts_at TIMESTAMP WITH TIME ZONE;
+    ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS game_ends_at TIMESTAMP WITH TIME ZONE;
+    ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS audit_run_at TIMESTAMP WITH TIME ZONE;
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS total_enrolled INTEGER DEFAULT 0;
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS total_verified INTEGER DEFAULT 0;
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS total_unverified INTEGER DEFAULT 0;
@@ -259,14 +262,31 @@ async def lifespan(app: FastAPI):
     # Launch periodic background cleaner for expired email OTPs
     cleanup_task = asyncio.create_task(purge_expired_otps_worker())
 
+    # Rebuild event-driven audit schedule (one query on boot; no periodic DB polling).
+    audit_task = None
+    try:
+        from app.services.session_audit import rebuild_schedule_from_db, audit_scheduler_worker
+        async with AsyncSessionLocal() as boot_session:
+            await rebuild_schedule_from_db(boot_session)
+        audit_task = asyncio.create_task(audit_scheduler_worker(AsyncSessionLocal))
+    except Exception as e:
+        logger.warning(f"Audit scheduler startup skipped: {e}")
+
     yield
 
-    # Clean shutdown of background worker
+    # Clean shutdown of background workers
     cleanup_task.cancel()
+    if audit_task:
+        audit_task.cancel()
     try:
         await cleanup_task
     except asyncio.CancelledError:
         pass
+    if audit_task:
+        try:
+            await audit_task
+        except asyncio.CancelledError:
+            pass
 
     await engine.dispose()
 

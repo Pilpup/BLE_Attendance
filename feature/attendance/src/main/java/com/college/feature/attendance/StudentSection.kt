@@ -111,6 +111,8 @@ internal fun StudentSection(
     studentId: String = "",
     studentStatusMessage: String? = null,
     chimpStartDelayMs: Long = 0L,
+    gameStartsAtMs: Long? = null,
+    serverTimeOffsetMs: Long = 0L,
     capturedFacePayload: String? = null,
     auditedRecord: AttendanceRecordItem? = null,
     onRefreshAudit: (() -> Unit)? = null,
@@ -257,6 +259,8 @@ internal fun StudentSection(
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     seed = "$detectedSessionId:$sessionSalt:$studentId".hashCode(),
                     startDelayMs = chimpStartDelayMs,
+                    gameStartsAtMs = gameStartsAtMs,
+                    serverTimeOffsetMs = serverTimeOffsetMs,
                     onFinished = { score ->
                         lastGameScore = score
                         onChimpScore?.invoke(score)

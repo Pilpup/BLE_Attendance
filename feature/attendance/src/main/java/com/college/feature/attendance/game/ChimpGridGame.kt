@@ -145,11 +145,14 @@ private val ROUND_PALETTES = listOf(
 fun ChimpGridGame(
     modifier: Modifier = Modifier,
     seed: Int = 0,
-    // Synchronized start: all students in the room begin round 1 at the same
-    // instant (teacher countdown beacon). The grid stays empty until then.
+    // Legacy local delay (fallback). Prefer server schedule below.
     startDelayMs: Long = 0L,
+    // 60s server schedule: round 1 starts at gameStartsAt (server-aligned). Join-in-progress supported.
+    gameStartsAtMs: Long? = null,
+    serverTimeOffsetMs: Long = 0L,
     onFinished: (score: Int) -> Unit = {},
 ) {
+    val serverNowMs: () -> Long = { System.currentTimeMillis() + serverTimeOffsetMs }
     val rng = remember(seed) { Random(seed) }
 
     var board by remember { mutableLongStateOf(0L) }          // 64-bit board (nibbles)
@@ -217,29 +220,76 @@ fun ChimpGridGame(
         roundEndAtMs = roundStart + viewWindowMs(n) + tapWindowMs(n)
     }
 
-    LaunchedEffect(seed, startDelayMs) {
-        // Pre-start hold: the visible countdown ticks down before round 1
-        while (preStartLeftMs > 0L) {
-            val step = minOf(200L, preStartLeftMs)
-            delay(step)
-            preStartLeftMs -= step
-        }
-        newRound(1, System.currentTimeMillis())
-        while (running) {
-            val now = System.currentTimeMillis()
-            if (phaseShow && now >= viewEndAtMs) {
-                phaseShow = false // hide numbers, recall phase
+    LaunchedEffect(seed, startDelayMs, gameStartsAtMs, serverTimeOffsetMs) {
+        data class Slot(val r: Int, val start: Long, val viewEnd: Long, val end: Long)
+        val startsAt = gameStartsAtMs
+        if (startsAt != null) {
+            // Server-slotted 27.5s schedule (join-in-progress): windows relative to gameStartsAt.
+            val slots = listOf(
+                Slot(1, startsAt, startsAt + GRID_R1_VIEW, startsAt + GRID_R1_VIEW + GRID_R1_TAP),
+                Slot(2, startsAt + 4400, startsAt + 4400 + GRID_R2_VIEW, startsAt + 4400 + GRID_R2_VIEW + GRID_R2_TAP),
+                Slot(3, startsAt + 10200, startsAt + 10200 + GRID_R3_VIEW, startsAt + 10200 + GRID_R3_VIEW + GRID_R3_TAP),
+                Slot(4, startsAt + 18000, startsAt + 18000 + GRID_R4_VIEW, startsAt + 18000 + GRID_R4_VIEW + GRID_R4_TAP),
+            )
+            val gameEnd = startsAt + 27500
+            // Pre-start countdown to scheduled game start
+            while (serverNowMs() < startsAt) {
+                preStartLeftMs = (startsAt - serverNowMs()).coerceAtLeast(0L)
+                delay(100)
             }
-            if (now >= roundEndAtMs) {
-                if (round >= 4) {
+            preStartLeftMs = 0L
+            var currentR = 0
+            while (running) {
+                val now = serverNowMs()
+                if (now >= gameEnd) {
                     running = false
                     onFinished(score)
                     break
                 }
-                // Next round starts at its fixed slot regardless of loop jitter
-                newRound(round + 1, roundEndAtMs)
+                val slot = slots.firstOrNull { now < it.end } ?: slots.last()
+                if (slot.r != currentR) {
+                    // Enter/join this round at its fixed slot (if late, phase reflects now)
+                    currentR = slot.r
+                    newRound(slot.r, slot.start)
+                }
+                phaseShow = now < slot.viewEnd && !roundOver
+                if (now >= slot.end) {
+                    // advance handled by loop/next slot
+                }
+                if (slot.r == 4 && now >= slot.end) {
+                    running = false
+                    onFinished(score)
+                    break
+                }
+                delay(30)
             }
-            delay(30)
+            if (running) {
+                running = false
+                onFinished(score)
+            }
+        } else {
+            // Legacy local timing fallback
+            while (preStartLeftMs > 0L) {
+                val step = minOf(200L, preStartLeftMs)
+                delay(step)
+                preStartLeftMs -= step
+            }
+            newRound(1, System.currentTimeMillis())
+            while (running) {
+                val now = System.currentTimeMillis()
+                if (phaseShow && now >= viewEndAtMs) {
+                    phaseShow = false
+                }
+                if (now >= roundEndAtMs) {
+                    if (round >= 4) {
+                        running = false
+                        onFinished(score)
+                        break
+                    }
+                    newRound(round + 1, roundEndAtMs)
+                }
+                delay(30)
+            }
         }
     }
 

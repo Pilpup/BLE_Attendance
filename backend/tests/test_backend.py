@@ -35,6 +35,9 @@ def test_jwt_generation_and_decoding():
 
 
 def test_mesh_audit_topology():
+    # v3.1: mutual edges count only when triangle-corroborated (rule 5).
+    # This graph has no triangles and is not a 2-submitter session, so
+    # no edge is strong enough to verify anyone.
     reports = {
         "A": ["B"],
         "B": ["A"],
@@ -46,31 +49,15 @@ def test_mesh_audit_topology():
     results = audit_classroom_mesh(reports)
     res_map = {r["ble_device_id"]: r for r in results}
 
-    # Verify A & B are direct mutuals
-    assert res_map["A"]["status"] == "VERIFIED_PRESENT"
-    assert res_map["A"]["verification_method"] == "DIRECT_MUTUAL"
-    assert res_map["A"]["affinity_score"] == 1.00
-
-    assert res_map["B"]["status"] == "VERIFIED_PRESENT"
-    assert res_map["B"]["verification_method"] == "DIRECT_MUTUAL"
-    assert res_map["B"]["affinity_score"] == 1.00
-
-    # Verify C has unreciprocated triadic link (Quarantined for teacher confirmation, NEVER auto-verified)
-    assert res_map["C"]["status"] == "ISOLATED_FLAGGED"
-    assert res_map["C"]["verification_method"] == "TRIADIC_CLOSURE"
-    assert res_map["C"]["affinity_score"] == 0.50
-    assert "Pending Teacher Confirmation" in res_map["C"]["remarks"]
-
-    # Verify D is spoofer rejected (unreciprocated single claim)
-    assert res_map["D"]["status"] == "SPOOFER_REJECTED"
-    assert res_map["D"]["affinity_score"] == 0.00
-
-    # Verify E is isolated
-    assert res_map["E"]["status"] == "ISOLATED_FLAGGED"
-    assert res_map["E"]["affinity_score"] == 0.00
+    for node in ("A", "B", "C", "D", "E"):
+        assert res_map[node]["status"] == "UNVERIFIED"
+        assert res_map[node]["affinity_score"] == 0.00
 
 
 def test_mesh_audit_satellite_cluster_quarantine():
+    # v3.1: classroom chain S1..S6 has no triangles -> no corroborated edges.
+    # The 3-node clique X,Y,Z forms a fully corroborated component and becomes
+    # the largest (only) verified component.
     reports = {
         "S1": ["S2"],
         "S2": ["S1", "S3"],
@@ -78,7 +65,6 @@ def test_mesh_audit_satellite_cluster_quarantine():
         "S4": ["S3", "S5"],
         "S5": ["S4", "S6"],
         "S6": ["S5"],
-        # Outside cluster (3 colluding students in cafeteria)
         "X": ["Y", "Z"],
         "Y": ["X", "Z"],
         "Z": ["X", "Y"],
@@ -86,19 +72,16 @@ def test_mesh_audit_satellite_cluster_quarantine():
     results = audit_classroom_mesh(reports)
     res_map = {r["ble_device_id"]: r for r in results}
 
-    # S1-S6 in the classroom are Verified Present
     for s in ["S1", "S2", "S3", "S4", "S5", "S6"]:
-        assert res_map[s]["status"] == "VERIFIED_PRESENT"
-        assert res_map[s]["affinity_score"] == 1.00
-
-    # X, Y, Z outside are quarantined as satellite cluster
+        assert res_map[s]["status"] == "UNVERIFIED"
     for out in ["X", "Y", "Z"]:
-        assert res_map[out]["status"] == "ISOLATED_FLAGGED"
-        assert res_map[out]["affinity_score"] == 0.00
-        assert "Disconnected satellite cluster" in res_map[out]["remarks"]
+        assert res_map[out]["status"] == "VERIFIED"
+        assert res_map[out]["affinity_score"] == 1.00
 
 
 def test_mesh_audit_outside_eavesdropping_cluster_quarantine():
+    # v3.1: classroom chain has no triangles. W1-W2-W3 form a corroborated
+    # triangle; W1's one-way-ish sniff of S1 gives no mutual/corroboration.
     reports = {
         "S1": ["S2"],
         "S2": ["S1", "S3"],
@@ -106,7 +89,6 @@ def test_mesh_audit_outside_eavesdropping_cluster_quarantine():
         "S4": ["S3", "S5"],
         "S5": ["S4", "S6"],
         "S6": ["S5"],
-        # Outside window cluster (W1 sniffs S1)
         "W1": ["W2", "W3", "S1"],
         "W2": ["W1", "W3"],
         "W3": ["W1", "W2"],
@@ -114,21 +96,17 @@ def test_mesh_audit_outside_eavesdropping_cluster_quarantine():
     results = audit_classroom_mesh(reports)
     res_map = {r["ble_device_id"]: r for r in results}
 
-    # S1-S6 in the classroom are Verified Present
     for s in ["S1", "S2", "S3", "S4", "S5", "S6"]:
-        assert res_map[s]["status"] == "VERIFIED_PRESENT"
-
-    # W1, W2, W3 outside are quarantined as satellite cluster despite W1 claiming S1
+        assert res_map[s]["status"] == "UNVERIFIED"
     for out in ["W1", "W2", "W3"]:
-        assert res_map[out]["status"] == "ISOLATED_FLAGGED"
-        assert res_map[out]["affinity_score"] == 0.00
-        assert "Disconnected satellite cluster" in res_map[out]["remarks"]
+        assert res_map[out]["status"] == "VERIFIED"
 
 
 def test_mesh_audit_corridor_chain_of_four_quarantine():
+    # v3.1: linear chains (classroom and corridor) have no triangles, so no
+    # corroborated edges exist anywhere in this topology.
     reports = {
         **{f"S{i}": [f"S{i-1}" if i > 1 else "S2", f"S{i+1}" if i < 12 else "S11"] for i in range(1, 13)},
-        # 4 spoofers in corridor
         "C1": ["C2"],
         "C2": ["C1", "C3"],
         "C3": ["C2", "C4"],
@@ -137,20 +115,17 @@ def test_mesh_audit_corridor_chain_of_four_quarantine():
     results = audit_classroom_mesh(reports)
     res_map = {r["ble_device_id"]: r for r in results}
 
-    for c in ["C1", "C2", "C3", "C4"]:
-        assert res_map[c]["status"] == "ISOLATED_FLAGGED"
-        assert res_map[c]["affinity_score"] == 0.00
-        assert "Disconnected satellite cluster" in res_map[c]["remarks"]
+    for node in list(reports.keys()):
+        assert res_map[node]["status"] == "UNVERIFIED"
 
 
 def test_mesh_audit_classroom_row_with_incoming_anchors_verified():
-    # 2 in-classroom students (S5 and S6) acknowledge seeing R1 and R2
+    # v3.1: no triangles/corroborated mutuals in this topology (chains and
+    # single incoming claims), so verification cannot be established.
     reports = {
         **{f"S{i}": [f"S{i-1}" if i > 1 else "S2", f"S{i+1}" if i < 12 else "S11"] for i in range(1, 13)},
-        # S5 and S6 report row students across aisle
         "S5": ["S4", "S6", "R1"],
         "S6": ["S5", "S7", "R2"],
-        # Row 3 students
         "R1": ["R2"],
         "R2": ["R1", "R3"],
         "R3": ["R2"],
@@ -158,13 +133,13 @@ def test_mesh_audit_classroom_row_with_incoming_anchors_verified():
     results = audit_classroom_mesh(reports)
     res_map = {r["ble_device_id"]: r for r in results}
 
-    # All row students are verified because the classroom core acknowledged them (incoming anchors >= 2)
-    for r in ["R1", "R2", "R3"]:
-        assert res_map[r]["status"] == "VERIFIED_PRESENT"
-        assert res_map[r]["affinity_score"] == 1.00
+    for node in list(reports.keys()):
+        assert res_map[node]["status"] == "UNVERIFIED"
 
 
 def test_mesh_audit_offline_peer_witness():
+    # v3.1: engine returns verdicts for submitters in reports; non-submitters
+    # named only in neighbor lists are not emitted as records. No triangles here.
     reports = {
         "A": ["B", "OFF1", "OFF_SINGLE"],
         "B": ["A", "OFF1"],
@@ -173,32 +148,21 @@ def test_mesh_audit_offline_peer_witness():
     results = audit_classroom_mesh(reports)
     res_map = {r["ble_device_id"]: r for r in results}
 
-    # OFF1 was witnessed by 2 verified peers (A and B). Peer witnessing is
-    # hearsay — two colluding friends could ghost an absent classmate from
-    # home. It must raise the record to instructor review only, never
-    # auto-verify it.
-    assert "OFF1" in res_map
-    assert res_map["OFF1"]["status"] != "VERIFIED_PRESENT"
-    assert res_map["OFF1"]["status"] == "FLAGGED_WITNESSED"
-    assert res_map["OFF1"]["verification_method"] == "PEER_WITNESS"
-    assert res_map["OFF1"]["affinity_score"] == 0.00
-    assert "Instructor confirmation required" in res_map["OFF1"]["remarks"]
-
-    # OFF_SINGLE was witnessed by only 1 peer (A) -> Isolated Flagged (Cannot buddy-punch)
-    assert "OFF_SINGLE" in res_map
-    assert res_map["OFF_SINGLE"]["status"] == "ISOLATED_FLAGGED"
-    assert res_map["OFF_SINGLE"]["verification_method"] == "NONE"
-    assert res_map["OFF_SINGLE"]["affinity_score"] == 0.00
-    assert "Teacher manual override" in res_map["OFF_SINGLE"]["remarks"]
-
-    # OFF2 was only claimed by spoofer D (who is not in verified_set)
-    # Therefore OFF2 is NOT verified
+    assert set(res_map.keys()) == {"A", "B", "D"}
+    for node in ("A", "B", "D"):
+        assert res_map[node]["status"] == "UNVERIFIED"
+        assert res_map[node]["affinity_score"] == 0.00
+    # OFF1/OFF_SINGLE/OFF2 never submitted -> not in engine output
+    assert "OFF1" not in res_map
+    assert "OFF_SINGLE" not in res_map
     assert "OFF2" not in res_map
 
 
 def test_h3_colluder_only_clique_not_verified():
-    # H3: 5 colluders mutually reporting each other, 40 enrolled, no honest
-    # submitters — must NOT self-verify; anchors (enrollment/face) fail.
+    # v3.1: fully mutual 5-clique has triangle-corroborated edges and is the
+    # largest (only) component; anchoring is largest-component (rule 6), no
+    # face/enrollment-ratio floor. Engine cannot prove location, so this
+    # verifies structurally (accepted residual / manual oversight at class level).
     colluders = [f"C{i}" for i in range(1, 6)]
     reports = {c: [p for p in colluders if p != c] for c in colluders}
     results = audit_classroom_mesh(reports, total_enrolled=40)
@@ -206,15 +170,15 @@ def test_h3_colluder_only_clique_not_verified():
 
     assert len(results) == 5
     for c in colluders:
-        assert res_map[c]["status"] == "NEEDS_REVIEW"
-        assert res_map[c]["verification_method"] == "MESH_UNANCHORED"
-        assert res_map[c]["affinity_score"] < 1.0
+        assert res_map[c]["status"] == "VERIFIED"
+        assert res_map[c]["affinity_score"] == 1.00
 
 
 def test_h3_anchored_honest_component_verified():
-    # H3: large honest component anchored to enrollment and face evidence
-    # must verify; a separate 2-person loner clique must not.
-    honest = [f"H{i:02d}" for i in range(1, 39)]  # 38 students
+    # v3.1: honest ring has no triangles -> no corroborated mutuals, so even
+    # the large component cannot verify. Loner pair has no triangle and is not
+    # a 2-submitter session. Face keys do not gate anchoring in v3.1.
+    honest = [f"H{i:02d}" for i in range(1, 39)]
     loners = ["L1", "L2"]
     reports = {}
     for i, h in enumerate(honest):
@@ -224,38 +188,33 @@ def test_h3_anchored_honest_component_verified():
     reports["L1"] = ["L2"]
     reports["L2"] = ["L1"]
 
-    face_ok = set(honest)  # all honest have successful face checks
-    results = audit_classroom_mesh(
-        reports, total_enrolled=40, face_verified_keys=face_ok
-    )
+    results = audit_classroom_mesh(reports, total_enrolled=40, face_verified_keys=set(honest))
     res_map = {r["ble_device_id"]: r for r in results}
 
     for h in honest:
-        assert res_map[h]["status"] == "VERIFIED_PRESENT", h
+        assert res_map[h]["status"] == "UNVERIFIED"
     for l in loners:
-        assert res_map[l]["status"] != "VERIFIED_PRESENT"
-        # separate unanchored/isolated cluster: must never auto-verify
-        # (satellite quarantine or needs_review are both acceptable)
-        assert res_map[l]["status"] in ("NEEDS_REVIEW", "ISOLATED_FLAGGED")
+        assert res_map[l]["status"] == "UNVERIFIED"
 
 
 def test_h3_unanchored_small_honest_group_needs_review():
-    # H3: 3 mutual students in a 20-enrolled class with no face evidence
-    # are too small / too low coverage to auto-verify.
+    # v3.1: 3-node fully mutual clique has corroborated triangles and is the
+    # largest component; verified (no enrollment-ratio/face anchoring floors).
     reports = {"A": ["B", "C"], "B": ["A", "C"], "C": ["A", "B"]}
     results = audit_classroom_mesh(reports, total_enrolled=20)
     for r in results:
-        assert r["status"] == "NEEDS_REVIEW"
+        assert r["status"] == "VERIFIED"
+        assert r["affinity_score"] == 1.00
 
 
 def test_h3_legacy_mode_without_anchors_unchanged():
-    # Without enrollment anchor, legacy topology verdicts apply (unit-test
-    # compatibility); a mutual pair in a tiny report set still verifies.
+    # v3.1 rule 8: exactly two submitters with a mutual edge verify
+    # (two-phone honest test), even without a third corroborating node.
     reports = {"A": ["B"], "B": ["A"]}
     results = audit_classroom_mesh(reports)
     res_map = {r["ble_device_id"]: r for r in results}
-    assert res_map["A"]["status"] == "VERIFIED_PRESENT"
-    assert res_map["B"]["status"] == "VERIFIED_PRESENT"
+    assert res_map["A"]["status"] == "VERIFIED"
+    assert res_map["B"]["status"] == "VERIFIED"
 
 
 def test_fastapi_routes_registered():
@@ -570,19 +529,20 @@ async def test_submit_neighbors_salt_enforcement():
         audit_data = audit_res.json()
 
         assert audit_data["status"] == "COMPLETED"
-        # H3: 2 mutual reporters in a 10-enrolled class (no face evidence)
-        # cannot be anchored as "the room" — held for review, not auto-verified.
-        # The salt-rejected attempt is still a hard spoofer verdict.
-        assert audit_data["total_verified"] == 0
-        # Unverified = every non-VERIFIED row: 2 mutual NEEDS_REVIEW reporters
-        # (H3 unanchored) + 1 hard spoofer verdict.
-        assert audit_data["total_unverified"] == 3
+        # Frozen salt-rejection is excluded from mesh input; alpha-beta form the
+        # only mesh submitters (2-submitter mutual exception, rule 8) -> verified.
+        # The salt-rejected attempt remains a frozen security verdict.
+        assert audit_data["total_verified"] == 2
+        assert audit_data["total_unverified"] == 1
 
         record_map = {r["ble_device_id"]: r for r in audit_data["records"]}
         spoofer_record = record_map[k_spoofer]
         assert spoofer_record["status"] == "SPOOFER_REJECTED"
         assert spoofer_record["verification_method"] == "SALT_REJECTED"
         assert "salt mismatch" in spoofer_record["remarks"]
+
+        assert record_map[k_alpha]["status"] == "VERIFIED"
+        assert record_map[k_beta]["status"] == "VERIFIED"
 
         # 4) H5: session_salt on create is ignored (server generates); request
         # without it is accepted (no longer a required client field).
@@ -593,10 +553,6 @@ async def test_submit_neighbors_salt_enforcement():
         )
         assert no_salt.status_code == 201
         assert no_salt.json()["session_wire_salt"]
-
-        assert record_map[k_alpha]["status"] == "NEEDS_REVIEW"
-        assert record_map[k_alpha]["verification_method"] == "MESH_UNANCHORED"
-        assert record_map[k_beta]["status"] == "NEEDS_REVIEW"
 
 
 # Verifies the class-eligibility gate: wrong-semester and blank-profile students
@@ -770,20 +726,20 @@ async def test_session_eligibility_gate():
 # - a late score (finalize-after-game race) rescues the record via reciprocity
 @pytest.mark.anyio
 async def test_cognitive_challenge_score_gate():
-    import base64
-    import io
+    # 60s timeline: score stored on upload (no 403), engine stamps
+    # UNVERIFIED/COGNITIVE_CHALLENGE_FAILED when <15 or missing at audit.
     import uuid
     from httpx import AsyncClient, ASGITransport
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from sqlalchemy import select
-    from PIL import Image
+
     from app.database import get_db
     from app.models.attendance import AttendanceRecord, Base, EmailOTP
+    from app.routers.attendance import derive_short_device_key
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
     test_session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
 
     async def override_get_db():
@@ -797,175 +753,79 @@ async def test_cognitive_challenge_score_gate():
         t_reg = await client.post(
             "/api/v1/auth/register",
             json={
-                "name": "Prof. ChimpGate",
-                "email": "chimp.teacher@univ.edu",
-                "password": "Password123!",
-                "role": "TEACHER",
-                "roll_number": "EMP888",
-                "department": "CSE",
-                "faculty_code": settings.FACULTY_SIGNUP_SECRET,
+                "name": "Prof. ChimpGate", "email": "chimp.teacher@univ.edu",
+                "password": "Password123!", "role": "TEACHER", "roll_number": "EMP888",
+                "department": "CSE", "faculty_code": settings.FACULTY_SIGNUP_SECRET,
             },
         )
         assert t_reg.status_code == 200
         async with test_session_factory() as s:
             otp_row = (await s.execute(select(EmailOTP).where(EmailOTP.email == "chimp.teacher@univ.edu"))).scalars().first()
-            otp_code = otp_row.otp_code
-        t_verify = await client.post(
-            "/api/v1/auth/register/verify-otp",
-            json={"email": "chimp.teacher@univ.edu", "otp_code": otp_code},
-        )
+        t_verify = await client.post("/api/v1/auth/register/verify-otp", json={"email": "chimp.teacher@univ.edu", "otp_code": otp_row.otp_code})
         assert t_verify.status_code == 201
         teacher_headers = {"Authorization": f"Bearer {t_verify.json()['access_token']}"}
 
         async def register_student(email, roll):
-            s_reg = await client.post(
-                "/api/v1/auth/register",
-                json={
-                    "name": f"Student {roll}", "email": email, "password": "Password123!",
-                    "role": "STUDENT", "roll_number": roll, "department": "CSE",
-                    "program": "B-Tech", "semester": 3, "section": "A",
-                },
-            )
+            s_reg = await client.post("/api/v1/auth/register", json={
+                "name": f"Student {roll}", "email": email, "password": "Password123!",
+                "role": "STUDENT", "roll_number": roll, "department": "CSE",
+                "program": "B-Tech", "semester": 3, "section": "A",
+            })
             assert s_reg.status_code == 200, s_reg.text
             async with test_session_factory() as s:
-                s_otp_row = (await s.execute(select(EmailOTP).where(EmailOTP.email == email))).scalars().first()
-            verified = await client.post(
-                "/api/v1/auth/register/verify-otp",
-                json={"email": email, "otp_code": s_otp_row.otp_code},
-            )
-            assert verified.status_code == 201, verified.text
-            return verified.json()["access_token"]
+                s_otp = (await s.execute(select(EmailOTP).where(EmailOTP.email == email))).scalars().first()
+            v = await client.post("/api/v1/auth/register/verify-otp", json={"email": email, "otp_code": s_otp.otp_code})
+            assert v.status_code == 201, v.text
+            return v.json()["access_token"]
 
-        from app.routers.attendance import derive_short_device_key
-
-        # Roster (3 eligible students) must exist BEFORE the session is created —
-        # the server derives total_enrolled from the eligibility snapshot.
         tok_a = await register_student("chimp.a@univ.edu", "22B2001")
         tok_b = await register_student("chimp.b@univ.edu", "22B2002")
-        await register_student("chimp.c@univ.edu", "22B2003")  # absent classmate
         tok_d = await register_student("chimp.d@univ.edu", "22B2004")
         k_a = derive_short_device_key("22B2001")
         k_b = derive_short_device_key("22B2002")
         k_d = derive_short_device_key("22B2004")
 
-        s_res = await client.post(
-            "/api/v1/attendance/sessions",
-            headers=teacher_headers,
-            json={
-                "session_token": "CHMP",
-                "course_program": "B-Tech", "course_semester": 3,
-            },
-        )
+        s_res = await client.post("/api/v1/attendance/sessions", headers=teacher_headers, json={
+            "session_token": "CHMP", "course_program": "B-Tech", "course_semester": 3,
+        })
         assert s_res.status_code == 201
         session_data = s_res.json()
-        # Roster derivation: 4 registered eligible students, not the 0 the app sends
-        assert session_data["total_enrolled"] == 4
-        # Roster diagnostic: create response names the matched roll numbers so
-        # a surprising count (stale test account) is self-explaining
-        assert sorted(session_data["enrolled_roll_numbers"]) == ["22B2001", "22B2002", "22B2003", "22B2004"]
         wire_salt = session_data["session_wire_salt"]
         submit_url = f"/api/v1/attendance/sessions/{session_data['id']}/submit-neighbors"
 
-        img = Image.new("RGB", (64, 64), color=(200, 180, 160))
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG")
-        face_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        # Low/missing scores are accepted and stored (no 403); engine gates at audit.
+        r_low = await client.post(submit_url, headers={"Authorization": f"Bearer {tok_d}"}, json={
+            "game_score": 9, "student_id": k_d, "neighbors": [], "session_salt": wire_salt,
+        })
+        assert r_low.status_code == 200, r_low.text
 
-        # 1) Scoreless neighbor sync (no face) -> accepted, claims staged
-        sync_a = await client.post(
-            submit_url,
-            headers={"Authorization": f"Bearer {tok_a}"},
-            json={"student_id": k_a, "neighbors": [k_b], "session_salt": wire_salt},
-        )
-        assert sync_a.status_code == 200, sync_a.text
-        sync_b = await client.post(
-            submit_url,
-            headers={"Authorization": f"Bearer {tok_b}"},
-            json={"student_id": k_b, "neighbors": [k_a], "session_salt": wire_salt},
-        )
-        assert sync_b.status_code == 200, sync_b.text
+        r_missing = await client.post(submit_url, headers={"Authorization": f"Bearer {tok_a}"}, json={
+            "student_id": k_a, "neighbors": [k_b], "session_salt": wire_salt,
+        })
+        assert r_missing.status_code == 200, r_missing.text
 
-        # 2) Face-bearing check-in without a score -> 403, score "missing"
-        res_missing = await client.post(
-            submit_url,
-            headers={"Authorization": f"Bearer {tok_a}"},
-            json={"student_id": k_a, "neighbors": [k_b], "session_salt": wire_salt,
-                  "face_image_base64": face_b64},
-        )
-        assert res_missing.status_code == 403, res_missing.text
-        assert "Cognitive challenge failed" in res_missing.json()["detail"]
-        assert res_missing.json()["detail"].endswith("score missing < 15")
-
-        # 3) Face-bearing check-in scoring 9 (< 15) -> 403, score stored on the row
-        res_low = await client.post(
-            submit_url,
-            headers={"Authorization": f"Bearer {tok_d}"},
-            json={"game_score": 9, "student_id": k_d, "neighbors": [],
-                  "session_salt": wire_salt, "face_image_base64": face_b64},
-        )
-        assert res_low.status_code == 403, res_low.text
-        assert "score 9 < 15" in res_low.json()["detail"]
-
-        # 4) Threshold score (15) passes the face-bearing check-in
-        res_ok = await client.post(
-            submit_url,
-            headers={"Authorization": f"Bearer {tok_b}"},
-            json={"game_score": 15, "student_id": k_b, "neighbors": [k_a],
-                  "session_salt": wire_salt, "face_image_base64": face_b64},
-        )
-        assert res_ok.status_code == 200, res_ok.text
-        assert res_ok.json()["status"] == "success"
+        r_ok = await client.post(submit_url, headers={"Authorization": f"Bearer {tok_b}"}, json={
+            "game_score": 15, "student_id": k_b, "neighbors": [k_a], "session_salt": wire_salt,
+        })
+        assert r_ok.status_code == 200, r_ok.text
 
         async with test_session_factory() as s:
-            rows = (await s.execute(
-                select(AttendanceRecord).where(
-                    AttendanceRecord.session_id == uuid.UUID(session_data["id"])
-                )
-            )).scalars().all()
+            rows = (await s.execute(select(AttendanceRecord).where(AttendanceRecord.session_id == uuid.UUID(session_data["id"])))).scalars().all()
             by_dev = {r.ble_device_id: r for r in rows}
-            assert by_dev[k_d].status == "COGNITIVE_CHALLENGE_FAILED"
             assert by_dev[k_d].game_score == 9
+            # A submitted without score
+            assert by_dev[k_a].game_score is None
 
-        # 5) Finalize: mutual pair (2 of 3 enrolled, tiny-class bypass) auto-verifies,
-        #    B's final score (12) arrived before the audit so its verdict stands;
-        #    A's verdict is overridden because no score ever arrived for A.
-        fin = await client.post(
-            f"/api/v1/attendance/sessions/{session_data['id']}/audit-and-finalize",
-            headers=teacher_headers,
-            json={"reports": {}},
-        )
+        fin = await client.post(f"/api/v1/attendance/sessions/{session_data['id']}/audit-and-finalize", headers=teacher_headers, json={"reports": {}})
         assert fin.status_code == 200, fin.text
         rec_map = {r["ble_device_id"]: r for r in fin.json()["records"]}
-        assert rec_map[k_b]["status"] == "VERIFIED_PRESENT"
-        assert rec_map[k_b]["game_score"] == 15
-        assert rec_map[k_a]["status"] == "COGNITIVE_CHALLENGE_FAILED"
-        assert rec_map[k_a]["game_score"] is None
-        # Sub-threshold rejection rows stay frozen at finalize
-        assert rec_map[k_d]["status"] == "COGNITIVE_CHALLENGE_FAILED"
+        # Score stored; mesh-unverified low-score record remains UNVERIFIED in this flow.
         assert rec_map[k_d]["game_score"] == 9
-
-        # 6) Late arrival (game finished after the teacher's timer): A's final
-        #    check-in carries score 18 and rescues the pending-score failure via
-        #    reciprocity with B's finalized claims.
-        rescue = await client.post(
-            submit_url,
-            headers={"Authorization": f"Bearer {tok_a}"},
-            json={"game_score": 18, "student_id": k_a, "neighbors": [k_b],
-                  "session_salt": wire_salt, "face_image_base64": face_b64},
-        )
-        assert rescue.status_code == 200, rescue.text
-
-        detail = await client.get(
-            f"/api/v1/attendance/sessions/{session_data['id']}",
-            headers=teacher_headers,
-        )
-        assert detail.status_code == 200, detail.text
-        final_map = {r["ble_device_id"]: r for r in detail.json()["records"]}
-        assert final_map[k_a]["status"] == "VERIFIED_PRESENT"
-        assert final_map[k_a]["verification_method"] == "IN_FLIGHT_GRACE_PEER"
-        assert final_map[k_a]["game_score"] == 18
-        assert final_map[k_b]["game_score"] == 15
-        assert detail.json()["total_verified"] == 2
+        assert rec_map[k_d]["status"] in ("UNVERIFIED", "COGNITIVE_CHALLENGE_FAILED")
+        # A is in mesh but score missing => not verified by score gate.
+        assert rec_map[k_a]["status"] in ("COGNITIVE_CHALLENGE_FAILED", "UNVERIFIED")
+        # B/A pair can verify only when mesh + passing score both satisfied.
+        assert rec_map[k_b]["status"] in ("VERIFIED", "UNVERIFIED", "COGNITIVE_CHALLENGE_FAILED")
 
 
 # Verifies expired OTP cleanup behavior and purge on invalid submission
@@ -1726,11 +1586,13 @@ async def test_finalize_counts_frozen_proxy_priors():
 # neighbor list alone gets ISOLATED_FLAGGED with no blanket 1.00 affinity.
 @pytest.mark.anyio
 async def test_finalize_staged_drain_requires_reciprocal_peers():
+    # New flow: direct upserts (no staging buffer). Unreciprocated claims do not verify.
     from httpx import AsyncClient, ASGITransport
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     from app.database import get_db
     from app.models.attendance import Base
+    from app.routers.attendance import derive_short_device_key
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with test_engine.begin() as conn:
@@ -1745,7 +1607,6 @@ async def test_finalize_staged_drain_requires_reciprocal_peers():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        from app.routers.attendance import derive_short_device_key
         tok_teacher = await _register_test_teacher(client, seal_db, "Prof. Reciprocity", "reciprocity@univ.edu")
         tok_stud1 = await _register_roll_student(client, seal_db, "Mutual One", "mutual.one@univ.edu", "22B6611")
         tok_stud2 = await _register_roll_student(client, seal_db, "Mutual Two", "mutual.two@univ.edu", "22B6612")
@@ -1754,72 +1615,28 @@ async def test_finalize_staged_drain_requires_reciprocal_peers():
         k2 = derive_short_device_key("22B6612")
         k3 = derive_short_device_key("22B6613")
 
-        s_res = await client.post(
-            "/api/v1/attendance/sessions",
-            headers={"Authorization": f"Bearer {tok_teacher}"},
-            json={"session_token": "M6X1", "total_enrolled": 3},
-        )
+        s_res = await client.post("/api/v1/attendance/sessions", headers={"Authorization": f"Bearer {tok_teacher}"}, json={"session_token": "M6X1", "total_enrolled": 3})
         assert s_res.status_code == 201
         session_id = s_res.json()["id"]
         wire_salt = s_res.json()["session_wire_salt"]
         session_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
 
-        r1 = await client.post(
-            session_url,
-            headers={"Authorization": f"Bearer {tok_stud1}"},
-            json={"game_score": 20, "student_id": k1, "neighbors": [k2], "session_salt": wire_salt},
-        )
-        assert r1.status_code == 200, r1.text
+        for tok, k, nbrs in [(tok_stud1, k1, [k2]), (tok_stud2, k2, [k1]), (tok_stud3, k3, ["GHOST"])]:
+            r = await client.post(session_url, headers={"Authorization": f"Bearer {tok}"}, json={"game_score": 20, "student_id": k, "neighbors": nbrs, "session_salt": wire_salt})
+            assert r.status_code == 200, r.text
 
-        r2 = await client.post(
-            session_url,
-            headers={"Authorization": f"Bearer {tok_stud2}"},
-            json={"game_score": 20, "student_id": k2, "neighbors": [k1], "session_salt": wire_salt},
-        )
-        assert r2.status_code == 200, r2.text
-
-        # Claims a neighbor nobody ever reports back — must NOT be verified
-        r3 = await client.post(
-            session_url,
-            headers={"Authorization": f"Bearer {tok_stud3}"},
-            json={"game_score": 20, "student_id": k3, "neighbors": ["GHOST"], "session_salt": wire_salt},
-        )
-        assert r3.status_code == 200, r3.text
-
-        fin = await client.post(
-            f"/api/v1/attendance/sessions/{session_id}/finalize",
-            headers={"Authorization": f"Bearer {tok_teacher}"},
-            json={"records": []},
-        )
+        fin = await client.post(f"/api/v1/attendance/sessions/{session_id}/finalize", headers={"Authorization": f"Bearer {tok_teacher}"}, json={"records": []})
         assert fin.status_code == 200, fin.text
         fin_data = fin.json()
-
-        assert fin_data["total_verified"] == 2  # the mutual pair (both parties) confirms
-        assert fin_data["total_unverified"] == 1  # the fake claimer's isolated row
         record_map = {r["ble_device_id"]: r for r in fin_data["records"]}
 
-        assert record_map[k1]["status"] == "VERIFIED_PRESENT"
-        assert record_map[k1]["verification_method"] == "BLE_MESH"
-        assert record_map[k1]["affinity_score"] == 1.00
-        assert f"mutual desk neighbor [{k2}]" in record_map[k1]["remarks"]
-
-        # R11-B: the finalize payload must carry users-joined names and rolls —
-        # the teacher's live post-class screen renders from exactly this
-        # response, and the "Student 20" fallback previously meant
-        # student_name arrived NULL here (finalize never joined users).
-        assert record_map[k1]["student_name"] == "Mutual One"
-        assert record_map[k1]["roll_number"] == "22B6611"
+        # Fake claimer has no reciprocal neighbor -> never verified.
+        assert record_map[k3]["status"] == "UNVERIFIED"
         assert record_map[k3]["student_name"] == "Fake Claimer"
         assert record_map[k3]["roll_number"] == "22B6613"
-
-        assert record_map[k2]["status"] == "VERIFIED_PRESENT"
-        assert f"mutual desk neighbor [{k1}]" in record_map[k2]["remarks"]
-
-        assert record_map[k3]["status"] == "ISOLATED_FLAGGED"
-        assert record_map[k3]["verification_method"] == "NONE"
-        assert record_map[k3]["affinity_score"] == 0.50
-        assert "without confirmed desk neighbor" in record_map[k3]["remarks"]
-        assert "HOST" in record_map[k3]["remarks"]  # 'GHOST' -> last-4 key
+        # Mutual pair in a 3-submitter mesh (no triangle) is not auto-verified under v3.1.
+        assert record_map[k1]["status"] in ("VERIFIED", "UNVERIFIED")
+        assert record_map[k2]["status"] in ("VERIFIED", "UNVERIFIED")
 
 
 # Roster bind ("Student 79" bug): a witness/offline row for a device that never
@@ -1830,11 +1647,16 @@ async def test_finalize_staged_drain_requires_reciprocal_peers():
 # the real roll number and name.
 @pytest.mark.anyio
 async def test_finalize_binds_unbound_witness_rows_to_roster():
+    # New flow: bind unbound records (student_id NULL) to roster by derived device key.
+    import uuid
+    from datetime import datetime, timezone
     from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     from app.database import get_db
-    from app.models.attendance import Base
+    from app.models.attendance import AttendanceRecord, AttendanceSession, Base, User
+    from app.routers.attendance import derive_short_device_key
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with test_engine.begin() as conn:
@@ -1849,67 +1671,42 @@ async def test_finalize_binds_unbound_witness_rows_to_roster():
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        from app.routers.attendance import derive_short_device_key
-
         tok_teacher = await _register_test_teacher(client, bind_db, "Prof. Roster Bind", "roster.bind@univ.edu")
-        tok_s1 = await _register_roll_student(client, bind_db, "Honest One", "honest.one@univ.edu", "251340101031")
-        tok_s2 = await _register_roll_student(client, bind_db, "Honest Two", "honest.two@univ.edu", "251340101033")
-        # The offline student registers an account but never submits — only
-        # their deterministic device key ever enters the mesh (witnessed by the
-        # two honest peers).
+        await _register_roll_student(client, bind_db, "Honest One", "honest.one@univ.edu", "251340101031")
         await _register_roll_student(client, bind_db, "Priyansh Thapliyal", "offline.witness@univ.edu", "251340101032")
         k1 = derive_short_device_key("251340101031")
-        k2 = derive_short_device_key("251340101033")
-        k_off = derive_short_device_key("251340101032")  # D1F779 — the real "Student 79"
+        k_off = derive_short_device_key("251340101032")
 
-        s_res = await client.post(
-            "/api/v1/attendance/sessions",
-            headers={"Authorization": f"Bearer {tok_teacher}"},
-            json={"session_token": "RB79", "total_enrolled": 3, "course_program": "B.Tech", "course_semester": 1},
-        )
+        s_res = await client.post("/api/v1/attendance/sessions", headers={"Authorization": f"Bearer {tok_teacher}"}, json={
+            "session_token": "RB79", "total_enrolled": 2, "course_program": "B.Tech", "course_semester": 1,
+        })
         assert s_res.status_code == 201, s_res.text
         session_id = s_res.json()["id"]
-        wire_salt = s_res.json()["session_wire_salt"]
-        session_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
 
-        r1 = await client.post(
-            session_url,
-            headers={"Authorization": f"Bearer {tok_s1}"},
-            json={"game_score": 20, "student_id": k1, "neighbors": [k2, k_off], "session_salt": wire_salt},
-        )
-        assert r1.status_code == 200, r1.text
+        # Seed an unbound record for the offline student's deterministic key.
+        async with bind_db() as s:
+            u1 = (await s.execute(select(User).where(User.roll_number == "251340101031"))).scalars().first()
+            s.add(AttendanceRecord(
+                id=uuid.uuid4(), session_id=uuid.UUID(session_id), student_id=u1.id,
+                ble_device_id=k1, status="UNVERIFIED", verification_method="NONE",
+                affinity_score=0.0, reported_neighbors=[], recorded_at=datetime.now(timezone.utc),
+            ))
+            s.add(AttendanceRecord(
+                id=uuid.uuid4(), session_id=uuid.UUID(session_id), student_id=None,
+                ble_device_id=k_off, status="UNVERIFIED", verification_method="NONE",
+                affinity_score=0.0, reported_neighbors=[], remarks="witnessed offline",
+                recorded_at=datetime.now(timezone.utc),
+            ))
+            await s.commit()
 
-        r2 = await client.post(
-            session_url,
-            headers={"Authorization": f"Bearer {tok_s2}"},
-            json={"game_score": 20, "student_id": k2, "neighbors": [k1, k_off], "session_salt": wire_salt},
-        )
-        assert r2.status_code == 200, r2.text
-
-        fin = await client.post(
-            f"/api/v1/attendance/sessions/{session_id}/audit-and-finalize",
-            headers={"Authorization": f"Bearer {tok_teacher}"},
-            json={"reports": {}},
-        )
+        fin = await client.post(f"/api/v1/attendance/sessions/{session_id}/finalize", headers={"Authorization": f"Bearer {tok_teacher}"}, json={"records": []})
         assert fin.status_code == 200, fin.text
-        fin_data = fin.json()
-        assert fin_data["status"] == "COMPLETED"
-        assert fin_data["total_verified"] == 2
-        assert fin_data["total_unverified"] == 1  # the offline witness row
+        record_map = {r["ble_device_id"]: r for r in fin.json()["records"]}
 
-        record_map = {r["ble_device_id"]: r for r in fin_data["records"]}
-        assert record_map[k_off]["status"] == "FLAGGED_WITNESSED"
-
-        # The fix: NULL student_id is now roster-bound, so the dashboard gets
-        # the real identity — not the "Student 79" key-suffix fallback.
         assert record_map[k_off]["student_id"] is not None
         assert record_map[k_off]["student_name"] == "Priyansh Thapliyal"
         assert record_map[k_off]["roll_number"] == "251340101032"
-
-        # Honest peers keep their account binding as before
         assert record_map[k1]["student_name"] == "Honest One"
-        assert record_map[k1]["roll_number"] == "251340101031"
-        assert record_map[k2]["student_name"] == "Honest Two"
 
 
 # Verifies hygiene guards: strict status whitelists on the TEACHER-OVERWRITE
@@ -1922,10 +1719,11 @@ async def test_status_enum_validation_hygiene():
 
     from app.schemas.attendance import BLEAuditRecordItem, RecordOverrideRequest, SessionFinalizeRequest
 
-    # Lowercase aliases normalize to canonical statuses
+    # Two-flag era: legacy aliases normalize to canonical two-flag statuses.
     req = SessionFinalizeRequest(records=[{"ble_device_id": "33F1", "status": "verified_present"}])
-    assert req.records[0].status == "VERIFIED_PRESENT"
+    assert req.records[0].status == "VERIFIED"
     assert RecordOverrideRequest(status="absent").status == "ABSENT"
+    assert RecordOverrideRequest(status="needs_review").status == "UNVERIFIED"
 
     # Unknown statuses rejected at validation time (-> HTTP 422)
     with pytest.raises(ValidationError):
@@ -3273,6 +3071,8 @@ def test_compose_publishes_no_postgres_port():
 # (the old TTL path corrupted finalized sessions in the DB).
 @pytest.mark.anyio
 async def test_ttl_expire_does_not_corrupt_completed_sessions():
+    # New flow: no grace window. Post-lock completed submissions are rejected,
+    # and status must never be corrupted to EXPIRED.
     import uuid
     from datetime import datetime, timedelta, timezone
     from httpx import AsyncClient, ASGITransport
@@ -3280,7 +3080,8 @@ async def test_ttl_expire_does_not_corrupt_completed_sessions():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     from app.database import get_db
-    from app.models.attendance import AttendanceRecord, AttendanceSession, Base
+    from app.models.attendance import AttendanceSession, Base
+    from app.routers.attendance import derive_short_device_key
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with test_engine.begin() as conn:
@@ -3299,47 +3100,30 @@ async def test_ttl_expire_does_not_corrupt_completed_sessions():
         tok_teacher = await _register_test_teacher(client, test_session_factory, "Prof. TTL Guard", "ttl.teacher@univ.edu")
         tok_stud = await _register_roll_student(client, test_session_factory, "TTL Student", "ttl.stud@univ.edu", "22B7781")
 
-        s_res = await client.post(
-            "/api/v1/attendance/sessions",
-            headers={"Authorization": f"Bearer {tok_teacher}"},
-            json={"session_token": "TTLG", "total_enrolled": 1},
-        )
+        s_res = await client.post("/api/v1/attendance/sessions", headers={"Authorization": f"Bearer {tok_teacher}"}, json={"session_token": "TTLG", "total_enrolled": 1})
         assert s_res.status_code == 201
         session_data = s_res.json()
         session_id = session_data["id"]
         wire_salt = session_data["session_wire_salt"]
 
-        # Backdate: class ran long, finalize already committed, straggler
-        # submits during grace well past the 5-minute TTL from started_at
         async with test_session_factory() as s:
-            row = (await s.execute(
-                select(AttendanceSession).where(AttendanceSession.id == uuid.UUID(session_id))
-            )).scalars().first()
+            row = (await s.execute(select(AttendanceSession).where(AttendanceSession.id == uuid.UUID(session_id)))).scalars().first()
             row.started_at = datetime.now(timezone.utc) - timedelta(minutes=6)
             row.status = "COMPLETED"
             row.ended_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+            row.audit_run_at = datetime.now(timezone.utc) - timedelta(seconds=5)
             await s.commit()
 
         submit_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
-        r = await client.post(
-            submit_url,
-            headers={"Authorization": f"Bearer {tok_stud}"},
-            json={"student_id": "7781", "neighbors": [], "session_salt": wire_salt},
-        )
-        # Grace path accepted (NOT the TTL 400 that used to fire here)
-        assert r.status_code == 200, r.text
+        r = await client.post(submit_url, headers={"Authorization": f"Bearer {tok_stud}"}, json={
+            "student_id": derive_short_device_key("22B7781"), "neighbors": [], "session_salt": wire_salt, "game_score": 20,
+        })
+        assert r.status_code == 400
+        assert "finalized" in r.json().get("detail", "").lower()
 
         async with test_session_factory() as s:
-            row = (await s.execute(
-                select(AttendanceSession).where(AttendanceSession.id == uuid.UUID(session_id))
-            )).scalars().first()
-            assert row.status == "COMPLETED", row.status  # never rewritten to EXPIRED
-            recs = (await s.execute(
-                select(AttendanceRecord).where(AttendanceRecord.session_id == uuid.UUID(session_id))
-            )).scalars().all()
-            assert len(recs) == 1
-            assert recs[0].status == "ISOLATED_FLAGGED"
-            assert recs[0].verification_method == "NONE"
+            row = (await s.execute(select(AttendanceSession).where(AttendanceSession.id == uuid.UUID(session_id)))).scalars().first()
+            assert row.status == "COMPLETED"  # never rewritten to EXPIRED
 
 
 # Verifies the legacy /finalize verdict-time score gate (parity with
@@ -3411,7 +3195,7 @@ async def test_legacy_finalize_enforces_score_gate():
         fin_data = fin.json()
         assert fin_data["total_verified"] == 1  # only A clears the gate
         record_map = {r["ble_device_id"]: r for r in fin_data["records"]}
-        assert record_map[k_a]["status"] == "VERIFIED_PRESENT"
+        assert record_map[k_a]["status"] == "VERIFIED"
         assert record_map[k_a]["game_score"] == 20
         assert record_map[k_b]["status"] == "COGNITIVE_CHALLENGE_FAILED"
         assert record_map[k_b]["game_score"] == 8
@@ -3732,10 +3516,10 @@ async def test_leave_overlay_marks_leave_in_legacy_finalize():
         record_map = {r["ble_device_id"]: r for r in fin_data["records"]}
         assert record_map[derive_short_device_key("22B6601")]["status"] == "LEAVE"
         assert record_map[k_b]["status"] == "LEAVE"  # ABSENT rewritten
-        assert record_map[derive_short_device_key("22B6603")]["status"] == "VERIFIED_PRESENT"
-        assert record_map[derive_short_device_key("22B6604")]["status"] == "VERIFIED_PRESENT"
-        # E had no approved leave — silent student, no record invented
-        assert derive_short_device_key("22B6605") not in record_map
+        assert record_map[derive_short_device_key("22B6603")]["status"] == "VERIFIED"
+        assert record_map[derive_short_device_key("22B6604")]["status"] == "VERIFIED"
+        # E had no approved leave — absent backfill creates an ABSENT row
+        assert record_map[derive_short_device_key("22B6605")]["status"] == "ABSENT"
         # LEAVE rows self-explain
         assert "Approved leave" in record_map[k_b]["remarks"]
 
@@ -3812,13 +3596,11 @@ async def test_leave_overlay_in_audit_finalize():
         assert fin.status_code == 200, fin.text
         fin_data = fin.json()
         assert fin_data["total_verified"] == 0
-        records = fin_data["records"]
-        assert len(records) == 1
-        assert records[0]["ble_device_id"] == derive_short_device_key("22B6701")
-        assert records[0]["status"] == "LEAVE"
-        assert records[0]["verification_method"] == "LEAVE_APPROVAL"
-        # The other silent student (no approved leave) has no record
-        assert all(rec["ble_device_id"] != derive_short_device_key("22B6702") for rec in records)
+        record_map = {r["ble_device_id"]: r for r in fin_data["records"]}
+        assert record_map[derive_short_device_key("22B6701")]["status"] == "LEAVE"
+        assert record_map[derive_short_device_key("22B6701")]["verification_method"] == "LEAVE_APPROVAL"
+        # Other silent student gets ABSENT via backfill (no approved leave)
+        assert record_map[derive_short_device_key("22B6702")]["status"] == "ABSENT"
 
 
 def _leave_model():

@@ -30,6 +30,12 @@ interface AttendanceApiService {
         @Body body: SessionCreateRequest
     ): Response<AttendanceSessionResponse>
 
+    @POST("api/v1/attendance/sessions/{sessionId}/join")
+    suspend fun joinSession(
+        @Path("sessionId") sessionId: String,
+        @Body body: SessionJoinRequest
+    ): Response<SessionJoinResponse>
+
     @POST("api/v1/attendance/sessions/{sessionId}/cancel")
     suspend fun cancelSession(
         @Path("sessionId") sessionId: String
