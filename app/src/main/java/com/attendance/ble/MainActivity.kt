@@ -151,14 +151,14 @@ class MainActivity : ComponentActivity() {
             }
 
             // Checks runtime permissions and bluetooth state before executing action
-            val checkAndExecute: (() -> Unit) -> Unit = remember(context, bluetoothManager, permissionLauncher, enableBluetoothLauncher) {
-                { action ->
-                    val hasPermissions = BleConstants.neededPermissions.all { perm ->
+            val checkAndExecute: (Array<String>, () -> Unit) -> Unit = remember(context, bluetoothManager, permissionLauncher, enableBluetoothLauncher) {
+                { requiredPermissions, action ->
+                    val hasPermissions = requiredPermissions.all { perm ->
                         ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
                     }
                     if (!hasPermissions) {
                         pendingAction.value = action
-                        permissionLauncher.launch(BleConstants.neededPermissions)
+                        permissionLauncher.launch(requiredPermissions)
                     } else {
                         try {
                             if (bluetoothManager.adapter?.isEnabled == false) {
@@ -170,7 +170,7 @@ class MainActivity : ComponentActivity() {
                             }
                         } catch (_: SecurityException) {
                             pendingAction.value = action
-                            permissionLauncher.launch(BleConstants.neededPermissions)
+                            permissionLauncher.launch(requiredPermissions)
                         }
                     }
                 }
@@ -180,8 +180,8 @@ class MainActivity : ComponentActivity() {
             val shellCallbacks = remember(viewModel, checkAndExecute) {
                 AttendanceScreenCallbacks(
                     onStartTeacherSession = {
-                        checkAndExecute {
-                            viewModel.startTeacherSession(durationSeconds = 40)
+                        checkAndExecute(BleConstants.teacherPermissions) {
+                            viewModel.startTeacherSession()
                         }
                     },
                     onStopTeacherSession = {
@@ -194,7 +194,7 @@ class MainActivity : ComponentActivity() {
                         viewModel.resetSession()
                     },
                     onStartStudentScanning = {
-                        checkAndExecute {
+                        checkAndExecute(BleConstants.studentPermissions) {
                             viewModel.startStudentScanning()
                         }
                     },
@@ -205,7 +205,7 @@ class MainActivity : ComponentActivity() {
                         viewModel.updateRollNumber(roll)
                     },
                     onRequestPermissions = {
-                        permissionLauncher.launch(BleConstants.neededPermissions)
+                        permissionLauncher.launch(BleConstants.studentPermissions)
                     }
                 )
             }

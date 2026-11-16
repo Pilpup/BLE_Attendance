@@ -336,6 +336,16 @@ internal fun StudentSection(
             else -> {
                 Spacer(modifier = Modifier.weight(1f))
 
+                if (!studentStatusMessage.isNullOrBlank()) {
+                    Text(
+                        text = studentStatusMessage,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = AppTheme.colors.textSecondary,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
+                    )
+                }
+
                 // Structured instruction island centered in the middle of the screen
                 Surface(
                     shape = RoundedCornerShape(22.dp),

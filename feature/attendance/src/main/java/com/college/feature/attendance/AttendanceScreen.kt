@@ -217,7 +217,7 @@ fun AttendanceScreen(
                         onStartSession = callbacks.onStartTeacherSession,
                         onStopSession = callbacks.onStopTeacherSession,
                         onResetSession = callbacks.onResetSession,
-                        onVerifyStudent = { rec -> viewModel.markStudentVerified(rec.bleDeviceId) },
+                        onVerifyStudent = { rec -> viewModel.markStudentVerified(rec.id ?: rec.bleDeviceId) },
                         teacherViewMode = viewModel.teacherViewMode,
                         onSetTeacherViewMode = { viewModel.teacherViewMode = it },
                         pastSessions = viewModel.pastSessions,

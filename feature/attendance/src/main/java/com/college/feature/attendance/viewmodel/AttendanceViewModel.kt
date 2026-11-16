@@ -321,11 +321,21 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // Records the locked face biometric payload and immediately uploads to cloud registry
+    // Records locked face payload; upload is triggered once capture/score are ready.
     fun recordFaceCapture(faceB64: String, faceBytes: ByteArray? = null) {
         capturedFaceBase64 = faceB64
         capturedFaceBytes = faceBytes
-        submitMyNeighborsToCloud(keepRadioActive = true)
+        // If game window ended and we're waiting to upload, send now.
+        maybeTriggerPostGameUpload()
+    }
+
+    @Volatile private var postGameUploadTriggered = false
+    private fun maybeTriggerPostGameUpload() {
+        if (postGameUploadTriggered) return
+        val ge = gameEndsMs() ?: return
+        if (serverNowMs() < ge) return
+        postGameUploadTriggered = true
+        scheduleOneShotUpload()
     }
 
     // Layer 3 and Layer 4 anti-proxy state flags
@@ -1284,9 +1294,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun markStudentVerified(recordOrDeviceId: String) {
-        val target = finalizedRecords.firstOrNull { it.bleDeviceId == recordOrDeviceId || it.rollNumber == recordOrDeviceId }
+        val target = finalizedRecords.firstOrNull { it.id == recordOrDeviceId || it.bleDeviceId == recordOrDeviceId || it.rollNumber == recordOrDeviceId }
         finalizedRecords = finalizedRecords.map { rec ->
-            if (rec.bleDeviceId == recordOrDeviceId || rec.rollNumber == recordOrDeviceId) {
+            if (rec.id == recordOrDeviceId || rec.bleDeviceId == recordOrDeviceId || rec.rollNumber == recordOrDeviceId) {
                 rec.copy(
                     status = "VERIFIED",
                     verificationMethod = "MANUAL_OVERRIDE",
@@ -1411,6 +1421,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         studentDiscoverySecondsRemaining = 0
         auditPollingJob?.cancel()
         auditPollingJob = null
+        studentStatusMessage = null
         studentPhase = StudentPhase.STANDBY
         onStopScanning?.invoke()
         onStopBroadcasting?.invoke()
@@ -1456,14 +1467,20 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         onStopBroadcasting?.invoke()
     }
 
-    // Student proceeds after game/capture: schedule handles upload; keep for UI taps.
+    // Student proceeds after game/capture: ensure one upload, then await verdict.
     fun proceedStudentToNext() {
         studentTimer?.cancel()
         studentTimer = null
         val sessId = detectedSessionId.takeIf { it.isNotBlank() && it != "----" } ?: backendSessionId ?: ""
-        if (uploadJob?.isActive != true && studentPhase == StudentPhase.PROBING_NEIGHBORS) {
-            scheduleOneShotUpload()
-        } else if (sessId.isNotBlank()) {
+        if (sessId.isBlank()) return
+        val ge = gameEndsMs()
+        if (ge != null && serverNowMs() >= ge) {
+            maybeTriggerPostGameUpload()
+        }
+        if (studentPhase == StudentPhase.WAITING_FOR_AUDIT ||
+            studentPhase == StudentPhase.VERIFIED_PRESENT ||
+            studentPhase == StudentPhase.UNVERIFIED_FLAGGED
+        ) {
             startPollingForAudit(sessId)
         }
     }
@@ -1594,10 +1611,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         detectedSessionSalt = chosen.sessionSalt
 
         // Latch: radio starts immediately; join runs in parallel (8s), fail closed.
+        // Block game/gather UI until join verdict.
         studentJoinInProgress = true
         studentStatusMessage = "Joining session…"
-        studentPhase = StudentPhase.PROBING_NEIGHBORS
-        // Start radio immediately (gather/probe path) while join is pending.
         startPeerBatchUpdates()
         rawDiscoveredPeers.clear()
         topDeskNeighbours = emptyList()
@@ -1621,18 +1637,27 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             withContext(Dispatchers.Main) {
                 if (studentPhase == StudentPhase.STANDBY || detectedSessionId != sessId) return@withContext
                 studentJoinInProgress = false
-                val ok = (joinResult as? NetworkResult.Success)?.data
-                if (ok == null || ok.eligible != true) {
-                    val reason = ok?.reason ?: "Join failed or timed out"
+                val ok = (joinResult as? com.college.core.network.NetworkResult.Success)?.data
+                val joinData = ok?.takeIf { it.eligible || it.gameStartsAt != null || it.gameEndsAt != null }
+                if (joinData == null) {
+                    val reason = when (joinResult) {
+                        is com.college.core.network.NetworkResult.Error ->
+                            joinResult.errorPayload?.detail ?: joinResult.message
+                        is com.college.core.network.NetworkResult.Exception ->
+                            "Network error — check connection"
+                        else -> ok?.reason ?: "Join failed or timed out"
+                    }
                     abortStudentSession(reason)
                     return@withContext
                 }
-                val serverNow = parseIsoToEpochMs(ok.serverTime) ?: System.currentTimeMillis()
+                val serverNow = parseIsoToEpochMs(joinData.serverTime) ?: System.currentTimeMillis()
                 serverTimeOffsetMs = serverNow - System.currentTimeMillis()
-                gameStartsAtIso = ok.gameStartsAt
-                gameEndsAtIso = ok.gameEndsAt
+                gameStartsAtIso = joinData.gameStartsAt
+                gameEndsAtIso = joinData.gameEndsAt
                 listeningCapJob?.cancel(); listeningCapJob = null
                 studentStatusMessage = null
+                // Join OK: enter probing/game phase per server schedule
+                studentPhase = StudentPhase.PROBING_NEIGHBORS
                 startStudentScheduleLoop()
                 // Teardown +150s from game start (latched sessions)
                 teardownJob?.cancel()
@@ -1679,24 +1704,28 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     private fun gameEndsMs(): Long? = parseIsoToEpochMs(gameEndsAtIso)
 
     private fun startStudentScheduleLoop() {
-        stopStudentScheduleJobs()
+        postGameUploadTriggered = false
+        scheduleTickJob?.cancel()
         scheduleTickJob = viewModelScope.launch(Dispatchers.Main) {
             while (isActive && studentPhase != StudentPhase.STANDBY) {
                 val gs = gameStartsMs()
                 val ge = gameEndsMs()
                 val now = serverNowMs()
                 if (ge != null && now >= ge) {
-                    // Game over: stop gather radio, lock face, schedule one upload
+                    // Game over: stop gather radio; wait for face capture/score then upload.
                     studentDiscoverySecondsRemaining = 0
                     stopPeerBatchUpdates()
                     flushPeerBatchImmediately()
                     onSwitchScanLatency?.invoke(false)
                     onStopScanning?.invoke()
                     onStopBroadcasting?.invoke()
-                    scheduleOneShotUpload()
+                    // Fallback: if capture hasn't arrived shortly, upload anyway.
+                    viewModelScope.launch {
+                        delay(4000L)
+                        withContext(Dispatchers.Main) { maybeTriggerPostGameUpload() }
+                    }
                     break
                 }
-                // Pre-game countdown / join-in-progress: UI reads schedule; gather continues
                 studentDiscoverySecondsRemaining = if (gs != null && now < gs) ((gs - now) / 1000L).toInt().coerceAtLeast(0) else 0
                 delay(500L)
             }

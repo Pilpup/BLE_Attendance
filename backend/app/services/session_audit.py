@@ -285,7 +285,7 @@ async def run_engine_audit(session_id: uuid.UUID | str, db: AsyncSession) -> boo
         for r in records:
             if r.status in _FROZEN_STATUSES:
                 continue
-            if r.reported_neighbors:
+            if r.status not in ("ABSENT", "LEAVE") and r.reported_neighbors is not None:
                 combined_reports[r.ble_device_id.upper()] = [str(n).strip().upper() for n in r.reported_neighbors]
 
         audit_results = audit_classroom_mesh(
