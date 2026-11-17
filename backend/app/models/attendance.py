@@ -255,10 +255,11 @@ class EmailOTP(Base):
 
 
 # Leave application: student -> department HOD workflow. The explicit
-# from/to date range IS the extracted duration; finalize later marks covered
-# students "LEAVE" instead of "ABSENT". Department is a snapshot of the
-# student's department at submit time (uppercased) so HOD queue matching
-# never shifts if the account's department is edited later.
+# from/to date range IS the duration (whole calendar days, inclusive);
+# finalize later marks covered students "LEAVE" instead of "ABSENT".
+# Department is a snapshot of the student's department at submit time
+# (uppercased) so HOD queue matching never shifts if the account's department
+# is edited later.
 class LeaveApplication(Base):
     __tablename__ = "leave_applications"
 
@@ -290,5 +291,9 @@ class LeaveApplication(Base):
         # block's CREATE TABLE IF NOT EXISTS expects — on a fresh Postgres DB
         # the sync block's no-op must not leave the guards missing.
         CheckConstraint("to_date >= from_date", name="ck_leave_apps_dates"),
-        CheckConstraint("status IN ('PENDING', 'APPROVED', 'REJECTED')", name="ck_leave_apps_status"),
+        # CANCELLED included: students can withdraw their own PENDING requests
+        CheckConstraint(
+            "status IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCELLED')",
+            name="ck_leave_apps_status",
+        ),
     )

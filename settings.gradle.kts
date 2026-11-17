@@ -7,3 +7,5 @@ include(":core:network")
 include(":core:ui")
 include(":feature:attendance")
 include(":feature:library")
+
+include(":feature:leave")

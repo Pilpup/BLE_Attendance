@@ -73,7 +73,8 @@ import androidx.compose.ui.window.PopupProperties
 import com.college.feature.attendance.network.AttendanceRecordItem
 import com.college.feature.attendance.network.AttendanceSessionResponse
 import com.college.feature.attendance.network.CourseResponse
-import com.college.feature.attendance.network.LeaveApplicationResponse
+import com.college.feature.leave.HodLeaveRequestsView
+import com.college.feature.leave.network.LeaveApplicationResponse
 import com.college.feature.attendance.ui.theme.*
 import com.college.feature.attendance.viewmodel.TeacherViewMode
 import com.college.core.ui.components.AppSearchPill
@@ -199,7 +200,8 @@ internal fun TeacherSection(
     isReviewingLeave: Boolean = false,
     deptLeaveMessage: String? = null,
     onLoadDeptLeave: () -> Unit = {},
-    onReviewLeave: (String, String) -> Unit = { _, _ -> }
+    // (applicationId, decision, feedback) — feedback optional on approve, required on reject
+    onReviewLeave: (String, String, String?) -> Unit = { _, _, _ -> }
 ) {
     if (finalizedRecords.isNotEmpty()) {
         val (presentCount, absentCount) = remember(finalizedRecords) {
@@ -673,7 +675,7 @@ internal fun TeacherSection(
 
             TeacherViewMode.LEAVE_REQUESTS -> {
                 LaunchedEffect(Unit) { onLoadDeptLeave() }
-                LeaveRequestsView(
+                HodLeaveRequestsView(
                     applications = departmentLeaveApplications,
                     isLoading = isLoadingDeptLeave,
                     isReviewing = isReviewingLeave,
@@ -2444,146 +2446,3 @@ private fun getSessionAcademicDetails(session: AttendanceSessionResponse): Sessi
     return SessionAcademicDetails(clsType, courseProg, branch, sem, batch, subject, unit, topic)
 }
 
-@Composable
-private fun LeaveRequestsView(
-    applications: List<LeaveApplicationResponse>,
-    isLoading: Boolean,
-    isReviewing: Boolean,
-    message: String?,
-    onReview: (String, String) -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        if (!message.isNullOrBlank()) {
-            val ok = message.contains("approved", true) || message.contains("rejected", true)
-            Text(
-                text = message,
-                fontSize = 14.sp,
-                color = if (ok) AppTheme.colors.successGreen else AppTheme.colors.dangerRed
-            )
-        }
-
-        if (isLoading) {
-            Text("Loading leave requests…", fontSize = 14.sp, color = AppTheme.colors.textSecondary)
-        } else if (applications.isEmpty()) {
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = AppTheme.colors.surface,
-                border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    text = "No leave applications for your department.",
-                    fontSize = 14.sp,
-                    color = AppTheme.colors.textSecondary,
-                    modifier = Modifier.padding(16.dp)
-                )
-            }
-        } else {
-            applications.forEach { app ->
-                DepartmentLeaveCard(
-                    app = app,
-                    isReviewing = isReviewing,
-                    onReview = onReview
-                )
-            }
-        }
-        Spacer(modifier = Modifier.height(12.dp))
-    }
-}
-
-@Composable
-private fun DepartmentLeaveCard(
-    app: LeaveApplicationResponse,
-    isReviewing: Boolean,
-    onReview: (String, String) -> Unit
-) {
-    val statusColor = when (app.status.uppercase()) {
-        "APPROVED" -> AppTheme.colors.successGreen
-        "REJECTED" -> AppTheme.colors.dangerRed
-        else -> AppTheme.colors.accentOrange
-    }
-    val statusBg = statusColor.copy(alpha = 0.12f)
-    Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = AppTheme.colors.surface,
-        border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder.copy(alpha = 0.5f)),
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = (app.studentName ?: "Student").let { name ->
-                            if (!app.studentRoll.isNullOrBlank()) "$name (${app.studentRoll})" else name
-                        },
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = AppTheme.colors.textPrimary
-                    )
-                    Text(
-                        text = "${app.fromDate} → ${app.toDate}",
-                        fontSize = 13.sp,
-                        color = AppTheme.colors.textSecondary
-                    )
-                }
-                Surface(shape = RoundedCornerShape(8.dp), color = statusBg) {
-                    Text(
-                        text = app.status,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = statusColor,
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                    )
-                }
-            }
-            if (app.reason.isNotBlank()) {
-                Text(app.reason, fontSize = 13.sp, color = AppTheme.colors.textSecondary)
-            }
-            if (!app.reviewComment.isNullOrBlank()) {
-                Text("HOD: ${app.reviewComment}", fontSize = 12.sp, color = AppTheme.colors.textMuted)
-            }
-
-            if (app.canReview && app.status.uppercase() == "PENDING") {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Surface(
-                        onClick = { if (!isReviewing) onReview(app.id, "APPROVED") },
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (isReviewing) AppTheme.colors.surfaceBorder else AppTheme.colors.successGreen.copy(alpha = 0.15f),
-                        border = BorderStroke(1.dp, AppTheme.colors.successGreen.copy(alpha = 0.4f)),
-                        modifier = Modifier.weight(1f).height(40.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text("Approve", fontWeight = FontWeight.SemiBold, color = AppTheme.colors.successGreen)
-                        }
-                    }
-                    Surface(
-                        onClick = { if (!isReviewing) onReview(app.id, "REJECTED") },
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (isReviewing) AppTheme.colors.surfaceBorder else AppTheme.colors.dangerRed.copy(alpha = 0.12f),
-                        border = BorderStroke(1.dp, AppTheme.colors.dangerRed.copy(alpha = 0.4f)),
-                        modifier = Modifier.weight(1f).height(40.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text("Reject", fontWeight = FontWeight.SemiBold, color = AppTheme.colors.dangerRed)
-                        }
-                    }
-                }
-            } else if (app.status.uppercase() == "PENDING") {
-                Text(
-                    text = "Awaiting HOD decision",
-                    fontSize = 12.sp,
-                    color = AppTheme.colors.textMuted
-                )
-            }
-        }
-    }
-}

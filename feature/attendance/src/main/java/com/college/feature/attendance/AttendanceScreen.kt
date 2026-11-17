@@ -31,6 +31,7 @@ import com.college.feature.attendance.ui.theme.*
 import com.college.feature.attendance.viewmodel.AttendanceViewModel
 import com.college.feature.attendance.viewmodel.StudentPhase
 import com.college.feature.attendance.viewmodel.TeacherViewMode
+import com.college.feature.leave.viewmodel.LeaveViewModel
 
 @Immutable
 data class AttendanceScreenCallbacks(
@@ -50,7 +51,8 @@ fun AttendanceScreen(
     user: User,
     viewModel: AttendanceViewModel,
     callbacks: AttendanceScreenCallbacks,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    leaveViewModel: LeaveViewModel? = null
 ) {
     val isTeacherPrivileged = user.canTakeAttendance()
 
@@ -98,13 +100,7 @@ fun AttendanceScreen(
             onDone = {
                 callbacks.onStopStudentScanning()
                 onBack()
-            },
-            myLeaveApplications = viewModel.myLeaveApplications,
-            isLoadingLeave = viewModel.isLoadingLeave,
-            isSubmittingLeave = viewModel.isSubmittingLeave,
-            leaveMessage = viewModel.leaveMessage,
-            onLoadMyLeaves = { viewModel.loadMyLeaveApplications() },
-            onSubmitLeave = { f, t, r -> viewModel.submitLeaveApplication(f, t, r) }
+            }
         )
         return
     }
@@ -239,12 +235,14 @@ fun AttendanceScreen(
                         onExportAttendance = callbacks.onShareAttendance,
                         availableCourses = viewModel.availableCourses,
                         onRefreshCourses = { viewModel.loadCourses() },
-                        departmentLeaveApplications = viewModel.departmentLeaveApplications,
-                        isLoadingDeptLeave = viewModel.isLoadingDeptLeave,
-                        isReviewingLeave = viewModel.isReviewingLeave,
-                        deptLeaveMessage = viewModel.deptLeaveMessage,
-                        onLoadDeptLeave = { viewModel.loadDepartmentLeaveApplications() },
-                        onReviewLeave = { id, decision -> viewModel.reviewLeaveApplication(id, decision) }
+                        departmentLeaveApplications = leaveViewModel?.departmentLeaveApplications ?: emptyList(),
+                        isLoadingDeptLeave = leaveViewModel?.isLoadingDept ?: false,
+                        isReviewingLeave = leaveViewModel?.isReviewing ?: false,
+                        deptLeaveMessage = leaveViewModel?.deptMessage,
+                        onLoadDeptLeave = { leaveViewModel?.loadDepartmentLeaveApplications() },
+                        onReviewLeave = { id, decision, comment ->
+                            leaveViewModel?.reviewLeaveApplication(id, decision, comment)
+                        }
                     )
                 }
 
@@ -262,12 +260,6 @@ fun AttendanceScreen(
                     auditedRecord = viewModel.auditedRecord,
                     onRefreshAudit = { viewModel.refreshAuditStatus() },
                     isRefreshingAudit = viewModel.isRefreshingAudit,
-                    myLeaveApplications = viewModel.myLeaveApplications,
-                    isLoadingLeave = viewModel.isLoadingLeave,
-                    isSubmittingLeave = viewModel.isSubmittingLeave,
-                    leaveMessage = viewModel.leaveMessage,
-                    onLoadMyLeaves = { viewModel.loadMyLeaveApplications() },
-                    onSubmitLeave = { f, t, r -> viewModel.submitLeaveApplication(f, t, r) },
                     onChimpScore = { viewModel.recordChimpChallengeScore(it) },
                     onChimpChallengeActive = { viewModel.updateChimpChallengeActive(it) },
                     onFaceCaptured = { b64, bytes -> viewModel.recordFaceCapture(b64, bytes) },
