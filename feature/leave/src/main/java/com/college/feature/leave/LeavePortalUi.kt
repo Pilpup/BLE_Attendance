@@ -257,7 +257,6 @@ fun LeaveApplicationForm(
                     onValueChange = { if (it.length <= MAX_REASON_LENGTH) reason = it },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("Reason for leave") },
-                    placeholder = { Text("Briefly tell the HOD why you need this leave") },
                     isError = reasonError != null,
                     supportingText = {
                         Row(
