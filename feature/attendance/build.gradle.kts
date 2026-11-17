@@ -40,6 +40,7 @@ dependencies {
     implementation(project(":core:model"))
     implementation(project(":core:network"))
     implementation(project(":core:ui"))
+    implementation(project(":feature:leave"))
 
     // Compose stack for this feature's screens & dashboard card
     implementation("androidx.activity:activity-compose:1.8.2")

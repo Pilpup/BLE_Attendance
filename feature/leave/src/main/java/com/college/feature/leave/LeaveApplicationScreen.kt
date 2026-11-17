@@ -1,4 +1,4 @@
-package com.college.feature.attendance
+package com.college.feature.leave
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
@@ -6,10 +6,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Icon
@@ -23,17 +26,20 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.college.core.ui.theme.AppTheme
-import com.college.feature.attendance.network.LeaveApplicationResponse
+import com.college.feature.leave.network.LeaveApplicationResponse
 
-// Standalone leave application screen (student): submit and view own applications
+// Standalone leave application screen (student): form (From/To date range,
+// overlap guard, reason) and history (badges, reviewer feedback, cancel).
 @Composable
 fun LeaveApplicationScreen(
     applications: List<LeaveApplicationResponse>,
     isLoading: Boolean,
     isSubmitting: Boolean,
+    isCancelling: Boolean,
     message: String?,
     onLoad: () -> Unit,
-    onSubmit: (String, String, String) -> Unit,
+    onSubmit: (fromDate: String, toDate: String, reason: String) -> Unit,
+    onCancel: (String) -> Unit,
     onBack: () -> Unit
 ) {
     LaunchedEffect(Unit) { onLoad() }
@@ -68,15 +74,30 @@ fun LeaveApplicationScreen(
             )
         }
 
-        LeaveStudentPanel(
-            applications = applications,
-            isLoading = isLoading,
-            isSubmitting = isSubmitting,
-            message = message,
-            onSubmit = onSubmit,
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
-        )
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp)
+        ) {
+            LeaveApplicationForm(
+                applications = applications,
+                isSubmitting = isSubmitting,
+                message = message,
+                onSubmit = onSubmit
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            LeaveHistoryTracker(
+                applications = applications,
+                isLoading = isLoading,
+                isCancelling = isCancelling,
+                onCancel = onCancel
+            )
+
+            Spacer(modifier = Modifier.height(24.dp))
+        }
     }
 }

@@ -9,15 +9,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.viewmodel.compose.viewModel as composeViewModel
 import com.college.core.model.SessionState
 import com.college.core.network.SessionManager
 import com.college.core.ui.DashboardRegistry
 import com.college.feature.attendance.AttendanceDashboardCard
 import com.college.feature.attendance.AttendanceScreen
 import com.college.feature.attendance.AttendanceScreenCallbacks
-import com.college.feature.attendance.LeaveApplicationScreen
 import com.college.feature.attendance.viewmodel.AttendanceViewModel
 import com.college.feature.attendance.viewmodel.TeacherViewMode
+import com.college.feature.leave.LeaveApplicationScreen
+import com.college.feature.leave.viewmodel.LeaveViewModel
 import com.college.feature.library.LibraryDashboardCard
 import com.college.feature.library.LibraryScreen
 
@@ -27,6 +29,7 @@ fun AppNavigation(
     viewModel: AttendanceViewModel,
     callbacks: AttendanceScreenCallbacks
 ) {
+    val leaveViewModel: LeaveViewModel = composeViewModel()
     var destination by rememberSaveable {
         mutableStateOf(if (SessionManager.default.isLoggedIn) Destination.HOME else Destination.AUTH)
     }
@@ -108,7 +111,8 @@ fun AppNavigation(
                 user = user,
                 viewModel = viewModel,
                 callbacks = callbacks,
-                onBack = handleBack
+                onBack = handleBack,
+                leaveViewModel = leaveViewModel
             )
         } else {
             destination = Destination.HOME
@@ -131,12 +135,14 @@ fun AppNavigation(
                 destination = Destination.HOME
             }
             LeaveApplicationScreen(
-                applications = viewModel.myLeaveApplications,
-                isLoading = viewModel.isLoadingLeave,
-                isSubmitting = viewModel.isSubmittingLeave,
-                message = viewModel.leaveMessage,
-                onLoad = { viewModel.loadMyLeaveApplications() },
-                onSubmit = { f, t, r -> viewModel.submitLeaveApplication(f, t, r) },
+                applications = leaveViewModel.myLeaveApplications,
+                isLoading = leaveViewModel.isLoading,
+                isSubmitting = leaveViewModel.isSubmitting,
+                isCancelling = leaveViewModel.isCancelling,
+                message = leaveViewModel.message,
+                onLoad = { leaveViewModel.loadMyLeaveApplications() },
+                onSubmit = { f, t, r -> leaveViewModel.submitLeaveApplication(f, t, r) },
+                onCancel = { leaveViewModel.cancelLeaveApplication(it) },
                 onBack = { destination = Destination.HOME }
             )
         } else {
