@@ -147,8 +147,14 @@ def audit_classroom_mesh(
     comps = _components(adjacency)
     comp_of = {u: i for i, comp in enumerate(comps) for u in comp}
 
-    # Federation: union components when enough DISTINCT claimers exist in
-    # both directions (user floor: max(4, 30% of the smaller component)).
+    # Federation: union components into rooms when enough DISTINCT claimers
+    # exist in both directions (user floor: max(4, 30% of the smaller
+    # room)). Evaluated at ROOM level with LIVE sizes and claims aggregated
+    # across every original component in each room, repeated to fixpoint:
+    # a merge changes room sizes, which can raise (or satisfy) later
+    # floors. Using the stale pre-union component sizes let a small stale
+    # component collapse the floor to 4 and chain-merge large rooms below
+    # the intended 30%-of-smaller-side rule.
     n = len(comps)
     parent = list(range(n))
 
@@ -158,6 +164,11 @@ def audit_classroom_mesh(
             x = parent[x]
         return x
 
+    # Live room size, indexed by DSU root.
+    size = [len(comp) for comp in comps]
+
+    # claimers[i][j]: distinct members of original comp i claiming
+    # verified members of original comp j (aggregated per room at eval).
     claimers: list[list[set[str]]] = [
         [set() for _ in range(n)] for _ in range(n)
     ]
@@ -166,16 +177,45 @@ def audit_classroom_mesh(
         for v in lists[u]:
             if v in verified and comp_of[v] != i:
                 claimers[i][comp_of[v]].add(u)
-    for i in range(n):
-        for j in range(i + 1, n):
-            req = max(
-                FED_ABS_MIN,
-                ceil(FED_FRAC * min(len(comps[i]), len(comps[j]))),
-            )
-            if len(claimers[i][j]) >= req and len(claimers[j][i]) >= req:
-                ri, rj = find(i), find(j)
-                if ri != rj:
-                    parent[ri] = rj
+
+    merged = True
+    while merged:
+        merged = False
+        # Aggregate cross-room claims over the CURRENT partition.
+        cross: dict[tuple[int, int], set[str]] = {}
+        for i in range(n):
+            ri = find(i)
+            for j in range(n):
+                cl = claimers[i][j]
+                if cl:
+                    rj = find(j)
+                    if rj != ri:
+                        cross.setdefault((ri, rj), set()).update(cl)
+        roots = sorted({find(i) for i in range(n)})
+        # At most ONE merge per pass: a union invalidates every other
+        # (root, size, claims) triple in this pass, so re-aggregate first.
+        did_merge = False
+        for a in range(len(roots)):
+            if did_merge:
+                break
+            for b in range(a + 1, len(roots)):
+                ra, rb = roots[a], roots[b]
+                req = max(
+                    FED_ABS_MIN,
+                    ceil(FED_FRAC * min(size[ra], size[rb])),
+                )
+                if (
+                    len(cross.get((ra, rb), ())) >= req
+                    and len(cross.get((rb, ra), ())) >= req
+                ):
+                    # Attach the smaller room's root under the larger.
+                    small, big = (ra, rb) if size[ra] <= size[rb] else (rb, ra)
+                    parent[small] = big
+                    size[big] += size[small]
+                    merged = True
+                    did_merge = True
+                    break
+        # Re-loop: sizes changed, so later floors must be re-evaluated.
 
     rooms: dict[int, set[str]] = {}
     for i in range(n):

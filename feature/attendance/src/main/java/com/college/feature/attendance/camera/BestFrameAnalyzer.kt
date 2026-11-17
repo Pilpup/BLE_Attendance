@@ -36,16 +36,18 @@ class BestFrameAnalyzer(
 
     // Evaluates incoming camera frames against lighting and sharpness criteria
     override fun analyze(imageProxy: ImageProxy) {
+        // NOTE: no early path closes the proxy — the single close in `finally`
+        // owns it. Closing twice (early return + finally) throws on some
+        // CameraX builds and escapes the finally block, crashing the camera
+        // thread.
         try {
             if (isPaused.get()) {
-                imageProxy.close()
                 return
             }
 
             val now = System.currentTimeMillis()
             // Throttle sampling rate to minimize CPU and battery consumption on budget devices
             if (now - lastSampleTimestamp < sampleIntervalMillis) {
-                imageProxy.close()
                 return
             }
             lastSampleTimestamp = now
@@ -105,10 +107,23 @@ class BestFrameAnalyzer(
         isPaused.set(paused)
     }
 
-    // Returns a copy of the winning candidate frame
+    // Returns a copy of the winning candidate frame. A copy — not the shared
+    // reference — is required: the analyzer recycles replaced bitmaps outside
+    // the lock and reset() recycles on teardown, so any consumer holding the
+    // original across a frame update or stopCamera() hits a recycled bitmap
+    // mid-compress ("bitmap recycled" crash). Copying under the lock
+    // guarantees the returned bitmap is owned exclusively by the caller.
     fun getBestCandidate(): BestFrameCandidate? {
         synchronized(lock) {
-            return bestCandidate
+            val best = bestCandidate ?: return null
+            val copy = best.bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                ?: return null
+            return BestFrameCandidate(
+                bitmap = copy,
+                sharpnessScore = best.sharpnessScore,
+                rotationDegrees = best.rotationDegrees,
+                timestamp = best.timestamp
+            )
         }
     }
 

@@ -46,7 +46,7 @@ from app.core.security import (
     require_teacher,
 )
 from app.database import get_db
-from app.services.rate_limiter import submit_rate_limiter
+from app.services.rate_limiter import join_rate_limiter, submit_rate_limiter
 from app.models.attendance import (
     AttendanceRecord,
     AttendanceSession,
@@ -693,7 +693,14 @@ async def create_course(
         periods_p=payload.periods_p,
     )
     db.add(course)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A course with this course_code already exists",
+        )
     await db.refresh(course)
     return course
 
@@ -835,7 +842,10 @@ async def list_course_sessions(
     course = course_res.scalars().first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
-    if course.teacher_id != current_user.id:
+    # Same owner-gate policy as every other session endpoint: owner OR
+    # DEVELOPER/ADMIN (dev/support tooling must read course sessions).
+    user_role = (current_user.role or "").upper()
+    if course.teacher_id != current_user.id and user_role not in ("DEVELOPER", "ADMIN"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You are not authorized to view sessions for this course",
@@ -1097,6 +1107,12 @@ async def join_attendance_session(
     if session_obj.game_starts_at is None or session_obj.game_ends_at is None:
         raise HTTPException(status_code=400, detail="Session uses old timing — restart class")
 
+    # Brute-force budget (per account): the wire salt gate is only 16 bits, so
+    # an unthrottled /join would let an off-site student discover the in-room
+    # salt by enumeration and then check in remotely.
+    if not await join_rate_limiter.check(f"{session_obj.id}:{current_user.id}"):
+        raise HTTPException(status_code=429, detail="Too many join attempts — wait a moment")
+
     provided_salt = (payload.session_salt or "").strip().upper()
     expected_salts = valid_wire_salts(session_obj)
     salt_ok = bool(provided_salt) and any(secrets.compare_digest(provided_salt, w) for w in expected_salts)
@@ -1307,6 +1323,10 @@ async def submit_student_neighbors(
                         game_score = int(challenge_report_hdr.strip())
                     except Exception:
                         pass
+        # Mirror the JSON schema cap (0-26): the raw-bytes header path must not
+        # bypass the gate, else x-game-score: 99 trivially passes >= 15 checks.
+        if game_score is not None:
+            game_score = max(0, min(26, game_score))
         payload = SubmitNeighborsRequest(
             student_id=student_id,
             neighbors=neighbors,
@@ -1513,7 +1533,9 @@ async def submit_student_neighbors(
                 partner_neighbors = {str(n).strip().upper()[-6:] if len(str(n).strip()) >= 6 else str(n).strip().upper() for n in (partner.reported_neighbors or [])}
                 if student_key.upper() in partner_neighbors:
                     verified_partners.append(partner.ble_device_id)
-        if rec and rec.status not in hard_violations:
+        if rec and rec.status not in hard_violations and rec.status not in ("VERIFIED", "VERIFIED_PRESENT"):
+            # Engine already issued a verdict this lock window; a straggler
+            # re-check-in must never downgrade an existing VERIFIED row.
             score_ok = (rec.game_score is not None and rec.game_score >= 15)
             if verified_partners and score_ok:
                 rec.status = "VERIFIED"

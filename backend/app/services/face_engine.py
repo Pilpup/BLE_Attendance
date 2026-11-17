@@ -25,6 +25,9 @@ logger = logging.getLogger("uvicorn.error")
 
 # Standard OpenCV SFace cosine distance threshold (0.363 achieves 99.9% verification accuracy, FAR < 0.1%)
 DEFAULT_SIMILARITY_THRESHOLD = 0.363
+# Deployed distant-student gate for register_and_check (was hard-coded inside
+# the matcher; exposed as a parameter without changing behavior).
+DISTANT_SIMILARITY_THRESHOLD = 0.70
 # Duplicate threshold for DESK-CLUSTER peers. 0.363 is calibrated on aligned
 # LFW-style portraits; classroom desk selfies (front camera, arm's length,
 # phone-on-desk angle, small blurred faces) inflate cross-person cosine well
@@ -349,7 +352,7 @@ class SessionFaceRegistry:
         face_base64: Optional[str] = None,
         face_bytes: Optional[bytes] = None,
         cluster_peers: Optional[set[str] | list[str]] = None,
-        threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+        threshold: float = DISTANT_SIMILARITY_THRESHOLD,
     ) -> FaceCheckResult:
         try:
             if face_bytes is not None:
@@ -455,11 +458,12 @@ class SessionFaceRegistry:
         if matrix is not None and len(keys) > 0:
             scores = matrix @ q_vec
 
-            # Apply cluster-aware similarity thresholds per student. Desk
-            # neighbors get the classroom-calibrated CLUSTER_DUPLICATE_THRESHOLD
-            # (see constant comment); distant students keep the stricter 0.70
-            # because they are not a physically plausible proxy vector.
-            thresholds = np.full(len(keys), 0.70, dtype=np.float32)
+            # Apply cluster-aware similarity thresholds per student. The
+            # caller-provided threshold governs distant students (deployed
+            # base: 0.70 — strict, since distant students are not a
+            # physically plausible proxy vector); desk neighbors get the
+            # classroom-calibrated CLUSTER_DUPLICATE_THRESHOLD (0.50).
+            thresholds = np.full(len(keys), threshold, dtype=np.float32)
             for idx, (ex_key, ex_cluster) in enumerate(zip(keys, clusters)):
                 if ex_key == student_key:
                     thresholds[idx] = 999.0

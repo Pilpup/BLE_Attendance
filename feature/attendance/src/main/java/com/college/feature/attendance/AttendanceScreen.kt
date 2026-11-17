@@ -126,11 +126,19 @@ fun AttendanceScreen(
     }
 
     // Hardware/gesture back press resets student or teacher active session
-    BackHandler(enabled = (user.hasRole(Role.STUDENT) && viewModel.studentPhase != StudentPhase.STANDBY) || viewModel.isSessionActive) {
-        if (viewModel.isSessionActive) {
-            viewModel.resetSession()
-        } else {
-            viewModel.resetStudentSession()
+    BackHandler(
+        enabled = (user.hasRole(Role.STUDENT) && viewModel.studentPhase != StudentPhase.STANDBY) ||
+            viewModel.isSessionActive ||
+            (isTeacherPrivileged && viewModel.finalizedRecords.isNotEmpty())
+    ) {
+        when {
+            viewModel.isSessionActive -> viewModel.resetSession()
+            isTeacherPrivileged && viewModel.finalizedRecords.isNotEmpty() -> {
+                // Leaving Audit Results clears teacher state so re-entry is fresh
+                viewModel.clearTeacherResults()
+                onBack()
+            }
+            else -> viewModel.resetStudentSession()
         }
     }
 
@@ -144,6 +152,8 @@ fun AttendanceScreen(
                         } else if (viewModel.isSessionActive) {
                             viewModel.resetSession()
                         } else if (viewModel.finalizedRecords.isNotEmpty()) {
+                            // Leaving Audit Results clears teacher state so re-entry is fresh
+                            viewModel.clearTeacherResults()
                             onBack()
                         } else if (user.hasRole(Role.STUDENT) && viewModel.studentPhase != StudentPhase.STANDBY) {
                             viewModel.resetStudentSession()

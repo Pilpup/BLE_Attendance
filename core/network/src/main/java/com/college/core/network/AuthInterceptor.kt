@@ -24,12 +24,12 @@ class AuthInterceptor(
         }
         val authorized = requestBuilder.build()
 
-        val isRealJwt = token?.contains(".") == true
         val response = chain.proceed(authorized)
 
-        if (response.code == 401 && isRealJwt && !isAuthEndpoint) {
-            // 401 means the token is no longer accepted (expired/revoked/invalid).
-            // Clear local session immediately; do not replay the request.
+        if (response.code == 401 && !isAuthEndpoint) {
+            // 401 means the token is no longer accepted (expired/revoked/invalid)
+            // — for JWTs AND opaque tokens alike. Clear local session
+            // immediately; do not replay the request.
             sessionManager.endSession()
         }
 

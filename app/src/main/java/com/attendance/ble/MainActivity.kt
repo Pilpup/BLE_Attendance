@@ -98,7 +98,9 @@ class MainActivity : ComponentActivity() {
             val context = androidx.compose.ui.platform.LocalContext.current
 
             val bluetoothManager = remember(context) {
-                context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+                // Null on Bluetooth-less devices — never hard-cast, or
+                // getSystemService returns null and composition crashes.
+                context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
             }
 
             // R8 (review §1.7.5): the launcher callbacks used to be literal
@@ -135,7 +137,7 @@ class MainActivity : ComponentActivity() {
                     // cannot legitimately occur right after a fresh grant; we
                     // toast instead of re-launching the same request (loop guard).
                     try {
-                        if (bluetoothManager.adapter?.isEnabled == false) {
+                        if (bluetoothManager?.adapter?.isEnabled == false) {
                             pendingAction.value = action
                             val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
                             enableBluetoothLauncher.launch(enableBtIntent)
@@ -161,7 +163,7 @@ class MainActivity : ComponentActivity() {
                         permissionLauncher.launch(requiredPermissions)
                     } else {
                         try {
-                            if (bluetoothManager.adapter?.isEnabled == false) {
+                            if (bluetoothManager?.adapter?.isEnabled == false) {
                                 pendingAction.value = action
                                 val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
                                 enableBluetoothLauncher.launch(enableBtIntent)

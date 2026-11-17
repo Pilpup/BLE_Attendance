@@ -51,7 +51,10 @@ def _aware(dt: Optional[datetime]) -> Optional[datetime]:
 def derive_short_device_key_local(canonical: str) -> str:
     # Mirror router/app derivation to avoid circular imports.
     import hashlib
-    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest().upper()
+    src = (canonical or "").strip().upper()
+    if not src:
+        return "000000"
+    digest = hashlib.sha256(src.encode("utf-8")).hexdigest().upper()
     return digest[:6]
 
 
@@ -299,10 +302,15 @@ async def run_engine_audit(session_id: uuid.UUID | str, db: AsyncSession) -> boo
             flagged_pairs = face_registry.get_flagged_pairs(sid)
             flagged_keys = set()
             for p in flagged_pairs:
-                if p.get("student_key"):
-                    flagged_keys.add(str(p["student_key"]).upper())
-                if p.get("matched_with"):
-                    flagged_keys.add(str(p["matched_with"]).upper())
+                # face_engine writes student_a_key/student_b_key; accept legacy
+                # student_key/matched_with shapes for in-memory pairs created
+                # by older builds.
+                a = p.get("student_a_key") or p.get("student_key")
+                b = p.get("student_b_key") or p.get("matched_with")
+                if a:
+                    flagged_keys.add(str(a).upper())
+                if b:
+                    flagged_keys.add(str(b).upper())
         except Exception:
             flagged_keys = set()
 
@@ -372,7 +380,9 @@ async def lock_session(session_id: uuid.UUID | str, db: AsyncSession) -> bool:
     async with lock:
         sess_res = await db.execute(select(AttendanceSession).where(AttendanceSession.id == session_obj.id).with_for_update())
         session_obj = sess_res.scalars().first()
-        if not session_obj or session_obj.status == "COMPLETED":
+        # Re-check under the row lock: CANCELLED/EXPIRED may have landed
+        # between the unlocked read above and this re-select.
+        if not session_obj or session_obj.status in ("COMPLETED", "CANCELLED", "EXPIRED"):
             return False
         await _recompute_session_counters(session_obj, db)
         session_obj.status = "COMPLETED"

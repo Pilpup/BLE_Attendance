@@ -114,7 +114,9 @@ class BleScanner(
             // beacon '/' (H5) or S:/SESSION: (legacy), verdict '\' (H5) or V:
             // (legacy), and 10-char peer probe (length==10 superset, 4-char session + 6-char key).
             val rssi = result.rssi
-            if (rssi < -95) return
+            // 127 is the "RSSI unavailable" placeholder (not ultra-strong);
+            // reject it alongside the weak-signal floor.
+            if (rssi == 127 || rssi < -95) return
 
             val antennaTime = result.timestampNanos
             val osTime = SystemClock.elapsedRealtimeNanos()

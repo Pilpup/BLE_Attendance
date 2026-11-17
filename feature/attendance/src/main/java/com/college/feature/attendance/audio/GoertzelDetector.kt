@@ -11,9 +11,12 @@ object GoertzelDetector {
     // Precomputed filter coefficients at 48 kHz (2 * cos(2 * PI * f / 48000))
     // 19.2 kHz evaluates exactly to -golden_ratio (-1.618033988749895)
     private const val COEFF_18400_HZ_AT_48K = -1.4862896506307135
-    private const val COEFF_18800_HZ_AT_48K = -1.5540307997920397
+    // Guard bins: exact values (the old 18800/19600 constants drifted up to
+    // ~0.00084 rad-equivalent, inflating guard-bin power and deflating SNR
+    // by ~0.5 dB on borderline chirps).
+    private const val COEFF_18800_HZ_AT_48K = -1.5542919229139414
     private const val COEFF_19200_HZ_AT_48K = -1.6180339887498950
-    private const val COEFF_19600_HZ_AT_48K = -1.6781745265551944
+    private const val COEFF_19600_HZ_AT_48K = -1.6773411358908479
     private const val COEFF_20000_HZ_AT_48K = -1.7320508075688772
 
     // Power attenuation offset for 20.0 cm boundary relative to 20 cm reference: 20 * log10(20/20) = 0.0

@@ -356,6 +356,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         private set
     private var auditPollingJob: Job? = null
     private var finalizedRefreshJob: Job? = null
+    // Bumped whenever teacher results are cleared; guards late finalize/refresh writes
+    private var teacherResultsEpoch = 0
+    // STOP pressed while create/retry or another finalize is still syncing:
+    // defer the finalize instead of dropping it (timer is done — nothing else
+    // would run it, and the beacon would resurrect for a never-finalized class).
+    private var pendingFinalizeAfterSync = false
 
     private data class AirVerdictBatch(val ids: List<String>, val rounds: Int)
     private val airVerdictQueue = Channel<AirVerdictBatch>(Channel.UNLIMITED)
@@ -621,6 +627,18 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             finalizedRecords = emptyList()
             cloudStatusMessage = null
         }
+    }
+
+    // Teacher backed out of the Audit Results screen: wipe results state so
+    // re-entering the feature starts fresh (history stays persisted).
+    fun clearTeacherResults() {
+        teacherResultsEpoch++
+        finalizedRefreshJob?.cancel()
+        finalizedRefreshJob = null
+        finalizedRecords = emptyList()
+        cloudStatusMessage = null
+        backendSessionId = null
+        selectedSessionForDetails = null
     }
 
     // Persist and update student roll number (even offline)
@@ -1100,6 +1118,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         cloudStatusMessage = null
         gameStartsAtIso = null
         gameEndsAtIso = null
+        pendingFinalizeAfterSync = false
 
         isSessionActive = true
         remainingSeconds = TEACHER_SESSION_SECONDS_DEFAULT
@@ -1127,6 +1146,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 }
                 withContext(Dispatchers.Main) {
                     isCloudSyncing = false
+                    // Late create/retry completion: the teacher may have stopped
+                    // or backed out while the request was in flight — never
+                    // resurrect the beacon for a dead session.
+                    if (!isSessionActive) return@withContext
                     when (result) {
                         is NetworkResult.Success -> {
                             val body = result.data
@@ -1142,6 +1165,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                 cloudStatusMessage = "Session ID $sessionId is already in use by an active session — pick a new ID before broadcasting"
                                 isSessionActive = false
                                 remainingSeconds = 0
+                                pendingFinalizeAfterSync = false
                                 return@withContext
                             } else {
                                 cloudStatusMessage = "Cloud sync warning (HTTP ${result.code}): session NOT created — students cannot check in until you STOP and start a new class with a new ID"
@@ -1152,6 +1176,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             cloudStatusMessage = "Cloud sync error: ${result.throwable.localizedMessage ?: "Offline"}"
                             onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
                         }
+                    }
+                    // Deferred finalize: a STOP/timer finalize was requested while
+                    // this create/retry was still in flight.
+                    if (pendingFinalizeAfterSync && isSessionActive) {
+                        finalizeSessionAndAudit()
                     }
                 }
             }
@@ -1177,7 +1206,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Finalize session and trigger server-side mesh audit (engine runs at 45; lock at 60)
     fun finalizeSessionAndAudit() {
-        if (isCloudSyncing) return
+        if (isCloudSyncing) {
+            pendingFinalizeAfterSync = true
+            return
+        }
+        pendingFinalizeAfterSync = false
         stopTeacherSession()
 
         val sessId = backendSessionId ?: sessionId.takeIf { it != "----" }
@@ -1192,11 +1225,14 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
         isCloudSyncing = true
         cloudStatusMessage = "Finalizing attendance..."
+        val resultsEpoch = teacherResultsEpoch
         viewModelScope.launch(Dispatchers.IO) {
             val reportPayload = MeshAuditRunRequest(emptyMap())
             val result = safeApiCall { api.auditAndFinalize(sessId, reportPayload) }
             withContext(Dispatchers.Main) {
                 isCloudSyncing = false
+                pendingFinalizeAfterSync = false
+                if (teacherResultsEpoch != resultsEpoch) return@withContext
                 when (result) {
                     is NetworkResult.Success -> {
                         val body = result.data
@@ -1233,15 +1269,18 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     // Lazy post-finalize refresh (stragglers/flips); no long grace window.
     private fun startFinalizedRecordsRefresh(sessId: String) {
         finalizedRefreshJob?.cancel()
+        val resultsEpoch = teacherResultsEpoch
         finalizedRefreshJob = viewModelScope.launch(Dispatchers.IO) {
             repeat(12) {
                 delay(3000L)
+                if (teacherResultsEpoch != resultsEpoch) return@launch
                 try {
                     val res = api.getSessionDetails(sessId)
                     val session = if (res.isSuccessful) res.body() ?: return@launch else return@launch
                     val records = session.records ?: return@launch
                     val previousVerified = finalizedRecords.filter { isVerified(it.status) }.map { it.bleDeviceId }.toSet()
                     withContext(Dispatchers.Main) {
+                        if (teacherResultsEpoch != resultsEpoch) return@withContext
                         finalizedRecords = records
                         val verifiedCount = records.count { isVerified(it.status) }
                         val reviewCount = records.count { it.status == "UNVERIFIED" || it.status == "ISOLATED_FLAGGED" || it.status == "FLAGGED_WITNESSED" || it.status == "NEEDS_REVIEW" }
@@ -1315,13 +1354,19 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             }
         }
 
-        // Option 2: Blast air verdict over BLE for manually confirmed student (\<ID>)
+        // Option 2: Blast air verdict over BLE for manually confirmed student.
+        // Only SHORT identifiers fit the 31-byte legacy adv payload — and the
+        // student receiver matches against shortId/roll only. A record UUID
+        // (38 bytes on the wire) both overflows the adv packet and can never
+        // match anything.
         val idsToBroadcast = buildList {
-            add(recordOrDeviceId)
-            target?.bleDeviceId?.let { add(it) }
+            target?.bleDeviceId?.takeIf { it.isNotBlank() }?.let { add(it) }
             target?.rollNumber?.takeIf { it.isNotBlank() }?.let { add(it) }
+            if (target == null && recordOrDeviceId.length <= 22) add(recordOrDeviceId)
         }.distinct()
-        enqueueAirVerdicts(idsToBroadcast, rounds = 4)
+        if (idsToBroadcast.isNotEmpty()) {
+            enqueueAirVerdicts(idsToBroadcast, rounds = 4)
+        }
     }
 
     fun loadSessionHistory() {
@@ -1659,14 +1704,19 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 // Join OK: enter probing/game phase per server schedule
                 studentPhase = StudentPhase.PROBING_NEIGHBORS
                 startStudentScheduleLoop()
-                // Teardown +150s from game start (latched sessions)
+                // Teardown +350s from game start = 5min after teacher's 60s timer end
+                // (game starts at session start + 10s; 60 + 300 - 10 = 350)
                 teardownJob?.cancel()
                 teardownJob = viewModelScope.launch {
                     val gs = gameStartsMs() ?: return@launch
-                    val delayMs = (gs + 150_000L - serverNowMs()).coerceAtLeast(0L)
+                    val delayMs = (gs + 350_000L - serverNowMs()).coerceAtLeast(0L)
                     delay(delayMs)
                     withContext(Dispatchers.Main) {
-                        if (studentPhase != StudentPhase.STANDBY) {
+                        // Verdict/waiting screens persist until the user backs out or
+                        // closes the app; teardown only ends radio-era phases.
+                        if (studentPhase == StudentPhase.PROBING_NEIGHBORS ||
+                            studentPhase == StudentPhase.DISCOVERY_COMPLETE
+                        ) {
                             stopStudentScanning()
                             studentStatusMessage = studentStatusMessage ?: "Session ended"
                         }

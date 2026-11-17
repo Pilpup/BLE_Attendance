@@ -307,11 +307,16 @@ async def cancel_reservation(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    res = await db.execute(select(BookReservation).where(BookReservation.id == reservation_id))
+    res = await db.execute(
+        select(BookReservation).where(BookReservation.id == reservation_id).with_for_update()
+    )
     reservation = res.scalars().first()
     if not reservation:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reservation not found")
 
+    # Status re-checked under the row lock: a concurrent double-cancel blocks
+    # here until the first transaction commits, then sees CANCELLED -> 400
+    # instead of restoring a phantom available copy.
     if reservation.status != "ACTIVE":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reservation is not active")
 

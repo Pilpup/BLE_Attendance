@@ -232,6 +232,9 @@ class LibraryViewModel : ViewModel() {
     /** Active book lookup state (for UI loading indicators). */
     var isLookingUpBook by mutableStateOf(false)
         private set
+    // Concurrent lookups share one flag: an early finisher must not clear it
+    // while another lookup is still in flight. Counter keeps it in sync.
+    private var pendingLookups = 0
 
     /**
      * Look up book details by ISBN barcode using the cascading Google Books,
@@ -239,6 +242,7 @@ class LibraryViewModel : ViewModel() {
      */
     fun lookupBook(isbn: String, onResult: (BookLookupResponse?) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
+            pendingLookups++
             isLookingUpBook = true
             try {
                 // Single source of truth: the backend scraper (Google Books →
@@ -254,7 +258,10 @@ class LibraryViewModel : ViewModel() {
                     onResult(null)
                 }
             } finally {
-                isLookingUpBook = false
+                pendingLookups = (pendingLookups - 1).coerceAtLeast(0)
+                if (pendingLookups == 0) {
+                    isLookingUpBook = false
+                }
             }
         }
     }

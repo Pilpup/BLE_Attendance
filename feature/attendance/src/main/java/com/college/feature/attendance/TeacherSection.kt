@@ -1588,8 +1588,13 @@ private fun TakeAttendanceSelectionView(
 private fun formatSessionDateTime(raw: String?): String {
     if (raw.isNullOrBlank()) return "Past Session"
     val trimmed = raw.trim()
-    val clean = trimmed.replace("Z", "")
+    // Server timestamps are UTC (trailing Z or +00:00); stripping the zone and
+    // parsing in the device-default timezone shifted session times by the
+    // local UTC offset. Parse in UTC, format in the device timezone.
+    val clean = trimmed.replace("Z", "").replace("+00:00", "")
+    val utcZone = java.util.TimeZone.getTimeZone("UTC")
     val patterns = listOf(
+        "yyyy-MM-dd'T'HH:mm:ss.SSSSSS",
         "yyyy-MM-dd'T'HH:mm:ss",
         "yyyy-MM-dd'T'HH:mm",
         "yyyy-MM-dd HH:mm:ss",
@@ -1600,6 +1605,7 @@ private fun formatSessionDateTime(raw: String?): String {
         try {
             val sdf = SimpleDateFormat(pat, Locale.getDefault())
             sdf.isLenient = false
+            sdf.timeZone = utcZone
             val parsed = sdf.parse(clean.take(pat.length))
             if (parsed != null) {
                 val outFormat = if (clean.length >= 16) {

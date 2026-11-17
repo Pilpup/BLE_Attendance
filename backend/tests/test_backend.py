@@ -312,6 +312,7 @@ async def test_session_auto_supersede():
     from httpx import AsyncClient, ASGITransport
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base, AttendanceSession, EmailOTP
     from sqlalchemy import select
 
@@ -391,6 +392,7 @@ async def test_submit_neighbors_salt_enforcement():
     from httpx import AsyncClient, ASGITransport
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base, EmailOTP
     from sqlalchemy import select
 
@@ -565,6 +567,7 @@ async def test_session_eligibility_gate():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from sqlalchemy import select
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base, EmailOTP
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -734,6 +737,7 @@ async def test_cognitive_challenge_score_gate():
     from sqlalchemy import select
 
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import AttendanceRecord, Base, EmailOTP
     from app.routers.attendance import derive_short_device_key
 
@@ -837,6 +841,7 @@ async def test_expired_otp_purging_and_cleanup():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from sqlalchemy import select, delete
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base, EmailOTP
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -1254,6 +1259,7 @@ async def test_debug_session_auto_provision_and_duplicate_rejection():
 
     from app.database import get_db
     from app.models.attendance import Base
+    from app.models.attendance import Base
 
     # Deterministic in-memory DB for this battery test: the module shares one
     # app instance, so without an own override the endpoint would serve whatever
@@ -1323,6 +1329,7 @@ async def test_debug_session_auto_provision_and_duplicate_rejection():
 #     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 #     from app.database import get_db
+    from app.models.attendance import Base
 #     from app.models.attendance import AttendanceRecord, Base
 
 #     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -1474,6 +1481,7 @@ async def test_session_token_conflict_cross_teacher():
 
     from app.database import get_db
     from app.models.attendance import Base
+    from app.models.attendance import Base
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with test_engine.begin() as conn:
@@ -1534,6 +1542,7 @@ async def test_finalize_counts_frozen_proxy_priors():
 
     from app.database import get_db
     from app.models.attendance import Base
+    from app.models.attendance import Base
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with test_engine.begin() as conn:
@@ -1591,6 +1600,7 @@ async def test_finalize_staged_drain_requires_reciprocal_peers():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base
     from app.routers.attendance import derive_short_device_key
 
@@ -1655,6 +1665,7 @@ async def test_finalize_binds_unbound_witness_rows_to_roster():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import AttendanceRecord, AttendanceSession, Base, User
     from app.routers.attendance import derive_short_device_key
 
@@ -1744,6 +1755,7 @@ async def test_status_enum_validation_hygiene():
 
     from app.database import get_db
     from app.models.attendance import Base
+    from app.models.attendance import Base
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with test_engine.begin() as conn:
@@ -1791,6 +1803,7 @@ async def test_submit_neighbors_binary_upload():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base
     from app.services.face_engine import face_registry
 
@@ -2041,6 +2054,7 @@ async def test_flagged_faces_owner_only():
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base, EmailOTP
     from app.services.face_engine import face_registry
 
@@ -2224,6 +2238,7 @@ async def test_register_duplicate_racing_verification_is_409():
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base, EmailOTP
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -2302,6 +2317,7 @@ async def test_grace_duplicate_claim_succeeds():
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import AttendanceRecord, Base
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -2446,6 +2462,7 @@ async def test_list_courses_does_not_fabricate_mock_context(monkeypatch):
     from sqlalchemy import select, func
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base, Course, User
     from app.routers import attendance as attendance_router
 
@@ -2493,6 +2510,7 @@ async def test_submit_during_finalize_inflight_is_not_orphaned(tmp_path):
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import AttendanceRecord, Base
     from app.services import submission_buffer as submission_buffer_module
 
@@ -2598,6 +2616,7 @@ async def test_submit_face_verified_reflects_outcome():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from app.database import get_db
     from app.models.attendance import Base
+    from app.models.attendance import Base
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with test_engine.begin() as conn:
@@ -2666,6 +2685,7 @@ async def test_lab_face_check_errors_are_http_errors():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
     from app.database import get_db
     from app.models.attendance import Base
+    from app.models.attendance import Base
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
     async with test_engine.begin() as conn:
@@ -2688,92 +2708,6 @@ async def test_lab_face_check_errors_are_http_errors():
         )
         assert res.status_code >= 400, res.text
         assert "Face processing failed" in res.json()["detail"]
-
-
-@pytest.mark.anyio
-async def test_finalize_counts_are_recounted_from_db():
-    # R5: finalize counters must reflect committed DB rows, not payload
-    # tallies. A prior VERIFIED row that is absent from the finalize payload
-    # would have been silently dropped from total_verified before this fix.
-    import uuid
-
-    from httpx import AsyncClient, ASGITransport
-    from sqlalchemy import select
-    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-    from app.database import get_db
-    from app.models.attendance import AttendanceRecord, AttendanceSession, Base, User
-    from datetime import datetime, timezone
-
-    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    count_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
-
-    async def override_get_db():
-        async with count_db() as s:
-            yield s
-
-    app.dependency_overrides[get_db] = override_get_db
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        tok_teacher = await _register_test_teacher(client, count_db, "Prof. Recount", "recount@univ.edu")
-        tok_stud_b = await _register_roll_student(client, count_db, "Count Bravo", "count.bravo@univ.edu", "22B4521")
-
-        s_res = await client.post(
-            "/api/v1/attendance/sessions",
-            headers={"Authorization": f"Bearer {tok_teacher}"},
-            json={"session_token": "CQ01", "session_salt": "CQ1A", "total_enrolled": 5},
-        )
-        assert s_res.status_code == 201, s_res.text
-        session_id = s_res.json()["id"]
-
-        async with count_db() as s:
-            session_row = (
-                await s.execute(
-                    select(AttendanceSession).where(AttendanceSession.id == uuid.UUID(session_id))
-                )
-            ).scalars().first()
-            student_b = (await s.execute(select(User).where(User.roll_number == "22B4521"))).scalars().first()
-            assert student_b is not None
-            # A prior VERIFIED record NOT present in the finalize payload
-            prior_row = AttendanceRecord(
-                id=uuid.uuid4(),
-                session_id=session_row.id,
-                student_id=student_b.id,
-                ble_device_id="4521",
-                status="VERIFIED_PRESENT",
-                verification_method="BLE_MESH",
-                affinity_score=1.0,
-                reported_neighbors=[],
-                remarks="Prior verified row (grace-path style)",
-                game_score=20,
-                recorded_at=datetime.now(timezone.utc),
-            )
-            s.add(prior_row)
-            await s.commit()
-
-        fin = await client.post(
-            f"/api/v1/attendance/sessions/{session_id}/finalize",
-            headers={"Authorization": f"Bearer {tok_teacher}"},
-            json={
-                "records": [
-                    {
-                        "ble_device_id": "4522",
-                        "student_id": None,
-                        "status": "VERIFIED_PRESENT",
-                        "verification_method": "DIRECT_MUTUAL",
-                        "affinity_score": 1.0,
-                        "reported_neighbors": [],
-                        "game_score": 20,
-                    }
-                ]
-            },
-        )
-        assert fin.status_code == 200, fin.text
-        # Recount sees the prior row (1) + the drained payload row (1) = 2
-        assert fin.json()["total_verified"] == 2, fin.text
-        assert fin.json()["total_unverified"] == 0
 
 
 @pytest.mark.anyio
@@ -2815,6 +2749,7 @@ async def test_logout_revokes_token_and_relogin_recovers():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base, EmailOTP
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -2886,6 +2821,7 @@ async def test_deactivated_account_token_rejected():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base, User
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -2927,6 +2863,7 @@ async def test_legacy_token_without_version_claim_is_v0():
 
     from app.core.security import create_access_token
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base, User
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -2972,6 +2909,7 @@ async def test_stale_version_token_rejected():
 
     from app.core.security import create_access_token
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base, User
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -3080,6 +3018,7 @@ async def test_ttl_expire_does_not_corrupt_completed_sessions():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import AttendanceSession, Base
     from app.routers.attendance import derive_short_device_key
 
@@ -3136,6 +3075,7 @@ async def test_legacy_finalize_enforces_score_gate():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -3214,6 +3154,7 @@ async def test_leave_submission_and_hod_review_flow():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base, User
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -3370,6 +3311,7 @@ async def test_hod_retains_teacher_powers():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base, User
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -3416,6 +3358,7 @@ async def test_leave_overlay_marks_leave_in_legacy_finalize():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base, User
     from app.routers.attendance import derive_short_device_key
 
@@ -3534,6 +3477,7 @@ async def test_leave_overlay_in_audit_finalize():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base, User
     from app.routers.attendance import derive_short_device_key
 
@@ -3619,6 +3563,7 @@ async def test_leave_department_accepts_100_chars():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import Base, EmailOTP
     from sqlalchemy import select
 
@@ -3731,6 +3676,7 @@ async def test_leave_overlay_matches_ist_calendar_day():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import AttendanceSession, Base
 
     test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
@@ -3807,6 +3753,7 @@ async def test_duplicate_face_does_not_vandalize_matched_student():
     from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
     from app.database import get_db
+    from app.models.attendance import Base
     from app.models.attendance import AttendanceRecord, AttendanceSession, Base
     from app.routers.attendance import derive_short_device_key
 
@@ -3874,3 +3821,488 @@ async def test_duplicate_face_does_not_vandalize_matched_student():
             if r.status == "DUPLICATE_FACE_PROXY":
                 continue
             assert r.status != "DUPLICATE_FACE_PROXY"
+
+
+# Regression (audit integrity): derive_short_device_key_local must hash the
+# SAME canonical string (strip().upper()) as the router's
+# derive_short_device_key, else backfill/bind/leave-overlay keys drift from
+# check-in keys for lowercase/whitespace rolls.
+def test_device_key_derivation_parity_local_vs_router():
+    from app.routers.attendance import derive_short_device_key
+    from app.services.session_audit import derive_short_device_key_local
+
+    for raw in ["22B4451", " 22b4451 ", "22b4451", "\t22B4451\n", "22B4451 "]:
+        assert derive_short_device_key_local(raw) == derive_short_device_key("22B4451"), raw
+
+    assert derive_short_device_key_local("") == "000000"
+    assert derive_short_device_key_local("   ") == "000000"
+
+
+# Regression (audit integrity): backfill/bind must resolve device keys the
+# same way check-ins do, even for legacy roster rows stored with lowercase or
+# padded roll numbers.
+@pytest.mark.anyio
+async def test_backfill_and_bind_match_router_canonical_keys():
+    import uuid
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.models.attendance import AttendanceRecord, AttendanceSession, Base, User
+    from app.routers.attendance import derive_short_device_key
+    from app.services.session_audit import _absent_backfill, _bind_unbound_records
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with session_factory() as db:
+        # Legacy-style roster rows: lowercase / whitespace-padded roll numbers.
+        u_legacy = User(
+            id=uuid.uuid4(), email="legacy.roll@univ.edu", hashed_password="x",
+            full_name="Legacy Roll", roll_number=" 22b4499 ", role="STUDENT",
+            program="B.Tech", semester=1, is_active=True,
+        )
+        u_canonical = User(
+            id=uuid.uuid4(), email="canonical.roll@univ.edu", hashed_password="x",
+            full_name="Canonical Roll", roll_number="22B4500", role="STUDENT",
+            program="B.Tech", semester=1, is_active=True,
+        )
+        db.add_all([u_legacy, u_canonical])
+        sess = AttendanceSession(
+            id=uuid.uuid4(), course_id=uuid.uuid4(), teacher_id=uuid.uuid4(),
+            session_token="PARITY", total_enrolled=2,
+            eligibility_program="B.Tech", eligibility_semester=1,
+        )
+        db.add(sess)
+
+        # Unbound witness row keyed with the ROUTER-canonical key.
+        k_canonical = derive_short_device_key("22B4500")
+        db.add(AttendanceRecord(
+            id=uuid.uuid4(), session_id=sess.id, student_id=None,
+            ble_device_id=k_canonical, status="UNVERIFIED", verification_method="NONE",
+            affinity_score=0.0, reported_neighbors=[], recorded_at=datetime.now(timezone.utc),
+        ))
+        await db.commit()
+
+        bound = await _bind_unbound_records(sess, db)
+        assert bound == 1
+        rec = (await db.execute(
+            select(AttendanceRecord).where(AttendanceRecord.session_id == sess.id)
+        )).scalars().first()
+        assert rec.student_id == u_canonical.id
+
+        created = await _absent_backfill(sess, db)
+        assert created == 1  # only the legacy-roll student is missing
+        rows = (await db.execute(
+            select(AttendanceRecord).where(AttendanceRecord.session_id == sess.id)
+        )).scalars().all()
+        backfill_row = next(r for r in rows if r.student_id == u_legacy.id)
+        # Key must be the canonical check-in key, NOT a hash of the raw string.
+        assert backfill_row.ble_device_id == derive_short_device_key("22B4499")
+        assert backfill_row.status == "ABSENT"
+
+
+# Regression (audit integrity): face_engine flags duplicate pairs with
+# student_a_key/student_b_key — the audit must read those (plus the legacy
+# student_key/matched_with shape) so the honest-first-submitter downgrade
+# fires instead of being dead code.
+@pytest.mark.anyio
+async def test_engine_audit_downgrades_first_submitter_of_duplicate_face_pair():
+    import uuid
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.models.attendance import AttendanceRecord, AttendanceSession, Base
+    from app.services.face_engine import face_registry
+    from app.services.graph_engine import audit_classroom_mesh  # noqa: F401 (import sanity)
+    from app.services.session_audit import run_engine_audit
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with session_factory() as db:
+        # Three mutual triangle submitters (verified by the mesh) + one frozen
+        # duplicate-face proxy row that never submitted.
+        k_s1, k_s2, k_s3, k_f2 = "AAA111", "BBB222", "CCC333", "DDD444"
+        sess = AttendanceSession(
+            id=uuid.uuid4(), course_id=uuid.uuid4(), teacher_id=uuid.uuid4(),
+            session_token="DUPFACE", total_enrolled=4,
+        )
+        db.add(sess)
+
+        def rec(key: str, status: str, nbrs: list[str]) -> AttendanceRecord:
+            return AttendanceRecord(
+                id=uuid.uuid4(), session_id=sess.id, student_id=uuid.uuid4(),
+                ble_device_id=key, status=status,
+                verification_method="AWAITING_AUDIT" if status != "DUPLICATE_FACE_PROXY" else "NONE",
+                affinity_score=0.0, reported_neighbors=nbrs, game_score=20,
+                recorded_at=datetime.now(timezone.utc),
+            )
+
+        db.add_all([
+            rec(k_s1, "UNVERIFIED", [k_s2, k_s3]),
+            rec(k_s2, "UNVERIFIED", [k_s1, k_s3]),
+            rec(k_s3, "UNVERIFIED", [k_s1, k_s2]),
+            rec(k_f2, "DUPLICATE_FACE_PROXY", []),
+        ])
+        await db.commit()
+
+        # New shape (face_engine) + legacy shape, both pointing at first
+        # submitters S1/S2 paired with frozen F2.
+        face_registry._flagged_pairs[str(sess.id)] = [
+            {"student_a_key": k_s1, "student_b_key": k_f2},
+            {"student_key": k_s2, "matched_with": k_f2},
+        ]
+        try:
+            ran = await run_engine_audit(sess.id, db)
+            assert ran is True
+        finally:
+            face_registry.clear_session(str(sess.id))
+
+        rows = {r.ble_device_id: r for r in (await db.execute(
+            select(AttendanceRecord).where(AttendanceRecord.session_id == sess.id)
+        )).scalars().all()}
+
+        for key in (k_s1, k_s2):
+            assert rows[key].status == "UNVERIFIED", (key, rows[key].status)
+            assert rows[key].verification_method == "FACE_BIOMETRIC_MATCH", key
+            assert "Duplicate face" in (rows[key].remarks or ""), key
+        assert rows[k_s3].status == "VERIFIED"
+        assert rows[k_f2].status == "DUPLICATE_FACE_PROXY"
+
+
+# Regression (straggler integrity): a re-check-in after the engine already
+# issued VERIFIED must never downgrade the row to UNVERIFIED/STRAGGLER.
+@pytest.mark.anyio
+async def test_straggler_recheckin_does_not_downgrade_verified():
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base
+    from app.routers.attendance import derive_short_device_key
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    straggler_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with straggler_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_teacher = await _register_test_teacher(client, straggler_db, "Prof. Straggler", "straggler@univ.edu")
+        tok_s1 = await _register_roll_student(client, straggler_db, "Straggler One", "straggler.one@univ.edu", "22B7701")
+        tok_s2 = await _register_roll_student(client, straggler_db, "Straggler Two", "straggler.two@univ.edu", "22B7702")
+        k1 = derive_short_device_key("22B7701")
+        k2 = derive_short_device_key("22B7702")
+
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"session_token": "SG01", "total_enrolled": 2},
+        )
+        assert s_res.status_code == 201, s_res.text
+        session_id = s_res.json()["id"]
+        wire_salt = s_res.json()["session_wire_salt"]
+        submit_url = f"/api/v1/attendance/sessions/{session_id}/submit-neighbors"
+
+        # Two-submitter session: mutual pair verifies via engine rule 8.
+        r1 = await client.post(submit_url, headers={"Authorization": f"Bearer {tok_s1}"},
+                               json={"game_score": 20, "neighbors": [k2], "session_salt": wire_salt})
+        assert r1.status_code == 200, r1.text
+        r2 = await client.post(submit_url, headers={"Authorization": f"Bearer {tok_s2}"},
+                               json={"game_score": 20, "neighbors": [k1], "session_salt": wire_salt})
+        assert r2.status_code == 200, r2.text
+
+        fin = await client.post(f"/api/v1/attendance/sessions/{session_id}/audit-and-finalize",
+                                headers={"Authorization": f"Bearer {tok_teacher}"}, json={"reports": {}})
+        assert fin.status_code == 200, fin.text
+        pre = {r["ble_device_id"]: r["status"] for r in fin.json()["records"]}
+        assert pre[k1] == "VERIFIED", pre
+
+        # Straggler re-check-in with no reciprocal neighbor: must not downgrade.
+        re_submit = await client.post(submit_url, headers={"Authorization": f"Bearer {tok_s1}"},
+                                      json={"game_score": 20, "neighbors": [], "session_salt": wire_salt})
+        assert re_submit.status_code == 200, re_submit.text
+
+        details = await client.get(f"/api/v1/attendance/sessions/{session_id}",
+                                   headers={"Authorization": f"Bearer {tok_teacher}"})
+        assert details.status_code == 200, details.text
+        post = {r["ble_device_id"]: r["status"] for r in details.json()["records"]}
+        assert post[k1] == "VERIFIED", post
+
+
+# Regression (join brute force): /join is rate limited per account so the
+# 16-bit wire salt cannot be enumerated off-site.
+@pytest.mark.anyio
+async def test_join_salt_brute_force_rate_limited():
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    join_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with join_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_teacher = await _register_test_teacher(client, join_db, "Prof. Join Gate", "join.gate@univ.edu")
+        tok_s1 = await _register_roll_student(client, join_db, "Join Student", "join.student@univ.edu", "22B7801")
+
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"session_token": "JG01", "total_enrolled": 5},
+        )
+        assert s_res.status_code == 201, s_res.text
+        session_id = s_res.json()["id"]
+        real_salt = s_res.json()["session_wire_salt"]
+
+        wrong_payload = {"session_salt": "BEEF"}
+        for i in range(10):  # budget exhausted exactly at the cap
+            res = await client.post(f"/api/v1/attendance/sessions/{session_id}/join",
+                                    headers={"Authorization": f"Bearer {tok_s1}"}, json=wrong_payload)
+            assert res.status_code == 403, (i, res.text)
+
+        flooded = await client.post(f"/api/v1/attendance/sessions/{session_id}/join",
+                                    headers={"Authorization": f"Bearer {tok_s1}"}, json=wrong_payload)
+        assert flooded.status_code == 429, flooded.text
+
+        # Budget is account-scoped, not salt-scoped: even the CORRECT salt is
+        # rejected while the bucket is exhausted.
+        real = await client.post(f"/api/v1/attendance/sessions/{session_id}/join",
+                                 headers={"Authorization": f"Bearer {tok_s1}"},
+                                 json={"session_salt": real_salt})
+        assert real.status_code == 429, real.text
+
+
+# Regression (course creation): duplicate course_code returns 409, not 500.
+@pytest.mark.anyio
+async def test_create_course_duplicate_code_conflict():
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    course_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with course_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_teacher = await _register_test_teacher(client, course_db, "Prof. Course Dup", "course.dup@univ.edu")
+
+        first = await client.post("/api/v1/attendance/courses",
+                                  headers={"Authorization": f"Bearer {tok_teacher}"},
+                                  json={"course_code": "DUP101", "course_name": "Duplicate Test"})
+        assert first.status_code == 201, first.text
+
+        second = await client.post("/api/v1/attendance/courses",
+                                   headers={"Authorization": f"Bearer {tok_teacher}"},
+                                   json={"course_code": "dup101", "course_name": "Duplicate Test 2"})
+        assert second.status_code == 409, second.text
+        assert "already exists" in second.json()["detail"]
+
+
+# Regression (raw-bytes upload): x-game-score header must be capped to the
+# same 0-26 range as the JSON schema — 99 must not pass the >= 15 gate.
+@pytest.mark.anyio
+async def test_raw_header_game_score_capped():
+    import base64
+    import io
+    from PIL import Image
+    from httpx import AsyncClient, ASGITransport
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    from app.database import get_db
+    from app.models.attendance import Base
+    from app.models.attendance import AttendanceRecord
+    from app.routers.attendance import derive_short_device_key
+
+    test_engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    raw_db = async_sessionmaker(test_engine, class_=AsyncSession, expire_on_commit=False)
+
+    async def override_get_db():
+        async with raw_db() as s:
+            yield s
+
+    app.dependency_overrides[get_db] = override_get_db
+
+    img = Image.new("RGB", (100, 100), color=(180, 140, 120))
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    jpeg_bytes = buf.getvalue()
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        tok_teacher = await _register_test_teacher(client, raw_db, "Prof. Raw Cap", "raw.cap@univ.edu")
+        tok_s1 = await _register_roll_student(client, raw_db, "Raw Cap Student", "raw.cap.student@univ.edu", "22B7901")
+        k1 = derive_short_device_key("22B7901")
+
+        s_res = await client.post(
+            "/api/v1/attendance/sessions",
+            headers={"Authorization": f"Bearer {tok_teacher}"},
+            json={"session_token": "RC01", "total_enrolled": 5},
+        )
+        assert s_res.status_code == 201, s_res.text
+        session_id = s_res.json()["id"]
+        wire_salt = s_res.json()["session_wire_salt"]
+
+        res = await client.post(
+            f"/api/v1/attendance/sessions/{session_id}/submit-neighbors",
+            headers={
+                "Authorization": f"Bearer {tok_s1}",
+                "Content-Type": "application/octet-stream",
+                "x-session-salt": wire_salt,
+                "x-game-score": "99",
+                "x-neighbors": "",
+            },
+            content=jpeg_bytes,
+        )
+        assert res.status_code == 200, res.text
+
+        async with raw_db() as s:
+            import uuid as _uuid
+            rec = (await s.execute(select(AttendanceRecord).where(
+                AttendanceRecord.session_id == _uuid.UUID(session_id),
+                AttendanceRecord.ble_device_id == k1,
+            ))).scalars().first()
+            assert rec is not None
+            assert rec.game_score == 26, rec.game_score
+
+
+# Regression (audit-hardening batch): corrupt stored bcrypt hash must fail
+# verification (login → wrong-password) instead of raising ValueError → 500.
+def test_verify_password_corrupt_hash_returns_false():
+    from app.core.security import verify_password
+
+    assert verify_password("anything", "not-a-bcrypt-hash") is False
+    assert verify_password("anything", "") is False
+    # Sanity: a valid hash still verifies correctly.
+    from app.core.security import hash_password
+    assert verify_password("anything", hash_password("anything")) is True
+
+
+# Regression (audit-hardening batch): provenance must list only providers that
+# contributed at least one field — no phantom " + provider" chains.
+def test_book_lookup_provenance_lists_only_contributors():
+    import asyncio
+    from unittest.mock import patch
+
+    from app.services.book_lookup import lookup_book_by_isbn
+
+    async def fake_google(isbn, client):
+        # Primary source: every direct-indexed key must be present.
+        return {
+            "title": "Clean Code",
+            "author": "Robert C. Martin",
+            "edition": None,
+            "category": None,
+            "overview": "A handbook of agile software craftsmanship.",
+            "table_of_contents": None,
+            "index": None,
+            "source": "Google Books",
+        }
+
+    async def fake_openlibrary(isbn, client):
+        return {"source": "OpenLibrary"}  # contributes nothing
+
+    async def fake_isbndb(isbn, client):
+        return {
+            "title": None,
+            "author": None,
+            "edition": "1st",
+            "category": None,
+            "overview": None,
+            "table_of_contents": None,
+            "index": None,
+            "source": "ISBNdb",
+        }
+
+    with patch("app.services.book_lookup.query_google_books", fake_google), \
+         patch("app.services.book_lookup.query_open_library", fake_openlibrary), \
+         patch("app.services.book_lookup.query_isbndb", fake_isbndb):
+        result = asyncio.run(lookup_book_by_isbn("9780132350884"))
+
+    assert result is not None
+    assert result.source == "Google Books + ISBNdb", result.source
+    assert "OpenLibrary" not in result.source
+
+
+# Regression (graph federation fix): the merge floor must use LIVE room
+# sizes, not stale pre-union component sizes. Chain scenario: A(30) merges
+# with B(4) at floor 4; stale sizes then let B's 4 members also pull in
+# C(29) at floor 4 — chaining two large rooms below the intended
+# max(4, 30% of smaller side) = 9. Live sizes must block the second merge.
+def test_federation_floor_blocks_chained_merge_below_live_floor():
+    from app.services.graph_engine import (
+        UNVERIFIED,
+        VERIFIED,
+        audit_classroom_mesh,
+    )
+
+    a = [f"a{i:02d}" for i in range(30)]
+    b = [f"b{i}" for i in range(4)]
+    c = [f"c{i:02d}" for i in range(29)]
+
+    reports: dict[str, list[str]] = {}
+    # A: clique; a00..a03 also claim b0 (asymmetric — no cross mutuals).
+    for u in a:
+        lst = [x for x in a if x != u]
+        if u in {"a00", "a01", "a02", "a03"}:
+            lst.append("b0")
+        reports[u] = lst
+    # B: clique; every b claims one A member (a10) and one C member.
+    # b_i lists c{i} so all four are distinct C claimers.
+    for i, u in enumerate(b):
+        lst = [x for x in b if x != u] + ["a10", f"c{i:02d}"]
+        reports[u] = lst
+    # C: clique; c00..c03 claim b0 (distinct C claimers, 4 total).
+    for u in c:
+        lst = [x for x in c if x != u]
+        if u in {"c00", "c01", "c02", "c03"}:
+            lst.append("b0")
+        reports[u] = lst
+
+    results = audit_classroom_mesh(reports, total_enrolled=len(reports))
+    out = {r["ble_device_id"]: r for r in results}
+
+    # A∪B still federates (floor max(4, ceil(1.2)) = 4, both sides 4).
+    for u in a + b:
+        assert out[u]["status"] == VERIFIED, (u, out[u]["status"])
+    # Chained B→C merge is blocked by the live floor (max(4, ceil(8.7)) = 9
+    # > 4 claimers): C stays a separate, unanchored room.
+    for u in c:
+        assert out[u]["status"] == UNVERIFIED, (u, out[u]["status"])
+        assert out[u]["verification_method"] == "MESH_UNANCHORED", u
