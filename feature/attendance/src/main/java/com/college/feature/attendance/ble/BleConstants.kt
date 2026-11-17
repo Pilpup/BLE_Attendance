@@ -37,7 +37,4 @@ object BleConstants {
     // Permissions by flow (teacher does not need camera)
     val teacherPermissions: Array<String> = bluetoothPermissions
     val studentPermissions: Array<String> = bluetoothPermissions + cameraPermissions
-
-    // Comprehensive runtime permission list (back-compat for generic requests)
-    val neededPermissions: Array<String> = studentPermissions // + audioPermissions
 }

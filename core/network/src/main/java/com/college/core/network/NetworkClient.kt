@@ -50,23 +50,4 @@ object NetworkClient {
     }
 
     inline fun <reified T : Any> createService(): T = getService(T::class.java)
-
-    // Non-blocking probe of the backend /health endpoint to detect service readiness.
-    suspend fun checkServerHealth(): Boolean = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-        try {
-            val request = okhttp3.Request.Builder()
-                .url(
-                    ServerConfigManager.DEFAULT_HTTP_URL.newBuilder()
-                        .addPathSegment("health")
-                        .build()
-                )
-                .header("No-Auth", "true")
-                .build()
-            okHttpClient.newCall(request).execute().use { response ->
-                response.isSuccessful
-            }
-        } catch (_: Exception) {
-            false
-        }
-    }
 }

@@ -230,7 +230,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Throttle for the unclassified-packet diagnostic log (one line / 2s max)
     private var lastNeglectedPacketLogMs = 0L
-    val discoveredPeers: Map<String, PeerData> get() = rawDiscoveredPeers
 
     var chimpChallengeFailed by mutableStateOf(false)
         private set
@@ -635,9 +634,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             prefs.edit().putString("roll_number", trimmed).apply()
         }
     }
-
-    // Server endpoint is hardcoded; runtime URL switching disabled.
-    fun setServerUrl(@Suppress("UNUSED_PARAMETER") url: String) = Unit
 
     fun login(email: String, pass: String, onOtpRequired: (String) -> Unit = {}, onComplete: (Boolean) -> Unit = {}) {
         isAuthLoading = true
@@ -1213,7 +1209,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         cloudStatusMessage = "Finalizing attendance..."
         val resultsEpoch = teacherResultsEpoch
         viewModelScope.launch(Dispatchers.IO) {
-            val reportPayload = MeshAuditRunRequest(emptyMap())
+            val reportPayload = MeshAuditRunRequest()
             val result = safeApiCall { api.auditAndFinalize(sessId, reportPayload) }
             withContext(Dispatchers.Main) {
                 isCloudSyncing = false
@@ -1304,11 +1300,8 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
         val completedSession = AttendanceSessionResponse(
             id = backendSessionId ?: sessionId,
-            courseId = selectedCourse?.id ?: "",
             sessionToken = sessionId,
             status = "COMPLETED",
-            totalVerified = records.count { isVerified(it.status) },
-            totalUnverified = records.count { !isVerified(it.status) && it.status != "LEAVE" },
             startedAt = timestamp,
             records = records,
             courseCode = selectedCourse?.courseCode ?: "",
@@ -1325,7 +1318,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 rec.copy(
                     status = "VERIFIED",
                     verificationMethod = "MANUAL_OVERRIDE",
-                    affinityScore = 1.0,
                     remarks = "Confirmed by instructor"
                 )
             } else {
@@ -1514,11 +1506,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         ) {
             startPollingForAudit(sessId)
         }
-    }
-
-    private fun startStudentDiscoveryWindow() {
-        // 60s timeline: schedule-driven gather/game/upload replaces fixed 25s window.
-        startStudentScheduleLoop()
     }
 
     // Processes incoming BLE advertising packets for beacon and peer discovery

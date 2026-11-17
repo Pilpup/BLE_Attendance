@@ -169,10 +169,6 @@ class SessionManager {
             ?.apply()
     }
 
-    fun markLoading() {
-        _state.value = SessionState.Loading
-    }
-
     fun endSession() {
         _realUser.value = null
         _actingRole.value = null

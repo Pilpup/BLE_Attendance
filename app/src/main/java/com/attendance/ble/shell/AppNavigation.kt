@@ -2,7 +2,6 @@ package com.attendance.ble.shell
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -12,7 +11,6 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.viewmodel.compose.viewModel as composeViewModel
 import com.college.core.model.SessionState
 import com.college.core.network.SessionManager
-import com.college.core.ui.DashboardRegistry
 import com.college.feature.attendance.AttendanceDashboardCard
 import com.college.feature.attendance.AttendanceScreen
 import com.college.feature.attendance.AttendanceScreenCallbacks
@@ -35,12 +33,6 @@ fun AppNavigation(
     }
     val sessionState by SessionManager.default.state.collectAsState()
     val user = (sessionState as? SessionState.Authenticated)?.user
-
-    // Register feature cards with the dashboard registry
-    LaunchedEffect(Unit) {
-        DashboardRegistry.register(AttendanceDashboardCard)
-        DashboardRegistry.register(LibraryDashboardCard)
-    }
 
     // Route unauthenticated users away from feature screens, allowing home and auth navigation
     val effectiveDestination = when {

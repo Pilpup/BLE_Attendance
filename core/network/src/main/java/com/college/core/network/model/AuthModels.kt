@@ -9,10 +9,8 @@ data class LoginRequest(
 
 data class LoginResponse(
     @SerializedName("requires_otp") val requiresOtp: Boolean = true,
-    val message: String,
     val email: String,
     @SerializedName("access_token") val accessToken: String? = null,
-    @SerializedName("token_type") val tokenType: String? = "bearer",
     val user: UserResponse? = null
 )
 
@@ -29,7 +27,6 @@ data class ResendOtpRequest(
 data class OtpSentResponse(
     val message: String,
     val email: String,
-    @SerializedName("expires_in_seconds") val expiresInSeconds: Int = 600,
     @SerializedName("requires_otp") val requiresOtp: Boolean = true
 )
 
@@ -60,6 +57,5 @@ data class UserResponse(
 
 data class TokenResponse(
     @SerializedName("access_token") val accessToken: String,
-    @SerializedName("token_type") val tokenType: String,
     val user: UserResponse
 )

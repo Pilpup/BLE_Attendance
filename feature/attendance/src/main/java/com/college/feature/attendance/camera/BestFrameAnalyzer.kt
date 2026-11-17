@@ -107,32 +107,12 @@ class BestFrameAnalyzer(
         isPaused.set(paused)
     }
 
-    // Returns a copy of the winning candidate frame. A copy — not the shared
-    // reference — is required: the analyzer recycles replaced bitmaps outside
-    // the lock and reset() recycles on teardown, so any consumer holding the
-    // original across a frame update or stopCamera() hits a recycled bitmap
-    // mid-compress ("bitmap recycled" crash). Copying under the lock
-    // guarantees the returned bitmap is owned exclusively by the caller.
-    fun getBestCandidate(): BestFrameCandidate? {
-        synchronized(lock) {
-            val best = bestCandidate ?: return null
-            val copy = best.bitmap.copy(Bitmap.Config.ARGB_8888, false)
-                ?: return null
-            return BestFrameCandidate(
-                bitmap = copy,
-                sharpnessScore = best.sharpnessScore,
-                rotationDegrees = best.rotationDegrees,
-                timestamp = best.timestamp
-            )
-        }
-    }
-
     // R11 (review §2.3): detaches the winning candidate WITHOUT recycling its
     // bitmap — ownership transfers to the caller. Needed because the expensive
     // JPEG+Base64 encode must move off the main thread while CameraX teardown
-    // stays on it: getBestCandidate() shares the reference and leaves the
-    // analyzer free to recycle the bitmap in reset(), which would poison the
-    // encode running concurrently on a worker.
+    // stays on it: a copy-returning getter would leave the analyzer free to
+    // recycle the bitmap in reset(), which would poison the encode running
+    // concurrently on a worker.
     fun takeBestCandidate(): BestFrameCandidate? {
         synchronized(lock) {
             val taken = bestCandidate

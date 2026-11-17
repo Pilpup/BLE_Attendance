@@ -223,18 +223,11 @@ class SessionFinalizeRequest(BaseModel):
 
 # Teacher trigger payload to run server-side mesh audit
 class MeshAuditRunRequest(BaseModel):
-    reports: dict[str, list[str]] = Field(
-        default_factory=dict,
-        description="Classroom BLE discovery dictionary: {student_ble_id: [top_3_neighbor_ids]}"
-    )
+    pass
 
 
 # Student check-in payload with BLE neighbors, biometric and telemetry proofs
 class SubmitNeighborsRequest(BaseModel):
-    student_id: Optional[str] = Field(
-        default=None,
-        description="Student roll number or 4-char BLE ID if unauthenticated"
-    )
     neighbors: list[NeighborId] = Field(
         ...,
         max_length=MAX_NEIGHBORS,
@@ -276,14 +269,6 @@ class SubmitNeighborsRequest(BaseModel):
         description="Chimp memory challenge score (0-26). Stored on upload; engine stamps UNVERIFIED when below gate.",
     )
 
-    # Strips whitespace from student identifier
-    @field_validator("student_id", mode="before")
-    @classmethod
-    def clean_student_id(cls, v: Optional[str]) -> Optional[str]:
-        if isinstance(v, str):
-            return v.strip()
-        return v
-
     # Strips whitespace from session salt
     @field_validator("session_salt", mode="before")
     @classmethod
@@ -318,9 +303,6 @@ class AttendanceSessionResponse(BaseModel):
     eligibility_program: Optional[str] = None
     eligibility_department: Optional[str] = None
     eligibility_semester: Optional[int] = None
-    # Roster diagnostic (session create only): the roll numbers whose active
-    # STUDENT accounts were counted into total_enrolled. Not persisted.
-    enrolled_roll_numbers: Optional[list[str]] = None
 
     model_config = ConfigDict(from_attributes=True)
 

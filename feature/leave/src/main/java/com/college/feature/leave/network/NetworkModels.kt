@@ -16,20 +16,14 @@ data class LeaveCreateRequest(
 @Immutable
 data class LeaveApplicationResponse(
     @SerializedName("id") val id: String = "",
-    // v2 contract name — mirrors studentId
-    @SerializedName("user_id") val userId: String? = null,
     @SerializedName("student_id") val studentId: String? = null,
     @SerializedName("student_name") val studentName: String? = null,
     @SerializedName("student_roll") val studentRoll: String? = null,
     @SerializedName("department") val department: String = "",
     @SerializedName("from_date") val fromDate: String = "",
     @SerializedName("to_date") val toDate: String = "",
-    // v2 contract name — mirrors reason
-    @SerializedName("applicant_reason") val applicantReason: String? = null,
     @SerializedName("reason") val reason: String = "",
     @SerializedName("status") val status: String = "PENDING",
-    // v2 contract name — mirrors reviewComment
-    @SerializedName("reviewer_feedback") val reviewerFeedback: String? = null,
     @SerializedName("review_comment") val reviewComment: String? = null,
     @SerializedName("reviewer_name") val reviewerName: String? = null,
     @SerializedName("reviewed_at") val reviewedAt: String? = null,

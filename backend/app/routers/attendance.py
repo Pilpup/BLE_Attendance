@@ -5,29 +5,19 @@ import base64
 import hashlib
 import hmac
 import logging
-import os
 import re
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator, Dict, List, Optional, Union
+from typing import List, Optional, Union
 
 logger = logging.getLogger("uvicorn.error")
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
-from sqlalchemy import delete, func, and_, or_, select, update
+from sqlalchemy import delete, func, and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-
-
-# R2 (review §3.1): request-scoped finalize gate. FastAPI acquires it BEFORE
-# the route body starts and releases it in the dependency's finally, even on
-# exceptions — so no early 4xx, audit crash, or crash-aborted commit can ever
-# leave a submission stranded between drain and commit.
-async def _session_gate_dependency(session_id: str) -> AsyncGenerator[None, None]:
-    async with submission_buffer.session_gate(session_id):
-        yield
 
 
 def _is_session_stale(started_at: Optional[datetime], minutes: int) -> bool:
@@ -46,7 +36,7 @@ from app.core.security import (
     require_teacher,
 )
 from app.database import get_db
-from app.services.rate_limiter import join_rate_limiter, submit_rate_limiter
+from app.services.rate_limiter import join_rate_limiter
 from app.models.attendance import (
     AttendanceRecord,
     AttendanceSession,
@@ -79,7 +69,6 @@ from app.schemas.attendance import (
     FaceLabCompareResponse,
 )
 from app.services.face_engine import face_registry
-from app.services.graph_engine import audit_classroom_mesh
 from app.services.rate_limiter import face_lab_limiter, submit_rate_limiter
 from app.services.session_audit import (
     lock_session as svc_lock_session,
@@ -398,165 +387,6 @@ async def _populate_record_student_details(
         if u is not None:
             r.roll_number = u.roll_number
             r.student_name = u.full_name
-
-
-# Approved-leave overlay (leave feature): after finalize verdicts exist but
-# BEFORE the finalize commit, enrolled students whose APPROVED leave covers
-# the session date are marked "LEAVE" instead of "ABSENT" (or given a LEAVE
-# row outright — both finalize paths only create records for students who
-# participated). Presence beats leave: VERIFIED_PRESENT, challenge failures,
-# and proxy verdicts are never overwritten — approved leave explains absence,
-# not a student who showed up and failed the check. Roster is derived from
-# the same eligibility snapshot the check-in gate uses (semester + program
-# over active STUDENT accounts); legacy sessions without a snapshot have no
-# derivable roster and are skipped.
-async def _apply_approved_leave_overlay(
-    session_obj: AttendanceSession, db: AsyncSession
-) -> int:
-    semester = session_obj.eligibility_semester
-    program = (session_obj.eligibility_program or "").strip()
-    started = session_obj.started_at
-    session_date = started.date() if started else None
-    if semester is None or not program or session_date is None:
-        return 0
-    # IST calendar day: started_at is stored in UTC, so a session beginning
-    # 00:00–05:30 IST lands on the PREVIOUS UTC calendar day and slicing
-    # .date() alone never matches a leave approved for the student's local
-    # date. A leave covering EITHER calendar day now matches.
-    session_date_ist = (started + timedelta(hours=5, minutes=30)).date()
-
-    candidates = await db.execute(
-        select(User).where(
-            User.semester == semester,
-            User.is_active.is_(True),
-            User.role == "STUDENT",
-        )
-    )
-    roster = [
-        u for u in candidates.scalars().all()
-        if u.roll_number and _program_key(u.program) == _program_key(program)
-    ]
-    if not roster:
-        return 0
-
-    roster_ids = [u.id for u in roster]
-    coverage = [
-        and_(
-            LeaveApplication.from_date <= session_date,
-            LeaveApplication.to_date >= session_date,
-        )
-    ]
-    if session_date_ist != session_date:
-        coverage.append(
-            and_(
-                LeaveApplication.from_date <= session_date_ist,
-                LeaveApplication.to_date >= session_date_ist,
-            )
-        )
-    leave_res = await db.execute(
-        select(LeaveApplication)
-        .where(
-            LeaveApplication.student_id.in_(roster_ids),
-            LeaveApplication.status == "APPROVED",
-            or_(*coverage),
-        )
-        .order_by(LeaveApplication.created_at)
-    )
-    # Latest covering application wins if a student has several for this date
-    leave_by_student: dict[uuid.UUID, LeaveApplication] = {}
-    for leave_row in leave_res.scalars().all():
-        leave_by_student[leave_row.student_id] = leave_row
-    if not leave_by_student:
-        return 0
-
-    rec_res = await db.execute(
-        select(AttendanceRecord).where(AttendanceRecord.session_id == session_obj.id)
-    )
-    existing_recs = rec_res.scalars().all()
-    by_student = {r.student_id: r for r in existing_recs if r.student_id}
-    by_device = {r.ble_device_id.upper(): r for r in existing_recs}
-
-    created = 0
-    for student in roster:
-        leave_row = leave_by_student.get(student.id)
-        if not leave_row:
-            continue
-        range_text = f"{leave_row.from_date.isoformat()}..{leave_row.to_date.isoformat()}"
-        rec = by_student.get(student.id)
-        if rec is None:
-            # Unbound-but-keyed row (submitted without a resolvable account):
-            # matching by the derived device key keeps one row per student.
-            rec = by_device.get(derive_short_device_key(student.roll_number))
-        if rec is None:
-            db.add(
-                AttendanceRecord(
-                    id=uuid.uuid4(),
-                    session_id=session_obj.id,
-                    student_id=student.id,
-                    ble_device_id=derive_short_device_key(student.roll_number),
-                    status="LEAVE",
-                    verification_method="LEAVE_APPROVAL",
-                    affinity_score=0.00,
-                    reported_neighbors=[],
-                    remarks=f"Approved leave {range_text}",
-                    recorded_at=datetime.now(timezone.utc),
-                )
-            )
-            created += 1
-        elif rec.status == "ABSENT":
-            rec.status = "LEAVE"
-            rec.verification_method = "LEAVE_APPROVAL"
-            rec.remarks = f"Approved leave {range_text}"
-    return created
-
-
-# Binds unbound attendance records (student_id NULL) to roster accounts.
-# Witness/offline rows (e.g. FLAGGED_WITNESSED) and legacy payload rows carry
-# only the BLE device key — that device never authenticated, so no account
-# was bound at check-in. Device keys are the DETERMINISTIC derivation
-# derive_short_device_key(roll), so the server can reverse-map them against
-# the session's eligibility roster (same snapshot the check-in gate uses).
-# Without this the teacher dashboard shows "Student <key-suffix>" instead of
-# the student's real name and roll number. 6-hex key collisions across a
-# roster resolve last-wins (same policy as the leave overlay).
-async def _bind_unbound_records_to_roster(
-    session_obj: AttendanceSession, db: AsyncSession
-) -> int:
-    semester = session_obj.eligibility_semester
-    program = (session_obj.eligibility_program or "").strip()
-    if semester is None or not program:
-        return 0
-
-    candidates = await db.execute(
-        select(User).where(
-            User.semester == semester,
-            User.is_active.is_(True),
-            User.role == "STUDENT",
-        )
-    )
-    key_to_student: dict[str, uuid.UUID] = {}
-    for u in candidates.scalars().all():
-        if u.roll_number:
-            key_to_student[derive_short_device_key(u.roll_number)] = u.id
-    if not key_to_student:
-        return 0
-
-    rec_res = await db.execute(
-        select(AttendanceRecord).where(
-            AttendanceRecord.session_id == session_obj.id,
-            AttendanceRecord.student_id.is_(None),
-        )
-    )
-    bound = 0
-    for rec in rec_res.scalars().all():
-        uid = key_to_student.get(rec.ble_device_id.upper())
-        if uid:
-            rec.student_id = uid
-            bound += 1
-            logger.info(
-                f"[Roster Bind] Session {session_obj.id}: unbound record {rec.ble_device_id} -> student {uid}"
-            )
-    return bound
 
 
 # Record or update a proxy violation record for a device
@@ -1071,15 +901,13 @@ async def create_attendance_session(
     # snapshot (semester + program) over active STUDENT accounts — the teacher
     # app sends no roster. Only the COUNT is logged: individual roll numbers
     # are PII and were sitting in Render's retained logs for no runtime
-    # benefit. Surprising counts are debugged via enrolled_roll_numbers in the
-    # session-create response (owner-visible), not via log dumps.
+    # benefit.
     if roster_roll_numbers:
         logger.info(
             "[Roster] Derived total_enrolled=%d for program=%r semester=%r (%d matched active STUDENT accounts)",
             roster_enrolled, eligibility_program, eligibility_semester,
             len(roster_roll_numbers),
         )
-    session.enrolled_roll_numbers = roster_roll_numbers or None
     _attach_wire_salt(session)
     return session
 

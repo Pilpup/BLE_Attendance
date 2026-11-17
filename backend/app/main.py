@@ -394,40 +394,8 @@ app.include_router(library.router, prefix=settings.API_V1_STR)
 app.include_router(leave.router, prefix=settings.API_V1_STR)
 
 
-# Returns basic service discovery information
-@app.get("/", tags=["System"])
-async def root():
-    return {
-        "status": "online",
-        "service": "BLE Attendance Verification API",
-        "docs": "/docs",
-        "health": "/health"
-    }
-
-
 # Health check probe for container platforms and load balancers
 @app.get("/health", tags=["System"])
 async def health_check():
     return {"status": "ok", "env": settings.APP_ENV}
 
-
-# Diagnostic endpoint restricted to test environments
-@app.get("/debug-db", tags=["System"])
-async def debug_db():
-    if not is_test_environment():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-            if is_postgres:
-                await conn.execute(text(POSTGRES_SCHEMA_SYNC_BLOCK))
-            sess_rows = (await conn.execute(text("SELECT id, session_token, status, total_verified, total_unverified, started_at FROM attendance_sessions ORDER BY started_at DESC LIMIT 5;"))).mappings().all()
-            rec_rows = (await conn.execute(text("SELECT id, session_id, ble_device_id, status, verification_method, recorded_at FROM attendance_records ORDER BY recorded_at DESC LIMIT 5;"))).mappings().all()
-
-        return {
-            "status": "connected",
-            "recent_sessions": [dict(r) for r in sess_rows],
-            "recent_records": [dict(r) for r in rec_rows],
-        }
-    except Exception as e:
-        return {"status": "connection_error", "error": str(e), "type": type(e).__name__}

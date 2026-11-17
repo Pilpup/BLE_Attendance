@@ -186,9 +186,6 @@ class MainActivity : ComponentActivity() {
                             viewModel.startTeacherSession()
                         }
                     },
-                    onStopTeacherSession = {
-                        viewModel.finalizeSessionAndAudit()
-                    },
                     onShareAttendance = {
                         shareAttendanceCsv(viewModel.generateCsvReport(), viewModel.sessionId)
                     },

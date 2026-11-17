@@ -117,7 +117,7 @@ def test_library_routes_registered():
 
 
 def test_library_seed_data_integrity():
-    from seed import SAMPLE_LIBRARY_BOOKS
+    from app.seed import SAMPLE_LIBRARY_BOOKS
 
     assert len(SAMPLE_LIBRARY_BOOKS) == 8
     isbns = [b["isbn"] for b in SAMPLE_LIBRARY_BOOKS]

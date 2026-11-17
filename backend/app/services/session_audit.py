@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.attendance import AttendanceRecord, AttendanceSession, LeaveApplication, User
@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 _schedule: dict[str, tuple[datetime, datetime]] = {}
 _schedule_lock = asyncio.Lock()
 _schedule_event = asyncio.Event()
-_scheduler_started = False
 
 # Per-session audit/lock serialization in-process.
 _audit_locks: dict[str, asyncio.Lock] = {}
@@ -421,8 +420,6 @@ async def maybe_run_due_lock(session_obj: AttendanceSession, db: AsyncSession) -
 
 
 async def audit_scheduler_worker(session_factory) -> None:
-    global _scheduler_started
-    _scheduler_started = True
     try:
         while True:
             now = _utcnow()

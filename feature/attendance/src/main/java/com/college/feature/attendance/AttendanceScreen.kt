@@ -36,7 +36,6 @@ import com.college.feature.leave.viewmodel.LeaveViewModel
 @Immutable
 data class AttendanceScreenCallbacks(
     val onStartTeacherSession: () -> Unit,
-    val onStopTeacherSession: () -> Unit,
     val onShareAttendance: () -> Unit,
     val onResetSession: () -> Unit,
     val onStartStudentScanning: () -> Unit,
@@ -221,14 +220,12 @@ fun AttendanceScreen(
                         cloudStatusMessage = viewModel.cloudStatusMessage,
                         onSelectCourse = { viewModel.selectedCourse = it },
                         onStartSession = callbacks.onStartTeacherSession,
-                        onStopSession = callbacks.onStopTeacherSession,
                         onResetSession = callbacks.onResetSession,
                         onVerifyStudent = { rec -> viewModel.markStudentVerified(rec.id ?: rec.bleDeviceId) },
                         teacherViewMode = viewModel.teacherViewMode,
                         onSetTeacherViewMode = { viewModel.teacherViewMode = it },
                         pastSessions = viewModel.pastSessions,
                         isLoadingHistory = viewModel.isLoadingHistory,
-                        onLoadHistory = { viewModel.loadSessionHistory() },
                         selectedSessionForDetails = viewModel.selectedSessionForDetails,
                         onSelectSessionForDetails = { viewModel.selectedSessionForDetails = it },
                         selectedCourse = viewModel.selectedCourse,

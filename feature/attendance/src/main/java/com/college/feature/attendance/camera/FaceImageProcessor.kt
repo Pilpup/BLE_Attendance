@@ -2,7 +2,6 @@ package com.college.feature.attendance.camera
 
 import android.graphics.Bitmap
 import android.graphics.Matrix
-import android.util.Base64
 import android.util.Log
 import java.io.ByteArrayOutputStream
 import kotlin.math.min
@@ -66,11 +65,5 @@ object FaceImageProcessor {
                 processedBitmap.recycle()
             }
         }
-    }
-
-    // Transforms candidate frame into normalized Base64 JPEG string
-    fun processCandidate(candidate: BestFrameCandidate): String? {
-        val bytes = processCandidateToBytes(candidate) ?: return null
-        return Base64.encodeToString(bytes, Base64.NO_WRAP)
     }
 }
