@@ -3235,13 +3235,13 @@ async def test_leave_submission_and_hod_review_flow():
         assert items[0]["can_review"] is True
         assert items[0]["student_roll"] == "22B5501"
 
-        # Teacher of another department sees an EMPTY queue (dept isolation)
+        # Leave queue is HOD-only now (PR #10 simplified the flow): a plain
+        # TEACHER cannot even list applications, regardless of department.
         queue_ece = await client.get(
             "/api/v1/leave/applications",
             headers={"Authorization": f"Bearer {tok_ece}"},
         )
-        assert queue_ece.status_code == 200
-        assert queue_ece.json() == []
+        assert queue_ece.status_code == 403
 
         # TEACHER role cannot review at all
         forbidden = await client.post(
@@ -3276,11 +3276,12 @@ async def test_leave_submission_and_hod_review_flow():
         assert approved.json()["review_comment"] == "Approved — one time"
         assert approved.json()["reviewed_at"] is not None
 
-        # Re-reviewing a decided application is a conflict
+        # Re-reviewing a decided application is a conflict (comment now
+        # mandatory on REJECT per PR #10, so it's included here).
         again = await client.post(
             f"/api/v1/leave/applications/{application_id}/review",
             headers={"Authorization": f"Bearer {tok_teacher}"},
-            json={"decision": "REJECTED"},
+            json={"decision": "REJECTED", "comment": "Already decided"},
         )
         assert again.status_code == 409
 

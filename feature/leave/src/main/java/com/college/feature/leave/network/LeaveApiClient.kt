@@ -5,11 +5,10 @@ import com.college.core.network.ServerConfigManager
 
 object LeaveApiClient {
 
-    var baseUrl: String
+    // Read-only: dynamic URL switching was removed by hardening (fixed
+    // server endpoint), matching AttendanceApiClient.
+    val baseUrl: String
         get() = ServerConfigManager.default.currentBaseUrl
-        set(value) {
-            ServerConfigManager.default.setServerUrl(value)
-        }
 
     val service: LeaveApiService by lazy {
         NetworkClient.createService<LeaveApiService>()

@@ -67,7 +67,8 @@ fun AppNavigation(
                                 route.contains("leave") -> {
                                     viewModel.teacherViewMode = TeacherViewMode.LEAVE_REQUESTS
                                     viewModel.selectedSessionForDetails = null
-                                    viewModel.loadDepartmentLeaveApplications()
+                                    // Leave data lives in :feature:leave now (PR #10).
+                                    leaveViewModel.loadDepartmentLeaveApplications()
                                 }
                                 else -> {
                                     viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
