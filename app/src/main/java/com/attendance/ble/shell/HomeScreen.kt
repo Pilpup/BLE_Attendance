@@ -110,11 +110,16 @@ fun HomeScreen(
                         onNavigate("${AttendanceDashboardCard.NAV_ROUTE}/older")
                     }
                 )
-                add(
-                    FeatureItem("Leave Requests", Icons.AutoMirrored.Filled.EventNote, colors.successGreen) {
-                        onNavigate("${AttendanceDashboardCard.NAV_ROUTE}/leave")
-                    }
-                )
+                // HOD-only: the department queue endpoint rejects every other
+                // role with 403 ("Only the HOD can view leave applications"),
+                // so teachers landing here only ever saw an error banner.
+                if (user.hasRole(Role.HOD)) {
+                    add(
+                        FeatureItem("Leave Requests", Icons.AutoMirrored.Filled.EventNote, colors.successGreen) {
+                            onNavigate("${AttendanceDashboardCard.NAV_ROUTE}/leave")
+                        }
+                    )
+                }
             }
             if (user?.hasRole(Role.STUDENT) == true) {
                 add(
