@@ -936,7 +936,7 @@ def test_face_matching_engine():
     raw_bytes = buf.getvalue()
 
     embedding = engine.extract_embedding(raw_bytes)
-    assert embedding.shape == (128,)
+    assert embedding.shape == (engine.embed_dim,)
     norm = np.linalg.norm(embedding)
     assert abs(norm - 1.0) < 1e-4
 

@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Float, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -237,6 +237,50 @@ class SessionSubmission(Base):
 
 
 # Short-lived one-time password record for authentication and registration
+class FaceEnrollment(Base):
+    __tablename__ = "face_enrollments"
+
+    # F1 (docs/future_plans.md): passive 1:1 face-verification references.
+    # Stores ONLY embedding descriptors — never images. Embeddings are
+    # harvested from quality-gated, auto-verified daily captures (teacher
+    # overrides of face-flagged submissions are explicitly excluded: that
+    # channel also clears suspect proxies and would poison the template).
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    student_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, unique=True
+    )
+    # 3-5 exemplar records: {vec, day, quality, yaw, exposure, created_at}.
+    # Only descriptors are stored — never images. Width follows the active
+    # engine head (128 SFace / 512 ArcFace).
+    embeddings: Mapped[Optional[list]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=True
+    )
+    centroid: Mapped[Optional[list]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=True
+    )
+    # Bounded adaptation: centroid updates at most once per UTC day, using the
+    # best-quality capture of the previous day (held in pending_* until then).
+    centroid_day: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    pending_vec: Mapped[Optional[list]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=True
+    )
+    pending_quality: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ref_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    ref_days: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    distinct_days: Mapped[Optional[list]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=True
+    )
+    consent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), index=True, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class EmailOTP(Base):
     __tablename__ = "email_otps"
 

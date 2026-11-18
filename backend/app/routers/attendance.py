@@ -68,7 +68,8 @@ from app.schemas.attendance import (
     FaceLabCompareRequest,
     FaceLabCompareResponse,
 )
-from app.services.face_engine import face_registry
+from app.services.face_engine import FaceCheckResult, face_registry
+from app.services import face_enrollment
 from app.services.rate_limiter import face_lab_limiter, submit_rate_limiter
 from app.services.session_audit import (
     lock_session as svc_lock_session,
@@ -1253,33 +1254,98 @@ async def submit_student_neighbors(
         raw_roll = current_user.roll_number or student_key
         cluster_peers = set(normalized_close)
         cluster_peers.update(normalized_neighbors)
-        face_check_result = await asyncio.to_thread(
-            face_registry.register_and_check,
-            session_id=str(session_obj.id),
-            student_key=student_key,
-            roll_number=raw_roll,
-            face_base64=payload.face_image_base64,
-            face_bytes=raw_face_bytes,
-            cluster_peers=cluster_peers,
-        )
-        if not face_check_result.has_human_face:
+
+        # F1 (docs/future_plans.md): extract ONCE, then either closed-set 1:1
+        # verification against the student's own harvested references (flipped)
+        # or the legacy open-set desk-dedup path (fallback, unenrolled/low-N).
+        clean_b64 = (payload.face_image_base64 or "").strip()
+        if "," in clean_b64:
+            clean_b64 = clean_b64.split(",", 1)[1].strip()
+        try:
+            decode_bytes = raw_face_bytes if raw_face_bytes is not None else base64.b64decode(clean_b64)
+        except Exception as decode_err:
+            # Malformed payload takes the same NO_FACE violation path as a
+            # frame the engine cannot read — 403, never a 500.
+            has_face, live_embedding, face_remark = False, None, f"Failed to decode face image: {decode_err}"
+            capture_meta = {}
+        else:
+            capture = await asyncio.to_thread(
+                face_registry.engine.extract_capture, decode_bytes
+            )
+            has_face = capture.has_face
+            live_embedding = capture.embedding
+            face_remark = capture.remark
+            capture_meta = capture.metadata()
+        if not has_face or live_embedding is None:
             await _record_proxy_violation(
                 db=db, session_id=session_obj.id, device_id=student_key,
                 status="NO_FACE_DETECTED", verification_method="FACE_BIOMETRIC_FAILED",
-                remarks=face_check_result.remarks, student_id=current_user.id,
+                remarks=face_remark or "REJECTED: No human face detected", student_id=current_user.id,
                 reported_neighbors=normalized_neighbors,
             )
             await _commit_proxy_violation(db)
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Biometric proxy rejected: {face_check_result.remarks}")
-        if face_check_result.is_duplicate:
-            await _record_proxy_violation(
-                db=db, session_id=session_obj.id, device_id=student_key,
-                status="DUPLICATE_FACE_PROXY", verification_method="FACE_BIOMETRIC_MATCH",
-                remarks=face_check_result.remarks, student_id=current_user.id,
-                reported_neighbors=normalized_neighbors,
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Biometric proxy rejected: {face_remark}")
+
+        enrollment_row = await face_enrollment.load_enrollment(db, current_user.id)
+        if face_enrollment.is_flip_ready(enrollment_row):
+            # Closed-set path: honest submissions are never cross-compared with
+            # classmates, so lookalike false-"duplicate" flags cannot occur.
+            matched, best_sim, student_threshold = await face_enrollment.verify_1to1(db, current_user.id, live_embedding)
+            if matched:
+                # Bounded adaptation: only captures clearing BOTH this
+                # student's verification gate and the global strong-match gate
+                # fold back into the template (drift: glasses, haircut).
+                adapt_gate = face_enrollment.adaptation_gate(student_threshold)
+                if best_sim >= adapt_gate:
+                    await face_enrollment.harvest(db, current_user.id, live_embedding, meta=capture_meta)
+                face_check_result = FaceCheckResult(
+                    is_duplicate=False,
+                    has_human_face=True,
+                    similarity_score=best_sim,
+                    remarks=f"1:1 FACE VERIFIED against enrolled reference (similarity: {best_sim:.3f}, gate: {student_threshold:.3f})",
+                    passed=True,
+                )
+            else:
+                # Remark-grade only (F1 constraint): an uncalibrated 1:1 gate
+                # must never hard-reject an honest student — hold for review.
+                await _record_proxy_violation(
+                    db=db, session_id=session_obj.id, device_id=student_key,
+                    status="IDENTITY_MISMATCH_REVIEW", verification_method="FACE_1TO1_MISMATCH",
+                    remarks=f"1:1 face mismatch vs enrolled reference (sim {best_sim:.3f}, gate {student_threshold:.3f}) — held for teacher review",
+                    student_id=current_user.id, reported_neighbors=normalized_neighbors,
+                )
+                await _commit_proxy_violation(db)
+                face_check_result = FaceCheckResult(
+                    is_duplicate=False,
+                    has_human_face=True,
+                    similarity_score=best_sim,
+                    remarks=f"1:1 IDENTITY MISMATCH vs enrolled reference (sim {best_sim:.3f}, gate {student_threshold:.3f}) — held for teacher review",
+                    passed=False,
+                )
+        else:
+            face_check_result = await asyncio.to_thread(
+                face_registry.register_and_check,
+                session_id=str(session_obj.id),
+                student_key=student_key,
+                roll_number=raw_roll,
+                face_base64=payload.face_image_base64,
+                face_bytes=raw_face_bytes,
+                cluster_peers=cluster_peers,
+                embedding=live_embedding,
             )
-            await _commit_proxy_violation(db)
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Biometric proxy rejected: {face_check_result.remarks}")
+            if face_check_result.is_duplicate:
+                await _record_proxy_violation(
+                    db=db, session_id=session_obj.id, device_id=student_key,
+                    status="DUPLICATE_FACE_PROXY", verification_method="FACE_BIOMETRIC_MATCH",
+                    remarks=face_check_result.remarks, student_id=current_user.id,
+                    reported_neighbors=normalized_neighbors,
+                )
+                await _commit_proxy_violation(db)
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Biometric proxy rejected: {face_check_result.remarks}")
+            # Reference forging (trust gate): auto-verified non-duplicate
+            # captures only — teacher overrides never reach this path.
+            if face_check_result.embedding is not None:
+                await face_enrollment.harvest(db, current_user.id, face_check_result.embedding, meta=capture_meta)
 
     # Upsert by (session_id, ble_device_id); fallback on (session_id, student_id).
     rec_res = await db.execute(select(AttendanceRecord).where(
@@ -1306,7 +1372,9 @@ async def submit_student_neighbors(
         db.add(rec)
     else:
         # Do not overwrite frozen security verdicts except allow score/list refresh context.
-        if rec.status not in ("DUPLICATE_FACE_PROXY", "CO_LOCATED_SAME_DESK_PROXY", "DIVIDED_ATTENTION_PROXY", "NO_FACE_DETECTED", "SPOOFER_REJECTED", "ELIGIBILITY_REJECTED"):
+        # IDENTITY_MISMATCH_REVIEW (F1 1:1) is remark-grade and frozen for the
+        # teacher's finalize review — the audit engine must not clear it.
+        if rec.status not in ("DUPLICATE_FACE_PROXY", "CO_LOCATED_SAME_DESK_PROXY", "DIVIDED_ATTENTION_PROXY", "NO_FACE_DETECTED", "SPOOFER_REJECTED", "ELIGIBILITY_REJECTED", "IDENTITY_MISMATCH_REVIEW"):
             rec.reported_neighbors = normalized_neighbors
             rec.remarks = "Check-in received; awaiting audit"
             if session_obj.audit_run_at is None:
@@ -1400,7 +1468,11 @@ async def submit_student_neighbors(
         "student": student_key,
         "recorded_neighbors": normalized_neighbors,
         "face_verified": (
-            (face_check_result.has_human_face and not face_check_result.is_duplicate)
+            (
+                face_check_result.passed
+                if face_check_result.passed is not None
+                else (face_check_result.has_human_face and not face_check_result.is_duplicate)
+            )
             if face_check_result else None
         ),
         "face_diagnostic": face_check_result.remarks if face_check_result else None,

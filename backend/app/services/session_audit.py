@@ -34,6 +34,9 @@ _FROZEN_STATUSES = {
     "NO_FACE_DETECTED",
     "SPOOFER_REJECTED",
     "ELIGIBILITY_REJECTED",
+    # F1 1:1 face mismatch is remark-grade: held for the teacher's finalize
+    # review, never auto-cleared or auto-rejected by the audit engine.
+    "IDENTITY_MISMATCH_REVIEW",
 }
 
 
