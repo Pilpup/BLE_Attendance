@@ -88,13 +88,7 @@ import java.util.Locale
 internal fun isRecordPresent(rec: AttendanceRecordItem): Boolean {
     // Two-flag era (graph engine v3.1): VERIFIED (new) / VERIFIED_PRESENT (legacy).
     if (rec.status == "VERIFIED" || rec.status == "VERIFIED_PRESENT" || rec.status.equals("PRESENT", ignoreCase = true)) return true
-    if (rec.verificationMethod == "MANUAL_OVERRIDE" ||
-        rec.verificationMethod == "TEACHER_MANUAL" ||
-        rec.remarks?.contains("instructor", ignoreCase = true) == true ||
-        rec.remarks?.contains("teacher", ignoreCase = true) == true ||
-        rec.remarks?.contains("confirmed", ignoreCase = true) == true) {
-        return true
-    }
+    if (rec.verificationMethod == "MANUAL_OVERRIDE" || rec.verificationMethod == "TEACHER_MANUAL") return true
     return false
 }
 

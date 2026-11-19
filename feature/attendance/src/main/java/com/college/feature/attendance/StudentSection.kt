@@ -387,7 +387,7 @@ internal fun StudentSection(
                                 modifier = Modifier.width(26.dp)
                             )
                             Text(
-                                text = "Numbers flash on the grid — memorize their positions. When they hide, tap the squares in order from 1 upward. Each correct tap counts; a wrong tap ends the round.",
+                                text = "Numbers flash on the grid — memorize their positions. When they hide, tap the squares in sequence",
                                 fontSize = 15.5.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = AppTheme.colors.textPrimary,
