@@ -17,11 +17,11 @@ interface LeaveApiService {
     @GET("api/v1/leave/applications/mine")
     suspend fun getMyLeaveApplications(): Response<List<LeaveApplicationResponse>>
 
-    // Student withdraws their own still-pending application
+    // Student withdraws their own still-pending application (removed from DB)
     @POST("api/v1/leave/applications/{applicationId}/cancel")
     suspend fun cancelLeaveApplication(
         @Path("applicationId") applicationId: String
-    ): Response<LeaveApplicationResponse>
+    ): Response<Unit>
 
     // Department queue (HOD) and HOD review
     @GET("api/v1/leave/applications")

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import require_student, require_teacher
@@ -180,11 +180,11 @@ async def list_department_leave_applications(
     ]
 
 
-# Student withdrawal: allowed ONLY while the request is still PENDING. The
-# atomic status guard closes the race with a concurrent verdict.
+# Student withdrawal: allowed ONLY while the request is still PENDING.
+# Cancelled applications are removed from the database entirely.
 @router.post(
     "/applications/{application_id}/cancel",
-    response_model=LeaveApplicationResponse,
+    status_code=status.HTTP_204_NO_CONTENT,
 )
 async def cancel_leave_application(
     application_id: uuid.UUID,
@@ -205,10 +205,12 @@ async def cancel_leave_application(
             detail="You can only cancel your own leave applications",
         )
 
+    # Atomic delete: only a still-PENDING request can be withdrawn.
     cancel_result = await db.execute(
-        update(LeaveApplication)
-        .where(LeaveApplication.id == application_id, LeaveApplication.status == "PENDING")
-        .values(status="CANCELLED")
+        delete(LeaveApplication).where(
+            LeaveApplication.id == application_id,
+            LeaveApplication.status == "PENDING",
+        )
     )
     if cancel_result.rowcount == 0:
         await db.rollback()
@@ -217,8 +219,7 @@ async def cancel_leave_application(
             detail="Only pending applications can be cancelled",
         )
     await db.commit()
-    await db.refresh(app_obj)
-    return _serialize_application(app_obj, current_user, can_review=False)
+    return None
 
 
 # HOD verdict. ONLY role='HOD' can approve/reject; the application must belong

@@ -33,6 +33,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.EventNote
 import androidx.compose.material.icons.automirrored.filled.FactCheck
 import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.filled.Approval
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -108,6 +109,11 @@ fun HomeScreen(
                 add(
                     FeatureItem("Older Sessions", Icons.Default.History, colors.primaryPurple) {
                         onNavigate("${AttendanceDashboardCard.NAV_ROUTE}/older")
+                    }
+                )
+                add(
+                    FeatureItem("Leave Approvals", Icons.Default.Approval, colors.accentOrange) {
+                        onNavigate("leave_approvals")
                     }
                 )
             }

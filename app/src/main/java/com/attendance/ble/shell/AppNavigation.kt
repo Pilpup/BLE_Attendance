@@ -18,6 +18,7 @@ import com.college.feature.attendance.AttendanceScreen
 import com.college.feature.attendance.AttendanceScreenCallbacks
 import com.college.feature.attendance.viewmodel.AttendanceViewModel
 import com.college.feature.attendance.viewmodel.TeacherViewMode
+import com.college.feature.leave.HodLeavePortalScreen
 import com.college.feature.leave.LeaveApplicationScreen
 import com.college.feature.leave.viewmodel.LeaveViewModel
 import com.college.feature.library.LibraryDashboardCard
@@ -46,7 +47,7 @@ fun AppNavigation(
     val effectiveDestination = when {
         user != null -> if (destination == Destination.AUTH) Destination.HOME else destination
         destination == Destination.ATTENDANCE || destination == Destination.LIBRARY ||
-        destination == Destination.LEAVE -> Destination.AUTH
+        destination == Destination.LEAVE || destination == Destination.LEAVE_APPROVALS -> Destination.AUTH
         else -> destination
     }
 
@@ -70,6 +71,7 @@ fun AppNavigation(
                         }
                         route == LibraryDashboardCard.NAV_ROUTE -> Destination.LIBRARY
                         route == "leave_application" -> Destination.LEAVE
+                        route == "leave_approvals" -> Destination.LEAVE_APPROVALS
                         else -> Destination.HOME
                     }
                 },
@@ -148,7 +150,26 @@ fun AppNavigation(
         } else {
             destination = Destination.HOME
         }
+
+        Destination.LEAVE_APPROVALS -> if (user != null) {
+            BackHandler(enabled = true) {
+                destination = Destination.HOME
+            }
+            HodLeavePortalScreen(
+                applications = leaveViewModel.departmentLeaveApplications,
+                isLoading = leaveViewModel.isLoadingDept,
+                isReviewing = leaveViewModel.isReviewing,
+                message = leaveViewModel.deptMessage,
+                onLoad = { leaveViewModel.loadDepartmentLeaveApplications() },
+                onReview = { id, decision, comment ->
+                    leaveViewModel.reviewLeaveApplication(id, decision, comment)
+                },
+                onBack = { destination = Destination.HOME }
+            )
+        } else {
+            destination = Destination.HOME
+        }
     }
 }
 
-private enum class Destination { HOME, AUTH, ATTENDANCE, LIBRARY, LEAVE }
+private enum class Destination { HOME, AUTH, ATTENDANCE, LIBRARY, LEAVE, LEAVE_APPROVALS }
