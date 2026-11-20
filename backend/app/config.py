@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_FROM_EMAIL: str = "noreply@college.edu"
-    SMTP_FROM_NAME: str = "College Hub"
+    SMTP_FROM_NAME: str = "Rotom"
     OTP_EXPIRE_MINUTES: int = 5
     OTP_CLEANUP_INTERVAL_SECONDS: int = 300
 

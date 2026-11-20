@@ -1,6 +1,6 @@
 pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
 dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }
-rootProject.name = "ble_attendance"
+rootProject.name = "Rotom"
 include(":app")
 include(":core:model")
 include(":core:network")

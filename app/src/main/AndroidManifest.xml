@@ -13,8 +13,8 @@
          AndroidManifest.xml and are merged into this final manifest by AGP. -->
 
     <application
-        android:label="BLE Attendance"
-        android:theme="@style/Theme.CollegeApp"
+        android:label="Rotom"
+        android:theme="@style/Theme.Rotom"
         android:networkSecurityConfig="@xml/network_security_config"
         android:usesCleartextTraffic="false">
 

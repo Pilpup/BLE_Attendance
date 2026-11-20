@@ -35,4 +35,4 @@ adb install -r "$APK_PATH"
 echo "==> Launching app..."
 adb shell am start -n com.attendance.ble/.MainActivity
 
-echo "==> Done! BLE Attendance is open on your emulator screen."
+echo "==> Done! Rotom is open on your emulator screen."

@@ -2,7 +2,7 @@
 ## Architectural Whitepaper, Multi-Layer Defense Theory, & System Specification
 
 > **About this Document:**  
-> This document is the comprehensive theoretical guide and architectural reference for the BLE Attendance project. It explains the foundational physics, mathematical models, security defense layers, and algorithmic workflows that power the platform. It is written entirely in conceptual and theoretical terms without code snippets so that engineers, researchers, and academic administrators can immediately understand how the entire system functions.
+> This document is the comprehensive theoretical guide and architectural reference for the Rotom project. It explains the foundational physics, mathematical models, security defense layers, and algorithmic workflows that power the platform. It is written entirely in conceptual and theoretical terms without code snippets so that engineers, researchers, and academic administrators can immediately understand how the entire system functions.
 
 ---
 

@@ -173,7 +173,7 @@ fun HomeScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            // Viewing area displaying College Hub title
+            // Viewing area displaying Rotom title
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -181,7 +181,7 @@ fun HomeScreen(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "College Hub",
+                    text = "Rotom",
                     fontSize = 30.sp,
                     fontWeight = FontWeight.Bold,
                     color = AppTheme.colors.textPrimary,

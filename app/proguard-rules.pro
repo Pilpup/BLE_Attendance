@@ -1,4 +1,4 @@
-# Comprehensive ProGuard Rules for Ble Attendance App
+# Comprehensive ProGuard Rules for Rotom App
 
 # R6 (review P0): strip debug/verbose/info Log calls from release builds so any
 # overlooked literals never reach logcat; warnings/errors remain for crash

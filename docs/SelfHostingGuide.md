@@ -133,7 +133,7 @@ FACULTY_SIGNUP_SECRET=faculty_passcode_2026
 Create `/etc/systemd/system/college-attendance.service`:
 ```ini
 [Unit]
-Description=College BLE Attendance Backend Service
+Description=Rotom Backend Service
 After=network.target postgresql.service
 
 [Service]

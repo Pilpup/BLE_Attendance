@@ -307,7 +307,7 @@ async def lifespan(app: FastAPI):
 
 # Initializes FastAPI application with metadata and lifespan handler
 app = FastAPI(
-    title="BLE Attendance Verification API",
+    title="Rotom Verification API",
     version="1.0.0",
     # orjson (Rust) serialization: records/courses payloads are the large
     # JSON paths; stdlib json remains for the hand-built JSONResponse above.
