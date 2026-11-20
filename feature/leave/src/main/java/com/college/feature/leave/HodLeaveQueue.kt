@@ -29,8 +29,8 @@ import com.college.core.ui.theme.AppTheme
 import com.college.feature.leave.network.LeaveApplicationResponse
 
 // HOD department leave queue: lists applications and opens the review dialog
-// (feedback optional on approve, mandatory on reject). Hosted by the attendance
-// teacher flow but owned by the leave feature.
+// (feedback optional on approve, mandatory on reject). Owned by the leave
+// feature and shown in the HOD leave approvals portal (and teacher flow).
 @Composable
 fun HodLeaveRequestsView(
     applications: List<LeaveApplicationResponse>,

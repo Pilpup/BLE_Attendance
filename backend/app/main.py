@@ -191,16 +191,17 @@ BEGIN
         review_comment VARCHAR(500),
         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
         CONSTRAINT ck_leave_apps_dates CHECK (to_date >= from_date),
-        CONSTRAINT ck_leave_apps_status CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'))
+        CONSTRAINT ck_leave_apps_status CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED'))
     );
     CREATE INDEX IF NOT EXISTS ix_leave_apps_dept_status ON leave_applications(department, status);
     CREATE INDEX IF NOT EXISTS ix_leave_apps_student_created ON leave_applications(student_id, created_at);
 
-    -- Widen the status guard to include CANCELLED (student self-withdrawal):
-    -- drop the legacy 3-value constraint, then re-add the 4-value one.
+    -- Cancelled applications are removed from the database (not retained as a
+    -- status). Purge any legacy rows, then tighten the status guard.
+    DELETE FROM leave_applications WHERE status = 'CANCELLED';
     ALTER TABLE leave_applications DROP CONSTRAINT IF EXISTS ck_leave_apps_status;
     ALTER TABLE leave_applications ADD CONSTRAINT ck_leave_apps_status
-        CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'));
+        CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED'));
 
     -- Simplified leave portal: type/half-day/duration removed (whole calendar
     -- days only). Dropping columns is safe/idempotent on Postgres.

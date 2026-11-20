@@ -335,9 +335,8 @@ class LeaveApplication(Base):
         # block's CREATE TABLE IF NOT EXISTS expects — on a fresh Postgres DB
         # the sync block's no-op must not leave the guards missing.
         CheckConstraint("to_date >= from_date", name="ck_leave_apps_dates"),
-        # CANCELLED included: students can withdraw their own PENDING requests
         CheckConstraint(
-            "status IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCELLED')",
+            "status IN ('PENDING', 'APPROVED', 'REJECTED')",
             name="ck_leave_apps_status",
         ),
     )
