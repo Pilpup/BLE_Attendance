@@ -36,6 +36,10 @@
 -keep class com.college.feature.attendance.telemetry.** { *; }
 -keep class com.college.feature.library.model.** { *; }
 -keep class com.college.feature.library.network.** { *; }
+# :feature:leave DTOs — Gson deserializes these reflectively; without this
+# R8 renames the un-annotated fields (status/reason/id/department) and every
+# LeaveApplicationResponse deserializes with nulls (crash on open/submit).
+-keep class com.college.feature.leave.network.** { *; }
 
 # Keep all serialized fields
 -keepclassmembers class * {
@@ -51,6 +55,7 @@
 }
 -keep interface com.college.core.network.service.AuthApiService { *; }
 -keep interface com.college.feature.attendance.network.AttendanceApiService { *; }
+-keep interface com.college.feature.leave.network.LeaveApiService { *; }
 -keep interface com.college.feature.library.network.LibraryApiService { *; }
 
 # Google Tink / AndroidX Security Crypto

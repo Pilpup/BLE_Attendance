@@ -111,11 +111,16 @@ fun HomeScreen(
                         onNavigate("${AttendanceDashboardCard.NAV_ROUTE}/older")
                     }
                 )
-                add(
-                    FeatureItem("Leave Approvals", Icons.Default.Approval, colors.accentOrange) {
-                        onNavigate("leave_approvals")
-                    }
-                )
+                // HOD-only: the department queue endpoint rejects every other
+                // role with 403 ("Only the HOD can view leave applications"),
+                // so teachers landing here only ever saw an error banner.
+                if (user.hasRole(Role.HOD)) {
+                    add(
+                        FeatureItem("Leave Approvals", Icons.Default.Approval, colors.accentOrange) {
+                            onNavigate("leave_approvals")
+                        }
+                    )
+                }
             }
             if (user?.hasRole(Role.STUDENT) == true) {
                 add(
@@ -187,6 +192,7 @@ fun HomeScreen(
             val activeRole = user?.primaryRole ?: user?.roles?.firstOrNull() ?: Role.STUDENT
             val activeRoleLabel = when (activeRole) {
                 Role.TEACHER -> "Teacher"
+                Role.HOD -> "HOD"
                 Role.STUDENT -> "Student"
                 Role.STAFF -> "Staff"
                 Role.DEVELOPER -> "Developer"
@@ -409,7 +415,7 @@ private fun DevActingDialog(onDismiss: () -> Unit) {
                     color = colors.textSecondary
                 )
                 Spacer(Modifier.height(10.dp))
-                listOf(Role.STUDENT, Role.TEACHER, Role.STAFF, Role.DEVELOPER).forEach { role ->
+                listOf(Role.STUDENT, Role.TEACHER, Role.HOD, Role.STAFF, Role.DEVELOPER).forEach { role ->
                     val isActive = acting == role
                     Surface(
                         modifier = Modifier

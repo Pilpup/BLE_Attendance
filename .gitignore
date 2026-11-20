@@ -29,3 +29,19 @@ __pycache__/
 # Secrets & Local Databases
 *.env
 *.db
+
+# Simulation outputs (generated)
+backend/simulations/layer*_out/
+backend/simulations/**/results.json
+backend/simulations/**/report.txt
+
+# Large ML weight downloaded by backend/scripts/fetch_arcface_weight.py.
+# Never commit the 174 MB ArcFace blob (git history is permanent); the face
+# check still works via the SFace fallback if it is absent.
+backend/app/models/weights/arcface_w600k_r50.onnx
+backend/app/models/weights/arcface_w600k_r50.onnx.part
+
+# Consented face photos used only by backend/scripts/calibrate_face_thresholds.py.
+# Never commit biometric calibration images.
+backend/calibration_corpus/
+backend/calibration_report.json

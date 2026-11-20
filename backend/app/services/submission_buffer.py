@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Dict, List, Optional
+from typing import Optional
 
 
 # Staged check-in submission record
@@ -38,23 +38,9 @@ class StagedSubmission:
 class SubmissionBuffer:
     def __init__(self, ttl_seconds: int = 3600):
         self._lock = asyncio.Lock()
-        # R2 (review §3.1): per-session locks serialize the finalize/close
-        # boundary. A submission must either be drained by finalize's pop, or
-        # land AFTER finalize committed and be honestly rerouted to the grace
-        # path by the submit route's post-stage status re-read. Without the
-        # gate, a stage entering between finalize's pop and its commit reads
-        # the still-ACTIVE (uncommitted) status and is silently orphaned when
-        # finalize clears the buffer seconds later.
-        # Gates are never pruned: they ride on unexpired locks keyed by
-        # session id (bounded by session lifetime, a few hundred bytes each).
-        self._gates: dict[str, asyncio.Lock] = {}
         self._ttl_seconds = ttl_seconds
         self._buffers: dict[str, dict[str, StagedSubmission]] = {}
         self._last_accessed: dict[str, float] = {}
-
-    # Request-scoped gate used by finalize/close bodies and the submit route.
-    def session_gate(self, session_id: str) -> asyncio.Lock:
-        return self._gates.setdefault(f"gate:{session_id}", asyncio.Lock())
 
     # Prunes stale session buffers inactive for longer than TTL
     def _prune_stale(self, now: float) -> None:
@@ -113,14 +99,6 @@ class SubmissionBuffer:
         async with self._lock:
             self._last_accessed.pop(session_id, None)
             return self._buffers.pop(session_id, {})
-
-    # Returns staged submissions WITHOUT removing them. Finalize reads the
-    # buffer early and drains it only AFTER its DB commit, so a failure between
-    # read and commit can never permanently lose staged check-ins.
-    async def peek_submissions(self, session_id: str) -> dict[str, StagedSubmission]:
-        async with self._lock:
-            self._last_accessed[session_id] = time.time()
-            return dict(self._buffers.get(session_id, {}))
 
     # Clears staged submissions for a session upon cancellation
     async def clear_session(self, session_id: str) -> None:

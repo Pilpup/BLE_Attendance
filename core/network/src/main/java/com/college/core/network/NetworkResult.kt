@@ -16,26 +16,6 @@ sealed interface NetworkResult<out T> {
         val errorPayload: ApiErrorResponse? = null
     ) : NetworkResult<Nothing>
     data class Exception(val throwable: Throwable) : NetworkResult<Nothing>
-
-    val isSuccess: Boolean get() = this is Success
-}
-
-inline fun <T, R> NetworkResult<T>.map(transform: (T) -> R): NetworkResult<R> {
-    return when (this) {
-        is NetworkResult.Success -> NetworkResult.Success(transform(data))
-        is NetworkResult.Error -> this
-        is NetworkResult.Exception -> this
-    }
-}
-
-inline fun <T> NetworkResult<T>.onSuccess(action: (T) -> Unit): NetworkResult<T> {
-    if (this is NetworkResult.Success) action(data)
-    return this
-}
-
-inline fun <T> NetworkResult<T>.onError(action: (code: Int?, message: String) -> Unit): NetworkResult<T> {
-    if (this is NetworkResult.Error) action(code, message)
-    return this
 }
 
 suspend fun <T> safeApiCall(apiCall: suspend () -> Response<T>): NetworkResult<T> {

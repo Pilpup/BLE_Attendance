@@ -86,20 +86,19 @@ import java.util.Locale
 
 // Determines if a student record is marked Present (via BLE consensus or manual teacher verification)
 internal fun isRecordPresent(rec: AttendanceRecordItem): Boolean {
-    if (rec.status == "VERIFIED_PRESENT" || rec.status.equals("PRESENT", ignoreCase = true)) return true
-    if (rec.verificationMethod == "MANUAL_OVERRIDE" ||
-        rec.verificationMethod == "TEACHER_MANUAL" ||
-        rec.remarks?.contains("instructor", ignoreCase = true) == true ||
-        rec.remarks?.contains("teacher", ignoreCase = true) == true ||
-        rec.remarks?.contains("confirmed", ignoreCase = true) == true) {
-        return true
-    }
+    // Two-flag era (graph engine v3.1): VERIFIED (new) / VERIFIED_PRESENT (legacy).
+    if (rec.status == "VERIFIED" || rec.status == "VERIFIED_PRESENT" || rec.status.equals("PRESENT", ignoreCase = true)) return true
+    if (rec.verificationMethod == "MANUAL_OVERRIDE" || rec.verificationMethod == "TEACHER_MANUAL") return true
     return false
 }
 
-// Maps attendance audit records to display status categories (Verified or Unverified)
+// Present = verified; Absent-status = no check-in/ABSENT; Unverified = checked in but not verified.
 private fun getRecordAuditStatus(rec: AttendanceRecordItem): String {
-    return if (rec.status == "VERIFIED_PRESENT") "Verified" else "Unverified"
+    return when {
+        isRecordPresent(rec) -> "Present"
+        rec.status == "ABSENT" -> "Absent"
+        else -> "Unverified"
+    }
 }
 
 // Extracts the last two digits of the student's roll number for avatar badge icon
@@ -175,14 +174,12 @@ internal fun TeacherSection(
     cloudStatusMessage: String?,
     onSelectCourse: (CourseResponse) -> Unit,
     onStartSession: () -> Unit,
-    onStopSession: () -> Unit,
     onResetSession: () -> Unit,
     onVerifyStudent: (AttendanceRecordItem) -> Unit,
     teacherViewMode: TeacherViewMode,
     onSetTeacherViewMode: (TeacherViewMode) -> Unit,
     pastSessions: List<AttendanceSessionResponse>,
     isLoadingHistory: Boolean,
-    onLoadHistory: () -> Unit,
     selectedSessionForDetails: AttendanceSessionResponse? = null,
     onSelectSessionForDetails: (AttendanceSessionResponse) -> Unit = {},
     selectedCourse: CourseResponse? = null,
@@ -199,21 +196,24 @@ internal fun TeacherSection(
     onReviewLeave: (String, String, String?) -> Unit = { _, _, _ -> }
 ) {
     if (finalizedRecords.isNotEmpty()) {
-        val (verifiedCount, unverifiedCount) = remember(finalizedRecords) {
-            val v = finalizedRecords.count { getRecordAuditStatus(it) == "Verified" }
+        val (presentCount, absentCount) = remember(finalizedRecords) {
+            val v = finalizedRecords.count { getRecordAuditStatus(it) == "Present" }
             val u = finalizedRecords.size - v
             Pair(v, u)
         }
 
-        // Unverified students pinned at the top sorted ascending; verified students follow sorted ascending
+        // Non-present students pinned at top (Unverified), Present in middle, Absent at the bottom
         val sortedDisplayList = remember(finalizedRecords) {
             val unverified = finalizedRecords
                 .filter { getRecordAuditStatus(it) == "Unverified" }
                 .sortedWith { r1, r2 -> compareRollNumbers(getDisplayRollNo(r1), getDisplayRollNo(r2)) }
-            val verified = finalizedRecords
-                .filter { getRecordAuditStatus(it) == "Verified" }
+            val present = finalizedRecords
+                .filter { getRecordAuditStatus(it) == "Present" }
                 .sortedWith { r1, r2 -> compareRollNumbers(getDisplayRollNo(r1), getDisplayRollNo(r2)) }
-            unverified + verified
+            val absent = finalizedRecords
+                .filter { getRecordAuditStatus(it) == "Absent" }
+                .sortedWith { r1, r2 -> compareRollNumbers(getDisplayRollNo(r1), getDisplayRollNo(r2)) }
+            unverified + present + absent
         }
 
         Column(
@@ -221,12 +221,11 @@ internal fun TeacherSection(
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
 
-            // Metric statistics for verified and unverified attendees
+            // Metric statistics: Present and Absent
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Verified attendee counter card
                 Surface(
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(12.dp),
@@ -241,14 +240,14 @@ internal fun TeacherSection(
                         horizontalArrangement = Arrangement.Center
                     ) {
                         Text(
-                            text = "$verifiedCount",
+                            text = "$presentCount",
                             fontSize = 26.sp,
                             fontWeight = FontWeight.Black,
                             color = AppTheme.colors.primaryPurple
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Verified",
+                            text = "Present",
                             fontSize = 16.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = AppTheme.colors.textSecondary
@@ -256,7 +255,6 @@ internal fun TeacherSection(
                     }
                 }
 
-                // Unverified attendee counter card
                 Surface(
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(12.dp),
@@ -271,14 +269,14 @@ internal fun TeacherSection(
                         horizontalArrangement = Arrangement.Center
                     ) {
                         Text(
-                            text = "$unverifiedCount",
+                            text = "$absentCount",
                             fontSize = 26.sp,
                             fontWeight = FontWeight.Black,
-                            color = AppTheme.colors.accentOrange
+                            color = AppTheme.colors.textSecondary
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Unverified",
+                            text = "Absent",
                             fontSize = 16.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = AppTheme.colors.textSecondary
@@ -351,17 +349,24 @@ internal fun TeacherSection(
                                 )
                             }
 
-                        val isVerified = getRecordAuditStatus(rec) == "Verified"
+                        val status = getRecordAuditStatus(rec)
+                        val isPresent = status == "Present"
+                        val isAbsent = status == "Absent"
+                        val isUnverified = status == "Unverified"
                         val rollNo = getDisplayRollNo(rec)
                         val twoDigitRoll = getRollNumberTwoDigits(rollNo)
                         val studentName = getDisplayStudentName(rec)
-                        val badgeBg = if (isVerified) AppTheme.colors.primaryPurple else AppTheme.colors.accentOrange
+                        val badgeBg = when {
+                            isPresent -> AppTheme.colors.primaryPurple
+                            isAbsent -> AppTheme.colors.textSecondary
+                            else -> AppTheme.colors.accentOrange
+                        }
 
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .animateItemPlacement()
-                                .clickable(enabled = !isVerified) { onVerifyStudent(rec) }
+                                .clickable(enabled = isUnverified) { onVerifyStudent(rec) }
                                 .padding(horizontal = 14.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
@@ -371,7 +376,6 @@ internal fun TeacherSection(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                // 2-digit roll number badge icon container
                                 Box(
                                     modifier = Modifier
                                         .size(38.dp)
@@ -396,41 +400,52 @@ internal fun TeacherSection(
                                 )
                             }
 
-                            if (isVerified) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Check,
-                                        contentDescription = null,
-                                        tint = AppTheme.colors.primaryPurple,
-                                        modifier = Modifier.size(15.dp)
-                                    )
+                            when {
+                                isPresent -> {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = null,
+                                            tint = AppTheme.colors.primaryPurple,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Text(
+                                            text = "Present",
+                                            fontSize = 12.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = AppTheme.colors.primaryPurple
+                                        )
+                                    }
+                                }
+                                isAbsent -> {
                                     Text(
-                                        text = "Verified",
+                                        text = "Absent",
                                         fontSize = 12.5.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = AppTheme.colors.primaryPurple
+                                        color = AppTheme.colors.textSecondary
                                     )
                                 }
-                            } else {
-                                Button(
-                                    onClick = { onVerifyStudent(rec) },
-                                    shape = RoundedCornerShape(8.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = AppTheme.colors.accentOrange,
-                                        contentColor = Color.White
-                                    ),
-                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 5.dp),
-                                    modifier = Modifier.height(32.dp)
-                                ) {
-                                    Text(
-                                        text = "Verify",
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color.White
-                                    )
+                                else -> {
+                                    Button(
+                                        onClick = { onVerifyStudent(rec) },
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = AppTheme.colors.accentOrange,
+                                            contentColor = Color.White
+                                        ),
+                                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 5.dp),
+                                        modifier = Modifier.height(32.dp)
+                                    ) {
+                                        Text(
+                                            text = "Unverified",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -494,7 +509,7 @@ internal fun TeacherSection(
                     label = "Wave2Alpha"
                 )
 
-                val progress = (remainingSeconds.coerceIn(0, 40) / 40f)
+                val progress = (remainingSeconds.coerceIn(0, 60) / 60f)
                 val pulseColor = AppTheme.colors.primaryPurple
                 val arcAccentColor = AppTheme.colors.accentOrange
                 val trackRingColor = AppTheme.colors.surface
@@ -1567,8 +1582,13 @@ private fun TakeAttendanceSelectionView(
 private fun formatSessionDateTime(raw: String?): String {
     if (raw.isNullOrBlank()) return "Past Session"
     val trimmed = raw.trim()
-    val clean = trimmed.replace("Z", "")
+    // Server timestamps are UTC (trailing Z or +00:00); stripping the zone and
+    // parsing in the device-default timezone shifted session times by the
+    // local UTC offset. Parse in UTC, format in the device timezone.
+    val clean = trimmed.replace("Z", "").replace("+00:00", "")
+    val utcZone = java.util.TimeZone.getTimeZone("UTC")
     val patterns = listOf(
+        "yyyy-MM-dd'T'HH:mm:ss.SSSSSS",
         "yyyy-MM-dd'T'HH:mm:ss",
         "yyyy-MM-dd'T'HH:mm",
         "yyyy-MM-dd HH:mm:ss",
@@ -1579,6 +1599,7 @@ private fun formatSessionDateTime(raw: String?): String {
         try {
             val sdf = SimpleDateFormat(pat, Locale.getDefault())
             sdf.isLenient = false
+            sdf.timeZone = utcZone
             val parsed = sdf.parse(clean.take(pat.length))
             if (parsed != null) {
                 val outFormat = if (clean.length >= 16) {

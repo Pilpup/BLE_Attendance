@@ -2,7 +2,6 @@ package com.attendance.ble.shell
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -12,7 +11,6 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.viewmodel.compose.viewModel as composeViewModel
 import com.college.core.model.SessionState
 import com.college.core.network.SessionManager
-import com.college.core.ui.DashboardRegistry
 import com.college.feature.attendance.AttendanceDashboardCard
 import com.college.feature.attendance.AttendanceScreen
 import com.college.feature.attendance.AttendanceScreenCallbacks
@@ -37,12 +35,6 @@ fun AppNavigation(
     val sessionState by SessionManager.default.state.collectAsState()
     val user = (sessionState as? SessionState.Authenticated)?.user
 
-    // Register feature cards with the dashboard registry
-    LaunchedEffect(Unit) {
-        DashboardRegistry.register(AttendanceDashboardCard)
-        DashboardRegistry.register(LibraryDashboardCard)
-    }
-
     // Route unauthenticated users away from feature screens, allowing home and auth navigation
     val effectiveDestination = when {
         user != null -> if (destination == Destination.AUTH) Destination.HOME else destination
@@ -59,13 +51,22 @@ fun AppNavigation(
                     destination = when {
                         route == "auth" -> Destination.AUTH
                         route.startsWith(AttendanceDashboardCard.NAV_ROUTE) -> {
-                            if (route.contains("older")) {
-                                viewModel.teacherViewMode = TeacherViewMode.OLDER_SESSIONS
-                                viewModel.selectedSessionForDetails = null
-                                viewModel.loadSessionHistory()
-                            } else {
-                                viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
-                                viewModel.selectedSessionForDetails = null
+                            when {
+                                route.contains("older") -> {
+                                    viewModel.teacherViewMode = TeacherViewMode.OLDER_SESSIONS
+                                    viewModel.selectedSessionForDetails = null
+                                    viewModel.loadSessionHistory()
+                                }
+                                route.contains("leave") -> {
+                                    viewModel.teacherViewMode = TeacherViewMode.LEAVE_REQUESTS
+                                    viewModel.selectedSessionForDetails = null
+                                    // Leave data lives in :feature:leave now (PR #10).
+                                    leaveViewModel.loadDepartmentLeaveApplications()
+                                }
+                                else -> {
+                                    viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
+                                    viewModel.selectedSessionForDetails = null
+                                }
                             }
                             Destination.ATTENDANCE
                         }
@@ -98,8 +99,19 @@ fun AppNavigation(
                     } else if (viewModel.isSessionActive) {
                         viewModel.resetSession()
                     } else if (viewModel.finalizedRecords.isNotEmpty()) {
-                        viewModel.resetSession()
+                        // Teacher post-session attendance list: back to home.
+                        destination = Destination.HOME
+                    } else if (viewModel.teacherViewMode == TeacherViewMode.LEAVE_REQUESTS) {
+                        // Sub-view inside take-attendance; back returns to the form.
+                        viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
+                    } else if (
+                        user.hasRole(com.college.core.model.Role.STUDENT) &&
+                        viewModel.studentPhase != com.college.feature.attendance.viewmodel.StudentPhase.STANDBY
+                    ) {
+                        // Student check-in/status flow: back to home.
+                        destination = Destination.HOME
                     } else {
+                        // OLDER_SESSIONS list and take-attendance root return home.
                         destination = Destination.HOME
                     }
                 }

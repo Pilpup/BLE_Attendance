@@ -98,7 +98,9 @@ class MainActivity : ComponentActivity() {
             val context = androidx.compose.ui.platform.LocalContext.current
 
             val bluetoothManager = remember(context) {
-                context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+                // Null on Bluetooth-less devices — never hard-cast, or
+                // getSystemService returns null and composition crashes.
+                context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
             }
 
             // R8 (review §1.7.5): the launcher callbacks used to be literal
@@ -135,7 +137,7 @@ class MainActivity : ComponentActivity() {
                     // cannot legitimately occur right after a fresh grant; we
                     // toast instead of re-launching the same request (loop guard).
                     try {
-                        if (bluetoothManager.adapter?.isEnabled == false) {
+                        if (bluetoothManager?.adapter?.isEnabled == false) {
                             pendingAction.value = action
                             val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
                             enableBluetoothLauncher.launch(enableBtIntent)
@@ -151,17 +153,17 @@ class MainActivity : ComponentActivity() {
             }
 
             // Checks runtime permissions and bluetooth state before executing action
-            val checkAndExecute: (() -> Unit) -> Unit = remember(context, bluetoothManager, permissionLauncher, enableBluetoothLauncher) {
-                { action ->
-                    val hasPermissions = BleConstants.neededPermissions.all { perm ->
+            val checkAndExecute: (Array<String>, () -> Unit) -> Unit = remember(context, bluetoothManager, permissionLauncher, enableBluetoothLauncher) {
+                { requiredPermissions, action ->
+                    val hasPermissions = requiredPermissions.all { perm ->
                         ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
                     }
                     if (!hasPermissions) {
                         pendingAction.value = action
-                        permissionLauncher.launch(BleConstants.neededPermissions)
+                        permissionLauncher.launch(requiredPermissions)
                     } else {
                         try {
-                            if (bluetoothManager.adapter?.isEnabled == false) {
+                            if (bluetoothManager?.adapter?.isEnabled == false) {
                                 pendingAction.value = action
                                 val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
                                 enableBluetoothLauncher.launch(enableBtIntent)
@@ -170,7 +172,7 @@ class MainActivity : ComponentActivity() {
                             }
                         } catch (_: SecurityException) {
                             pendingAction.value = action
-                            permissionLauncher.launch(BleConstants.neededPermissions)
+                            permissionLauncher.launch(requiredPermissions)
                         }
                     }
                 }
@@ -180,12 +182,9 @@ class MainActivity : ComponentActivity() {
             val shellCallbacks = remember(viewModel, checkAndExecute) {
                 AttendanceScreenCallbacks(
                     onStartTeacherSession = {
-                        checkAndExecute {
-                            viewModel.startTeacherSession(durationSeconds = 40)
+                        checkAndExecute(BleConstants.teacherPermissions) {
+                            viewModel.startTeacherSession()
                         }
-                    },
-                    onStopTeacherSession = {
-                        viewModel.finalizeSessionAndAudit()
                     },
                     onShareAttendance = {
                         shareAttendanceCsv(viewModel.generateCsvReport(), viewModel.sessionId)
@@ -194,7 +193,7 @@ class MainActivity : ComponentActivity() {
                         viewModel.resetSession()
                     },
                     onStartStudentScanning = {
-                        checkAndExecute {
+                        checkAndExecute(BleConstants.studentPermissions) {
                             viewModel.startStudentScanning()
                         }
                     },
@@ -205,7 +204,7 @@ class MainActivity : ComponentActivity() {
                         viewModel.updateRollNumber(roll)
                     },
                     onRequestPermissions = {
-                        permissionLauncher.launch(BleConstants.neededPermissions)
+                        permissionLauncher.launch(BleConstants.studentPermissions)
                     }
                 )
             }
@@ -224,8 +223,9 @@ class MainActivity : ComponentActivity() {
     // Exports attendance records and session details as a .csv file
     private fun shareAttendanceCsv(csvContent: String, sessionId: String) {
         try {
+            val exportDir = java.io.File(cacheDir, "exports").apply { mkdirs() }
             val fileName = "attendance_${sessionId.lowercase().ifBlank { "session" }}.csv"
-            val file = java.io.File(cacheDir, fileName)
+            val file = java.io.File(exportDir, fileName)
             file.writeText(csvContent)
 
             val uri = androidx.core.content.FileProvider.getUriForFile(
@@ -237,7 +237,6 @@ class MainActivity : ComponentActivity() {
             val sendIntent = Intent().apply {
                 action = Intent.ACTION_SEND
                 putExtra(Intent.EXTRA_STREAM, uri)
-                putExtra(Intent.EXTRA_TEXT, csvContent)
                 putExtra(Intent.EXTRA_SUBJECT, "Attendance - Session $sessionId")
                 type = "text/csv"
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -245,6 +244,7 @@ class MainActivity : ComponentActivity() {
             val shareIntent = Intent.createChooser(sendIntent, "Export Attendance CSV")
             startActivity(shareIntent)
         } catch (_: Exception) {
+            // Fallback: share content directly when file/URI export is unavailable.
             val fallbackIntent = Intent().apply {
                 action = Intent.ACTION_SEND
                 putExtra(Intent.EXTRA_TEXT, csvContent)

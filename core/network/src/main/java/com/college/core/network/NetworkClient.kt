@@ -11,7 +11,6 @@ object NetworkClient {
 
     val okHttpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .addInterceptor(HostSelectionInterceptor(ServerConfigManager.default))
             .addInterceptor(AuthInterceptor(SessionManager.default))
             .addInterceptor(
                 HttpLoggingInterceptor().apply {
@@ -51,19 +50,4 @@ object NetworkClient {
     }
 
     inline fun <reified T : Any> createService(): T = getService(T::class.java)
-
-    // Non-blocking probe of the backend /health endpoint to detect service readiness.
-    suspend fun checkServerHealth(): Boolean = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-        try {
-            val request = okhttp3.Request.Builder()
-                .url(ServerConfigManager.default.currentBaseUrl + "health")
-                .header("No-Auth", "true")
-                .build()
-            okHttpClient.newCall(request).execute().use { response ->
-                response.isSuccessful
-            }
-        } catch (_: Exception) {
-            false
-        }
-    }
 }

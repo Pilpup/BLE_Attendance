@@ -4,11 +4,12 @@ enum class Role(val priority: Int) {
     STUDENT(priority = 1),
     STAFF(priority = 2),
     TEACHER(priority = 3),
-    DEVELOPER(priority = 4);
+    HOD(priority = 4),
+    DEVELOPER(priority = 5);
 
     fun canAccessStaffTools(): Boolean = this == STAFF || this == DEVELOPER
     fun isDeveloper(): Boolean = this == DEVELOPER
-    fun canTakeAttendance(): Boolean = this == TEACHER || this == DEVELOPER
+    fun canTakeAttendance(): Boolean = this == TEACHER || this == HOD || this == DEVELOPER
 
     companion object {
         fun fromBackendName(name: String?): Role? =

@@ -25,6 +25,9 @@ logger = logging.getLogger("uvicorn.error")
 
 # Standard OpenCV SFace cosine distance threshold (0.363 achieves 99.9% verification accuracy, FAR < 0.1%)
 DEFAULT_SIMILARITY_THRESHOLD = 0.363
+# Deployed distant-student gate for register_and_check (was hard-coded inside
+# the matcher; exposed as a parameter without changing behavior).
+DISTANT_SIMILARITY_THRESHOLD = 0.70
 # Duplicate threshold for DESK-CLUSTER peers. 0.363 is calibrated on aligned
 # LFW-style portraits; classroom desk selfies (front camera, arm's length,
 # phone-on-desk angle, small blurred faces) inflate cross-person cosine well
@@ -34,6 +37,13 @@ DEFAULT_SIMILARITY_THRESHOLD = 0.363
 CLUSTER_DUPLICATE_THRESHOLD = 0.50
 YUNET_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "weights", "face_detection_yunet.onnx")
 SFACE_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "weights", "face_recognition_sface.onnx")
+# F1 (docs/future_plans.md): ArcFace-class 512-d recognition head. When the
+# weight is present it replaces SFace as the embedding head; SFace stays
+# loaded as the alignment provider (alignCrop) and the fallback head.
+# InsightFace buffalo_l weights are non-commercial-research licensed — see the
+# F1 license note before production use; AdaFace (MIT) is the substitute.
+ARCFACE_MODEL_PATH = os.path.join(os.path.dirname(__file__), "..", "models", "weights", "arcface_w600k_r50.onnx")
+ARCFACE_INPUT_SIZE = (112, 112)
 MAX_PAYLOAD_BYTES = 4_000_000
 SESSION_TTL_SECONDS = 7_200
 MAX_FLAGGED_PAIRS_PER_SESSION = 50
@@ -76,9 +86,37 @@ class FaceCheckResult:
     matched_student_key: Optional[str] = None
     matched_roll_number: Optional[str] = None
     remarks: str = ""
+    # Internal: the extracted embedding, surfaced for F1 reference harvesting.
+    # Never serialized to clients.
+    embedding: Optional[np.ndarray] = None
+    # F1 1:1 verdict: True verified / False held for review. None means the
+    # legacy open-set path should decide (has_face and not duplicate).
+    passed: Optional[bool] = None
 
 
-# Detects human faces via OpenCV YuNet and extracts 128-d deep facial embeddings via SFace
+# F1 capture payload: embedding plus cheap metadata recorded with each reference.
+# No extra inference — all fields come from data already computed during
+# detection/alignment. Images themselves are never persisted.
+@dataclass
+class FaceCapture:
+    has_face: bool
+    embedding: Optional[np.ndarray] = None
+    remark: str = ""
+    face_px: float = 0.0
+    blur: float = 0.0
+    yaw: float = 0.0
+    exposure: float = 0.0
+
+    def metadata(self) -> dict:
+        return {
+            "face_px": float(self.face_px),
+            "blur": float(self.blur),
+            "yaw": float(self.yaw),
+            "exposure": float(self.exposure),
+        }
+
+
+# Detects human faces via OpenCV YuNet and extracts deep facial embeddings
 class FaceMatchingEngine:
 
     def __init__(
@@ -91,6 +129,12 @@ class FaceMatchingEngine:
         self.detector: Optional[cv2.FaceDetectorYN] = None
         self.recognizer: Optional[cv2.FaceRecognizerSF] = None
         self.ort_recognizer_session = None
+        # F1: active embedding head ("sface" 128-d legacy, "arcface" 512-d).
+        # All consumers (registry matrices, similarity) are dim-agnostic and
+        # read this, so swapping the head never desyncs vector widths.
+        self.head: str = "sface"
+        self.embed_dim: int = 128
+        self.ort_arcface_session = None
         self.execution_provider: str = "CPU"
         self._lock = threading.Lock()
         self._tune_threading()
@@ -153,6 +197,27 @@ class FaceMatchingEngine:
                     except Exception as e:
                         logger.warning(f"[FaceEngine] Could not initialize ONNX Runtime session: {e}")
                         self.ort_recognizer_session = None
+
+                # F1: ArcFace 512-d recognition head. Fail-closed — on any load
+                # problem we stay on SFace rather than degrade silently.
+                if ORT_AVAILABLE and ort is not None and os.path.exists(ARCFACE_MODEL_PATH):
+                    try:
+                        opts = ort.SessionOptions()
+                        opts.log_severity_level = 3
+                        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                        opts.intra_op_num_threads = min(4, os.cpu_count() or 1)
+                        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if self.execution_provider == "CUDA" else ["CPUExecutionProvider"]
+                        self.ort_arcface_session = ort.InferenceSession(ARCFACE_MODEL_PATH, opts, providers=providers)
+                        out_shape = self.ort_arcface_session.get_outputs()[0].shape
+                        dim = int(out_shape[-1]) if isinstance(out_shape[-1], int) and out_shape[-1] > 0 else 512
+                        self.embed_dim = dim
+                        self.head = "arcface"
+                        logger.info(f"[FaceEngine] ArcFace head loaded ({dim}-d, providers: {self.ort_arcface_session.get_providers()})")
+                    except Exception as e:
+                        self.ort_arcface_session = None
+                        self.head = "sface"
+                        self.embed_dim = 128
+                        logger.warning(f"[FaceEngine] ArcFace head unavailable, staying on SFace 128-d: {e}")
             else:
                 logger.warning("[FaceEngine] Model weights not found. Falling back to basic feature extractor.")
         except Exception as e:
@@ -171,17 +236,24 @@ class FaceMatchingEngine:
             "opencl_available": cv2.ocl.haveOpenCL(),
         }
 
-    # Detects face and extracts 128-d aligned SFace embedding vector from raw image bytes
+    # Backwards-compatible tuple interface; new callers should use extract_capture.
     def extract_face_and_embedding(self, image_bytes: bytes) -> tuple[bool, Optional[np.ndarray], str]:
+        capture = self.extract_capture(image_bytes)
+        return capture.has_face, capture.embedding, capture.remark
+
+    # Detects a face, extracts the aligned embedding, and derives lightweight
+    # capture metadata (face size, blur, yaw proxy, exposure) from the same
+    # crop. No second inference and no image persistence.
+    def extract_capture(self, image_bytes: bytes) -> FaceCapture:
         try:
             nparr = np.frombuffer(image_bytes, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             if img is None:
-                return False, None, "REJECTED: Corrupted image bytes"
+                return FaceCapture(False, remark="REJECTED: Corrupted image bytes")
 
             h, w = img.shape[:2]
             if h < 20 or w < 20:
-                return False, None, "REJECTED: Image dimensions too small"
+                return FaceCapture(False, remark="REJECTED: Image dimensions too small")
 
             # Downscales oversized images to 640px to bound CPU inference time
             max_dim = max(h, w)
@@ -207,10 +279,10 @@ class FaceMatchingEngine:
                     is_testing = is_test_environment()
                     if (faces is None or len(faces) == 0) and is_synthetic and is_testing:
                         mean_colors = np.mean(img, axis=(0, 1)).astype(np.float32)
-                        tiled = np.tile(mean_colors, 43)[:128]
+                        tiled = np.tile(mean_colors, self.embed_dim)[: self.embed_dim]
                         norm = np.linalg.norm(tiled)
-                        emb = tiled / norm if norm > 1e-6 else np.ones(128, dtype=np.float32) / np.sqrt(128)
-                        return True, emb.reshape(1, 128), "Synthetic test face verified"
+                        emb = tiled / norm if norm > 1e-6 else np.ones(self.embed_dim, dtype=np.float32) / np.sqrt(self.embed_dim)
+                        return FaceCapture(True, emb.reshape(1, self.embed_dim), "Synthetic test face verified")
 
                     # Exposure rescue (one bounded attempt): a strongly backlit or dim
                     # frame can sit below the detector's score threshold as a dark
@@ -228,45 +300,92 @@ class FaceMatchingEngine:
                             logger.info("[FaceEngine] Exposure rescue: face recovered after CLAHE on zero-detection frame")
 
                     # Reject when no face is in the frame — with measured brightness so
-                    # instructors can distinguish an honest backlit selfie from a
+                    # instructors can tell an honest backlit selfie apart from a
                     # mis-aimed camera capture.
                     if faces is None or len(faces) == 0:
-                        return False, None, _no_face_remark(img)
+                        return FaceCapture(False, remark=_no_face_remark(img))
 
                     # Selects foreground face with largest bounding box area
                     primary_face = max(faces, key=lambda f: float(f[2] * f[3]))
 
-                    # Align and crop face using 5 facial landmarks (eyes, nose, mouth corners)
+                    # Align and crop face using 5 facial landmarks (eyes, nose, mouth corners).
+                    # The SFace canonical 5-point template equals the InsightFace
+                    # ArcFace alignment template, so the same crop feeds either head.
                     aligned_face = self.recognizer.alignCrop(img, primary_face)
-                    feature = self.recognizer.feature(aligned_face)
+                    if self.ort_arcface_session is not None:
+                        feature = self._arcface_feature(aligned_face)
+                    else:
+                        feature = self.recognizer.feature(aligned_face)
+
+                    gray = cv2.cvtColor(aligned_face, cv2.COLOR_BGR2GRAY)
+                    landmarks = np.asarray(primary_face[5:15], dtype=np.float64)
+                    eye_mid_x = (landmarks[0] + landmarks[2]) / 2.0 if landmarks.size >= 5 else 0.0
+                    interocular = abs(landmarks[2] - landmarks[0]) if landmarks.size >= 3 else 0.0
+                    yaw_proxy = abs(landmarks[4] - eye_mid_x) / max(interocular, 1e-3) if landmarks.size >= 5 else 0.0
                     remark = "Human face verified and aligned (exposure-rescued)" if was_rescued else "Human face verified and aligned"
-                    return True, feature, remark
+                    return FaceCapture(
+                        True, feature, remark,
+                        face_px=float(primary_face[2] * primary_face[3]),
+                        blur=float(cv2.Laplacian(gray, cv2.CV_64F).var()),
+                        yaw=float(yaw_proxy),
+                        exposure=float(np.mean(gray)),
+                    )
             else:
                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 resized = cv2.resize(gray, (16, 8)).astype(np.float32).flatten()
                 norm = np.linalg.norm(resized)
-                emb = resized / norm if norm > 1e-6 else np.ones(128, dtype=np.float32) / np.sqrt(128)
-                return True, emb.reshape(1, 128), "Fallback feature embedding"
+                dim = self.embed_dim
+                emb = resized / norm if norm > 1e-6 else np.ones(dim, dtype=np.float32) / np.sqrt(dim)
+                return FaceCapture(True, emb.reshape(1, dim), "Fallback feature embedding")
         except Exception as e:
             logger.error(f"[FaceEngine] Error processing face: {e}")
-            return False, None, f"Error processing face: {e}"
+            return FaceCapture(False, remark=f"Error processing face: {e}")
 
-    # Extracts 128-d L2-normalized embedding vector for backwards compatibility
+    # Runs the ArcFace head on an aligned 112x112 BGR crop: InsightFace
+    # preprocessing (x - 127.5) / 127.5, NCHW layout, BGR channel order.
+    # Returns an L2-normalized (1, embed_dim) float32 row.
+    def _arcface_feature(self, aligned_face: np.ndarray) -> np.ndarray:
+        blob = cv2.dnn.blobFromImage(
+            aligned_face,
+            scalefactor=1.0 / 127.5,
+            size=ARCFACE_INPUT_SIZE,
+            mean=(127.5, 127.5, 127.5),
+            swapRB=False,
+        )
+        with self._lock:
+            out = self.ort_arcface_session.run(
+                None, {self.ort_arcface_session.get_inputs()[0].name: blob}
+            )[0]
+        flat = np.asarray(out, dtype=np.float32).flatten()[: self.embed_dim]
+        norm = float(np.linalg.norm(flat))
+        if norm > 1e-6:
+            flat = flat / norm
+        return flat.reshape(1, self.embed_dim)
+
+    # Extracts L2-normalized embedding vector for backwards compatibility
     def extract_embedding(self, image_bytes: bytes) -> np.ndarray:
         has_face, emb, _ = self.extract_face_and_embedding(image_bytes)
+        dim = self.embed_dim
         if emb is not None:
-            flat = emb.flatten()[:128]
+            flat = emb.flatten()[:dim]
             norm = np.linalg.norm(flat)
-            return flat / norm if norm > 1e-6 else np.ones(128, dtype=np.float32) / np.sqrt(128)
-        return np.ones(128, dtype=np.float32) / np.sqrt(128)
+            return flat / norm if norm > 1e-6 else np.ones(dim, dtype=np.float32) / np.sqrt(dim)
+        return np.ones(dim, dtype=np.float32) / np.sqrt(dim)
 
-    # Computes cosine similarity between two face feature vectors using SFace
+    # Computes cosine similarity between two face feature vectors (any head dim)
     def compute_similarity(self, feat_a: np.ndarray, feat_b: np.ndarray) -> float:
         # Verifies feature vectors contain only finite numbers
         if not (np.all(np.isfinite(feat_a)) and np.all(np.isfinite(feat_b))):
             return 0.0
 
-        if self.recognizer is not None:
+        flat_a = feat_a.flatten()
+        flat_b = feat_b.flatten()
+        if flat_a.shape != flat_b.shape:
+            logger.error(f"[FaceEngine] Similarity dim mismatch: {flat_a.shape} vs {flat_b.shape}")
+            return 0.0
+
+        # SFace's native matcher is only valid for its own 128-d vectors
+        if self.head == "sface" and self.recognizer is not None and flat_a.size == 128:
             try:
                 # Normalizes shape to 2D matrix before SFace match
                 arr_a = feat_a.reshape(1, 128).astype(np.float32)
@@ -316,6 +435,9 @@ class SessionFaceRegistry:
 
     def __init__(self, engine: Optional[FaceMatchingEngine] = None):
         self.engine = engine or FaceMatchingEngine()
+        # Embedding width of the active head (128 SFace, 512 ArcFace) — every
+        # matrix/row below is sized from this, never a literal.
+        self._dim = self.engine.embed_dim
         # Serializes registry read-modify-write across worker threads
         self._registry_lock = threading.Lock()
         # session_id -> { student_key: {"embedding": np.ndarray, "roll": str, "flagged": bool, "image_b64": Optional[str]} }
@@ -325,7 +447,7 @@ class SessionFaceRegistry:
         self._session_timestamps: dict[str, float] = {}
         # session_id -> list of student keys in matrix row order
         self._session_keys: dict[str, list[str]] = {}
-        # session_id -> 2D numpy array of shape (N, 128) for BLAS SIMD matching
+        # session_id -> 2D numpy array of shape (N, dim) for BLAS SIMD matching
         self._session_matrices: dict[str, np.ndarray] = {}
         # session_id -> list of cluster peer sets corresponding to matrix rows
         self._session_clusters: dict[str, list[set[str]]] = {}
@@ -349,10 +471,17 @@ class SessionFaceRegistry:
         face_base64: Optional[str] = None,
         face_bytes: Optional[bytes] = None,
         cluster_peers: Optional[set[str] | list[str]] = None,
-        threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+        threshold: float = DISTANT_SIMILARITY_THRESHOLD,
+        embedding: Optional[np.ndarray] = None,
     ) -> FaceCheckResult:
+        raw_bytes: Optional[bytes] = None
         try:
-            if face_bytes is not None:
+            if embedding is not None:
+                # F1: caller already ran extraction once (enrollment pre-check);
+                # reuse it instead of paying a second inference.
+                has_face = True
+                remarks = "Pre-verified embedding"
+            elif face_bytes is not None:
                 # Rejects oversized raw image bytes to prevent memory exhaustion
                 if len(face_bytes) > MAX_PAYLOAD_BYTES:
                     return FaceCheckResult(
@@ -383,7 +512,8 @@ class SessionFaceRegistry:
                     remarks="REJECTED: No face payload provided"
                 )
 
-            has_face, embedding, remarks = self.engine.extract_face_and_embedding(raw_bytes)
+            if embedding is None:
+                has_face, embedding, remarks = self.engine.extract_face_and_embedding(raw_bytes)
         except Exception as e:
             logger.error(f"[FaceRegistry] Failed to decode face image for {student_key}: {e}")
             return FaceCheckResult(
@@ -428,7 +558,7 @@ class SessionFaceRegistry:
         student_key: str,
         roll_number: Optional[str],
         embedding: np.ndarray,
-        raw_bytes: bytes,
+        raw_bytes: Optional[bytes],
         cluster_peers: Optional[set[str] | list[str]],
         threshold: float,
     ) -> FaceCheckResult:
@@ -442,10 +572,10 @@ class SessionFaceRegistry:
         matrix = self._session_matrices.get(session_id)
         target_cluster = set(cluster_peers) if cluster_peers is not None else None
 
-        # Normalize query embedding to unit norm float32 vector of shape (128,)
-        q_flat = embedding.flatten()[:128].astype(np.float32)
+        # Normalize query embedding to unit norm float32 vector of shape (dim,)
+        q_flat = embedding.flatten()[: self._dim].astype(np.float32)
         q_norm = float(np.linalg.norm(q_flat))
-        q_vec = q_flat / q_norm if q_norm > 1e-6 else np.ones(128, dtype=np.float32) / np.sqrt(128)
+        q_vec = q_flat / q_norm if q_norm > 1e-6 else np.ones(self._dim, dtype=np.float32) / np.sqrt(self._dim)
 
         max_similarity = -1.0
         matched_key: Optional[str] = None
@@ -455,11 +585,12 @@ class SessionFaceRegistry:
         if matrix is not None and len(keys) > 0:
             scores = matrix @ q_vec
 
-            # Apply cluster-aware similarity thresholds per student. Desk
-            # neighbors get the classroom-calibrated CLUSTER_DUPLICATE_THRESHOLD
-            # (see constant comment); distant students keep the stricter 0.70
-            # because they are not a physically plausible proxy vector.
-            thresholds = np.full(len(keys), 0.70, dtype=np.float32)
+            # Apply cluster-aware similarity thresholds per student. The
+            # caller-provided threshold governs distant students (deployed
+            # base: 0.70 — strict, since distant students are not a
+            # physically plausible proxy vector); desk neighbors get the
+            # classroom-calibrated CLUSTER_DUPLICATE_THRESHOLD (0.50).
+            thresholds = np.full(len(keys), threshold, dtype=np.float32)
             for idx, (ex_key, ex_cluster) in enumerate(zip(keys, clusters)):
                 if ex_key == student_key:
                     thresholds[idx] = 999.0
@@ -484,7 +615,7 @@ class SessionFaceRegistry:
 
         if is_duplicate:
             # Encodes raw image to Base64 only when flagged for instructor review
-            image_b64 = base64.b64encode(raw_bytes).decode("utf-8")
+            image_b64 = base64.b64encode(raw_bytes).decode("utf-8") if raw_bytes else None
             flagged_list = self._flagged_pairs.setdefault(session_id, [])
             if len(flagged_list) < MAX_FLAGGED_PAIRS_PER_SESSION:
                 flag_entry = {
@@ -517,9 +648,9 @@ class SessionFaceRegistry:
                 keys.append(student_key)
                 clusters.append(target_cluster or set())
                 if matrix is None:
-                    self._session_matrices[session_id] = q_vec.reshape(1, 128)
+                    self._session_matrices[session_id] = q_vec.reshape(1, self._dim)
                 else:
-                    self._session_matrices[session_id] = np.vstack([matrix, q_vec.reshape(1, 128)])
+                    self._session_matrices[session_id] = np.vstack([matrix, q_vec.reshape(1, self._dim)])
 
             logger.warning(
                 f"[FaceRegistry] Duplicate face detected in session {session_id}: "
@@ -533,7 +664,8 @@ class SessionFaceRegistry:
                 similarity_score=max_similarity,
                 matched_student_key=matched_key,
                 matched_roll_number=matched_roll,
-                remarks=f"Duplicate face detected with {matched_roll or matched_key} (similarity: {max_similarity * 100:.1f}%)"
+                remarks=f"Duplicate face detected with {matched_roll or matched_key} (similarity: {max_similarity * 100:.1f}%)",
+                embedding=embedding,
             )
 
         # Non-flagged student: store only the embedding vector in RAM and discard raw image
@@ -554,15 +686,16 @@ class SessionFaceRegistry:
             keys.append(student_key)
             clusters.append(target_cluster or set())
             if matrix is None:
-                self._session_matrices[session_id] = q_vec.reshape(1, 128)
+                self._session_matrices[session_id] = q_vec.reshape(1, self._dim)
             else:
-                self._session_matrices[session_id] = np.vstack([matrix, q_vec.reshape(1, 128)])
+                self._session_matrices[session_id] = np.vstack([matrix, q_vec.reshape(1, self._dim)])
 
         return FaceCheckResult(
             is_duplicate=False,
             has_human_face=True,
             similarity_score=max(0.0, max_similarity),
-            remarks="Unique individual verified in active session"
+            remarks="Unique individual verified in active session",
+            embedding=embedding,
         )
 
     # Returns flagged duplicate pairs for the session

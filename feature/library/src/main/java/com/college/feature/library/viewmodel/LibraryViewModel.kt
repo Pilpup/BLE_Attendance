@@ -130,16 +130,14 @@ class LibraryViewModel : ViewModel() {
         LibraryCatalogStore.books[index] = book.copy(availableCopies = book.availableCopies - 1)
 
         syncAfterMutation(
-            onFailure = { failureCode ->
-                // On any HTTP failure (e.g. 409 Conflict, 400, etc.), rollback the optimistic decrement
-                if (failureCode != -1) {
-                    val idx = LibraryCatalogStore.books.indexOfFirst { it.id == bookId }
-                    if (idx != -1) {
-                        val curr = LibraryCatalogStore.books[idx]
-                        LibraryCatalogStore.books[idx] = curr.copy(
-                            availableCopies = (curr.availableCopies + 1).coerceAtMost(curr.totalCopies)
-                        )
-                    }
+            onFailure = { _ ->
+                // Roll back optimistic decrement on any failure, including transport/offline errors.
+                val idx = LibraryCatalogStore.books.indexOfFirst { it.id == bookId }
+                if (idx != -1) {
+                    val curr = LibraryCatalogStore.books[idx]
+                    LibraryCatalogStore.books[idx] = curr.copy(
+                        availableCopies = (curr.availableCopies + 1).coerceAtMost(curr.totalCopies)
+                    )
                 }
             },
             onComplete = {
@@ -234,6 +232,9 @@ class LibraryViewModel : ViewModel() {
     /** Active book lookup state (for UI loading indicators). */
     var isLookingUpBook by mutableStateOf(false)
         private set
+    // Concurrent lookups share one flag: an early finisher must not clear it
+    // while another lookup is still in flight. Counter keeps it in sync.
+    private var pendingLookups = 0
 
     /**
      * Look up book details by ISBN barcode using the cascading Google Books,
@@ -241,6 +242,7 @@ class LibraryViewModel : ViewModel() {
      */
     fun lookupBook(isbn: String, onResult: (BookLookupResponse?) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
+            pendingLookups++
             isLookingUpBook = true
             try {
                 // Single source of truth: the backend scraper (Google Books →
@@ -256,7 +258,10 @@ class LibraryViewModel : ViewModel() {
                     onResult(null)
                 }
             } finally {
-                isLookingUpBook = false
+                pendingLookups = (pendingLookups - 1).coerceAtLeast(0)
+                if (pendingLookups == 0) {
+                    isLookingUpBook = false
+                }
             }
         }
     }

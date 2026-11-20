@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, CheckConstraint, Date, DateTime, Float, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -22,7 +22,7 @@ class User(Base):
     full_name: Mapped[str] = mapped_column(String(120), nullable=False)
     roll_number: Mapped[Optional[str]] = mapped_column(String(50), unique=True, nullable=True, index=True)
     role: Mapped[str] = mapped_column(String(50), default="STUDENT")
-    department: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    department: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     program: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
     semester: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     section: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
@@ -135,6 +135,12 @@ class AttendanceSession(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 60s timeline: server-owned schedule anchors (set once at create).
+    # Null on legacy sessions created before the timeline migration.
+    game_starts_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    game_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set in the same transaction as committed audit verdicts; null means no audit ran.
+    audit_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     total_enrolled: Mapped[int] = mapped_column(default=0)
     total_verified: Mapped[int] = mapped_column(default=0)
     # Honest-counter rename (was total_spoofers): this is the session's
@@ -231,6 +237,50 @@ class SessionSubmission(Base):
 
 
 # Short-lived one-time password record for authentication and registration
+class FaceEnrollment(Base):
+    __tablename__ = "face_enrollments"
+
+    # F1 (docs/future_plans.md): passive 1:1 face-verification references.
+    # Stores ONLY embedding descriptors — never images. Embeddings are
+    # harvested from quality-gated, auto-verified daily captures (teacher
+    # overrides of face-flagged submissions are explicitly excluded: that
+    # channel also clears suspect proxies and would poison the template).
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    student_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, unique=True
+    )
+    # 3-5 exemplar records: {vec, day, quality, yaw, exposure, created_at}.
+    # Only descriptors are stored — never images. Width follows the active
+    # engine head (128 SFace / 512 ArcFace).
+    embeddings: Mapped[Optional[list]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=True
+    )
+    centroid: Mapped[Optional[list]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=True
+    )
+    # Bounded adaptation: centroid updates at most once per UTC day, using the
+    # best-quality capture of the previous day (held in pending_* until then).
+    centroid_day: Mapped[Optional[str]] = mapped_column(String(10), nullable=True)
+    pending_vec: Mapped[Optional[list]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=True
+    )
+    pending_quality: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ref_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    ref_days: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    distinct_days: Mapped[Optional[list]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=True
+    )
+    consent_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), index=True, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class EmailOTP(Base):
     __tablename__ = "email_otps"
 

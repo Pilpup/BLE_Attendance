@@ -104,6 +104,8 @@ internal fun StudentSection(
     studentId: String = "",
     studentStatusMessage: String? = null,
     chimpStartDelayMs: Long = 0L,
+    gameStartsAtMs: Long? = null,
+    serverTimeOffsetMs: Long = 0L,
     capturedFacePayload: String? = null,
     auditedRecord: AttendanceRecordItem? = null,
     onRefreshAudit: (() -> Unit)? = null,
@@ -243,6 +245,8 @@ internal fun StudentSection(
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     seed = "$detectedSessionId:$sessionSalt:$studentId".hashCode(),
                     startDelayMs = chimpStartDelayMs,
+                    gameStartsAtMs = gameStartsAtMs,
+                    serverTimeOffsetMs = serverTimeOffsetMs,
                     onFinished = { score ->
                         lastGameScore = score
                         onChimpScore?.invoke(score)
@@ -318,6 +322,16 @@ internal fun StudentSection(
             else -> {
                 Spacer(modifier = Modifier.weight(1f))
 
+                if (!studentStatusMessage.isNullOrBlank()) {
+                    Text(
+                        text = studentStatusMessage,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = AppTheme.colors.textSecondary,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
+                    )
+                }
+
                 // Structured instruction island centered in the middle of the screen
                 Surface(
                     shape = RoundedCornerShape(22.dp),
@@ -373,7 +387,7 @@ internal fun StudentSection(
                                 modifier = Modifier.width(26.dp)
                             )
                             Text(
-                                text = "Numbers flash on the grid — memorize their positions. When they hide, tap the squares in order from 1 upward. Each correct tap counts; a wrong tap ends the round.",
+                                text = "Numbers flash on the grid — memorize their positions. When they hide, tap the squares in sequence",
                                 fontSize = 15.5.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = AppTheme.colors.textPrimary,

@@ -71,7 +71,7 @@ class BleScanner(
 
         val scanner = bleScanner
         if (scanner == null) {
-            Log.w(TAG, "Bluetooth adapter or scanner is null (Bluetooth disabled or permissions missing)")
+//             Log.w(TAG, "Bluetooth adapter or scanner is null (Bluetooth disabled or permissions missing)")
             onScanningChanged(false)
             return
         }
@@ -84,7 +84,7 @@ class BleScanner(
             scanner.startScan(listOf(filter), settings, scanCallback)
             onScanningChanged(true)
         } catch (e: Exception) {
-            Log.e(TAG, "Error starting BLE scan: ${e.message}", e)
+//             Log.e(TAG, "Error starting BLE scan: ${e.message}", e)
             onScanningChanged(false)
         }
     }
@@ -97,7 +97,7 @@ class BleScanner(
         try {
             bleScanner?.stopScan(scanCallback)
         } catch (e: Exception) {
-            Log.e(TAG, "Error stopping BLE scan: ${e.message}")
+//             Log.e(TAG, "Error stopping BLE scan: ${e.message}")
         }
         onScanningChanged(false)
     }
@@ -114,7 +114,9 @@ class BleScanner(
             // beacon '/' (H5) or S:/SESSION: (legacy), verdict '\' (H5) or V:
             // (legacy), and 10-char peer probe (length==10 superset, 4-char session + 6-char key).
             val rssi = result.rssi
-            if (rssi < -95) return
+            // 127 is the "RSSI unavailable" placeholder (not ultra-strong);
+            // reject it alongside the weak-signal floor.
+            if (rssi == 127 || rssi < -95) return
 
             val antennaTime = result.timestampNanos
             val osTime = SystemClock.elapsedRealtimeNanos()
@@ -150,7 +152,7 @@ class BleScanner(
         }
 
         override fun onScanFailed(errorCode: Int) {
-            Log.e(TAG, "Scan failed with error code: $errorCode")
+//             Log.e(TAG, "Scan failed with error code: $errorCode")
             mainHandler.post {
                 onScanningChanged(false)
             }

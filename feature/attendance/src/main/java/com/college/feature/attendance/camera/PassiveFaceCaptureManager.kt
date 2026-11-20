@@ -133,40 +133,13 @@ class PassiveFaceCaptureManager(
                     camera.cameraControl.startFocusAndMetering(action)
                 } catch (_: Exception) {}
             } catch (e: Exception) {
-                Log.e(TAG, "Camera start error: ${e.message}", e)
+//                 Log.e(TAG, "Camera start error: ${e.message}", e)
                 stopCamera()
             }
         }, ContextCompat.getMainExecutor(context))
     }
 
     data class FaceCaptureResult(val bytes: ByteArray, val base64: String)
-
-    // Captures the current locked candidate without stopping the camera feed
-    fun captureCurrentCandidate(): String? {
-        val bestCandidate = analyzer?.getBestCandidate() ?: return null
-        return FaceImageProcessor.processCandidate(bestCandidate)
-    }
-
-    // Captures raw JPEG bytes of the locked candidate without stopping the camera feed
-    fun captureCurrentCandidateBytes(): ByteArray? {
-        val bestCandidate = analyzer?.getBestCandidate() ?: return null
-        return FaceImageProcessor.processCandidateToBytes(bestCandidate)
-    }
-
-    // Unbinds camera, processes best candidate frame into both raw JPEG bytes and Base64 string
-    fun stopAndExtractResult(): FaceCaptureResult? {
-        if (!isCapturing.get()) {
-            return null
-        }
-        val bestCandidate = analyzer?.getBestCandidate() ?: run {
-            stopCamera()
-            return null
-        }
-        val bytes = FaceImageProcessor.processCandidateToBytes(bestCandidate)
-        val b64 = bytes?.let { android.util.Base64.encodeToString(it, android.util.Base64.NO_WRAP) }
-        stopCamera()
-        return if (bytes != null && b64 != null) FaceCaptureResult(bytes, b64) else null
-    }
 
     // R11 (review §2.3): main-thread half of the challenge-end extraction.
     // CameraX's unbindAll is main-thread bound and stopCamera()'s analyzer
@@ -196,16 +169,6 @@ class PassiveFaceCaptureManager(
         if (bytes == null) return null
         val b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
         return FaceCaptureResult(bytes, b64)
-    }
-
-    // Unbinds camera, processes best candidate frame, and returns Base64 encoded payload
-    fun stopAndExtract(): String? {
-        return stopAndExtractResult()?.base64
-    }
-
-    // Unbinds camera, processes best candidate frame, and returns raw JPEG bytes
-    fun stopAndExtractBytes(): ByteArray? {
-        return stopAndExtractResult()?.bytes
     }
 
     // Stops camera analysis without extracting candidate

@@ -65,6 +65,7 @@ import com.college.core.ui.components.appScrollbar
 import com.college.core.ui.components.appTextFieldColors
 import com.college.core.ui.theme.AppTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -90,10 +91,14 @@ fun AuthScreen(
     var pendingEmail by remember { mutableStateOf("") }
     var otpInput by remember { mutableStateOf("") }
     var resendCooldown by remember { mutableIntStateOf(0) }
+    var cooldownJob by remember { mutableStateOf<Job?>(null) }
 
     fun startCooldownTimer() {
+        // Cancel any previous loop: a second invocation must not spawn a second
+        // ticker decrementing the same state twice as fast.
+        cooldownJob?.cancel()
         resendCooldown = 45
-        scope.launch {
+        cooldownJob = scope.launch {
             while (resendCooldown > 0) {
                 delay(1000L)
                 resendCooldown -= 1

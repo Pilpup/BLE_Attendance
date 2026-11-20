@@ -51,14 +51,24 @@ To generate secure 32-byte hex keys:
 python3 -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-### Step 3: Start the Server & Database
+### Step 3: Download the Face Recognition Weight
+The 174 MB ArcFace ONNX file is deliberately not committed. Fetch and verify it
+on the host (Compose mounts this directory read-only):
+```bash
+cd /opt/ble_attendance   # or wherever the repo lives
+python3 backend/scripts/fetch_arcface_weight.py
+```
+The script pins a SHA-256 checksum and writes atomically. If the file is absent,
+the engine falls back to SFace 128-d; do not mix heads across stored references.
+
+### Step 4: Start the Server & Database
 Navigate to the `backend/` directory and run:
 ```bash
 cd backend
 docker compose up -d --build
 ```
 
-### Step 4: Verify Deployment
+### Step 5: Verify Deployment
 Check that both containers are healthy:
 ```bash
 docker compose ps
@@ -103,6 +113,8 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
+# F1 face engine: download the verified 174 MB ArcFace weight (not in git).
+python3 scripts/fetch_arcface_weight.py
 ```
 
 ### Step 4: Configure `.env`

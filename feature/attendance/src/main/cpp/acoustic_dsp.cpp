@@ -12,9 +12,10 @@ namespace {
 
 constexpr double PI_VAL = 3.14159265358979323846;
 constexpr double COEFF_18400_HZ = -1.4862896506307135;
-constexpr double COEFF_18800_HZ = -1.5540307997920397;
+// Guard bins: exact 2*cos(2*PI*f/48000) values (Kotlin side kept in sync).
+constexpr double COEFF_18800_HZ = -1.5542919229139414;
 constexpr double COEFF_19200_HZ = -1.6180339887498950;
-constexpr double COEFF_19600_HZ = -1.6781745265551944;
+constexpr double COEFF_19600_HZ = -1.6773411358908479;
 constexpr double COEFF_20000_HZ = -1.7320508075688772;
 constexpr double MIN_DETECTION_POWER = 3.0e7;
 

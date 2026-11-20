@@ -25,10 +25,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.college.core.model.Role
 import com.college.core.model.User
-import com.college.core.network.ServerConfigManager
+import com.college.core.network.model.RegisterRequest
 import com.college.core.ui.theme.AppTheme
-import com.college.feature.attendance.network.AttendanceApiClient
-import com.college.feature.attendance.network.RegisterRequest
 import com.college.feature.attendance.ui.theme.*
 import com.college.feature.attendance.viewmodel.AttendanceViewModel
 import com.college.feature.attendance.viewmodel.StudentPhase
@@ -38,7 +36,6 @@ import com.college.feature.leave.viewmodel.LeaveViewModel
 @Immutable
 data class AttendanceScreenCallbacks(
     val onStartTeacherSession: () -> Unit,
-    val onStopTeacherSession: () -> Unit,
     val onShareAttendance: () -> Unit,
     val onResetSession: () -> Unit,
     val onStartStudentScanning: () -> Unit,
@@ -64,6 +61,21 @@ fun AttendanceScreen(
             callbacks.onStopStudentScanning()
             onBack()
         }
+        if (viewModel.showAuthDialog) {
+            AuthServerDialog(
+                isLoggedIn = viewModel.isLoggedIn,
+                userName = viewModel.currentUserName,
+                userRole = viewModel.currentUserRole,
+                rollNumber = viewModel.studentId,
+                isAuthLoading = viewModel.isAuthLoading,
+                authErrorText = viewModel.authErrorText,
+                onDismiss = { viewModel.showAuthDialog = false },
+                onLogin = { email, pass -> viewModel.login(email, pass) },
+                onRegister = { viewModel.register(it) },
+                onLogout = { viewModel.logout() },
+                onUpdateRollNumber = callbacks.onUpdateRollNumber
+            )
+        }
         StudentSection(
             user = user,
             studentPhase = viewModel.studentPhase,
@@ -72,6 +84,8 @@ fun AttendanceScreen(
             studentId = viewModel.studentShortId,
             studentStatusMessage = viewModel.studentStatusMessage,
             chimpStartDelayMs = viewModel.chimpStartDelayMs,
+            gameStartsAtMs = viewModel.gameStartsAtMsValue(),
+            serverTimeOffsetMs = viewModel.currentServerTimeOffsetMs(),
             capturedFacePayload = viewModel.capturedFaceBase64,
             auditedRecord = viewModel.auditedRecord,
             onRefreshAudit = { viewModel.refreshAuditStatus() },
@@ -96,24 +110,30 @@ fun AttendanceScreen(
             userName = viewModel.currentUserName,
             userRole = viewModel.currentUserRole,
             rollNumber = viewModel.studentId,
-            serverUrl = AttendanceApiClient.baseUrl,
             isAuthLoading = viewModel.isAuthLoading,
             authErrorText = viewModel.authErrorText,
             onDismiss = { viewModel.showAuthDialog = false },
             onLogin = { email, pass -> viewModel.login(email, pass) },
             onRegister = { viewModel.register(it) },
             onLogout = { viewModel.logout() },
-            onUpdateServerUrl = { viewModel.setServerUrl(it) },
             onUpdateRollNumber = callbacks.onUpdateRollNumber
         )
     }
 
     // Hardware/gesture back press resets student or teacher active session
-    BackHandler(enabled = (user.hasRole(Role.STUDENT) && viewModel.studentPhase != StudentPhase.STANDBY) || viewModel.isSessionActive) {
-        if (viewModel.isSessionActive) {
-            viewModel.resetSession()
-        } else {
-            viewModel.resetStudentSession()
+    BackHandler(
+        enabled = (user.hasRole(Role.STUDENT) && viewModel.studentPhase != StudentPhase.STANDBY) ||
+            viewModel.isSessionActive ||
+            (isTeacherPrivileged && viewModel.finalizedRecords.isNotEmpty())
+    ) {
+        when {
+            viewModel.isSessionActive -> viewModel.resetSession()
+            isTeacherPrivileged && viewModel.finalizedRecords.isNotEmpty() -> {
+                // Leaving Audit Results clears teacher state so re-entry is fresh
+                viewModel.clearTeacherResults()
+                onBack()
+            }
+            else -> viewModel.resetStudentSession()
         }
     }
 
@@ -127,13 +147,17 @@ fun AttendanceScreen(
                         } else if (viewModel.isSessionActive) {
                             viewModel.resetSession()
                         } else if (viewModel.finalizedRecords.isNotEmpty()) {
-                            viewModel.resetSession()
+                            // Leaving Audit Results clears teacher state so re-entry is fresh
+                            viewModel.clearTeacherResults()
+                            onBack()
                         } else if (user.hasRole(Role.STUDENT) && viewModel.studentPhase != StudentPhase.STANDBY) {
                             viewModel.resetStudentSession()
                         } else if (user.canTakeAttendance() && viewModel.teacherViewMode == TeacherViewMode.LEAVE_REQUESTS) {
+                            // Leave requests is a sub-view inside take-attendance flow.
                             viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
                         } else if (user.canTakeAttendance() && viewModel.teacherViewMode == TeacherViewMode.OLDER_SESSIONS) {
-                            viewModel.teacherViewMode = TeacherViewMode.TAKE_ATTENDANCE
+                            // Older sessions is entered from home; back returns home.
+                            onBack()
                         } else {
                             onBack()
                         }
@@ -196,14 +220,12 @@ fun AttendanceScreen(
                         cloudStatusMessage = viewModel.cloudStatusMessage,
                         onSelectCourse = { viewModel.selectedCourse = it },
                         onStartSession = callbacks.onStartTeacherSession,
-                        onStopSession = callbacks.onStopTeacherSession,
                         onResetSession = callbacks.onResetSession,
-                        onVerifyStudent = { rec -> viewModel.markStudentVerified(rec.bleDeviceId) },
+                        onVerifyStudent = { rec -> viewModel.markStudentVerified(rec.id ?: rec.bleDeviceId) },
                         teacherViewMode = viewModel.teacherViewMode,
                         onSetTeacherViewMode = { viewModel.teacherViewMode = it },
                         pastSessions = viewModel.pastSessions,
                         isLoadingHistory = viewModel.isLoadingHistory,
-                        onLoadHistory = { viewModel.loadSessionHistory() },
                         selectedSessionForDetails = viewModel.selectedSessionForDetails,
                         onSelectSessionForDetails = { viewModel.selectedSessionForDetails = it },
                         selectedCourse = viewModel.selectedCourse,
@@ -229,6 +251,8 @@ fun AttendanceScreen(
                     studentId = viewModel.studentShortId,
                     studentStatusMessage = viewModel.studentStatusMessage,
                     chimpStartDelayMs = viewModel.chimpStartDelayMs,
+                    gameStartsAtMs = viewModel.gameStartsAtMsValue(),
+                    serverTimeOffsetMs = viewModel.currentServerTimeOffsetMs(),
                     capturedFacePayload = viewModel.capturedFaceBase64,
                     auditedRecord = viewModel.auditedRecord,
                     onRefreshAudit = { viewModel.refreshAuditStatus() },
@@ -267,14 +291,12 @@ private fun AuthServerDialog(
     userName: String,
     userRole: String,
     rollNumber: String,
-    serverUrl: String,
     isAuthLoading: Boolean,
     authErrorText: String?,
     onDismiss: () -> Unit,
     onLogin: (String, String) -> Unit,
     onRegister: (RegisterRequest) -> Unit,
     onLogout: () -> Unit,
-    onUpdateServerUrl: (String) -> Unit,
     onUpdateRollNumber: (String) -> Unit
 ) {
     var isRegisterMode by remember { mutableStateOf(false) }
@@ -285,7 +307,6 @@ private fun AuthServerDialog(
     var rollNumberInput by remember { mutableStateOf(rollNumber) }
     var departmentInput by remember { mutableStateOf("CSE") }
     var facultyCodeInput by remember { mutableStateOf("") }
-    var serverUrlInput by remember { mutableStateOf(serverUrl) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -496,40 +517,6 @@ private fun AuthServerDialog(
                         Text(authErrorText, color = alertRed, fontSize = 12.sp)
                     }
                 }
-
-                HorizontalDivider(color = cardBorder)
-
-                Text("BACKEND SERVER URL", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = textSecondary)
-                OutlinedTextField(
-                    value = serverUrlInput,
-                    onValueChange = { serverUrlInput = it },
-                    label = { Text("Server Base URL") },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = primaryBlue,
-                        unfocusedBorderColor = cardBorder,
-                        focusedTextColor = textPrimary,
-                        unfocusedTextColor = textPrimary
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    // R9 (review §3.4): shortcuts reference the single URL
-                    // source, never fresh literals. The hardcoded basement-LAN
-                    // button (10.115.186.134:53317) is deleted — it shipped a
-                    // fixed private IP into every release build; a needed dev
-                    // target can be typed into the field above instead.
-                    OutlinedButton(
-                        onClick = { serverUrlInput = ServerConfigManager.DEFAULT_BASE_URL },
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                        modifier = Modifier.height(28.dp)
-                    ) {
-                        Text("Cloud Render", fontSize = 10.sp)
-                    }
-                }
             }
         },
         confirmButton = {
@@ -537,12 +524,6 @@ private fun AuthServerDialog(
                 if (isLoggedIn) {
                     Button(
                         onClick = {
-                            // R9-A (found during chunk 9): Log Out used to
-                            // silently COMMIT whatever sat in the URL field as
-                            // the new server address — a half-typed or stale LAN
-                            // value could strand a logged-out user on the wrong
-                            // backend. Server changes belong to the register
-                            // flow, where the field is a deliberate input.
                             onLogout()
                             onDismiss()
                         },
@@ -553,7 +534,6 @@ private fun AuthServerDialog(
                 } else if (isRegisterMode) {
                     Button(
                         onClick = {
-                            onUpdateServerUrl(serverUrlInput)
                             onRegister(
                                 RegisterRequest(
                                     name = nameInput,
@@ -578,7 +558,6 @@ private fun AuthServerDialog(
                 } else {
                     Button(
                         onClick = {
-                            onUpdateServerUrl(serverUrlInput)
                             onLogin(emailInput, passwordInput)
                         },
                         enabled = !isAuthLoading && emailInput.isNotBlank() && passwordInput.isNotBlank(),
@@ -594,10 +573,7 @@ private fun AuthServerDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = {
-                onUpdateServerUrl(serverUrlInput)
-                onDismiss()
-            }) {
+            TextButton(onClick = onDismiss) {
                 Text("Close", color = textSecondary)
             }
         }

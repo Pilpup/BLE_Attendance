@@ -6,11 +6,11 @@ import os
 import traceback
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, ORJSONResponse, PlainTextResponse
 
 from sqlalchemy import delete, text
 from app.config import settings, validate_production_secrets
-from app.core.security import is_test_environment
+from app.core.security import is_test_environment, limiter_ip
 from app.database import AsyncSessionLocal, engine, is_postgres
 from app.models.attendance import Base, EmailOTP
 from app.routers import attendance, auth, leave, library
@@ -87,6 +87,9 @@ BEGIN
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'ACTIVE';
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS ended_at TIMESTAMP WITH TIME ZONE;
+    ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS game_starts_at TIMESTAMP WITH TIME ZONE;
+    ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS game_ends_at TIMESTAMP WITH TIME ZONE;
+    ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS audit_run_at TIMESTAMP WITH TIME ZONE;
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS total_enrolled INTEGER DEFAULT 0;
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS total_verified INTEGER DEFAULT 0;
     ALTER TABLE attendance_sessions ADD COLUMN IF NOT EXISTS total_unverified INTEGER DEFAULT 0;
@@ -273,14 +276,31 @@ async def lifespan(app: FastAPI):
     # Launch periodic background cleaner for expired email OTPs
     cleanup_task = asyncio.create_task(purge_expired_otps_worker())
 
+    # Rebuild event-driven audit schedule (one query on boot; no periodic DB polling).
+    audit_task = None
+    try:
+        from app.services.session_audit import rebuild_schedule_from_db, audit_scheduler_worker
+        async with AsyncSessionLocal() as boot_session:
+            await rebuild_schedule_from_db(boot_session)
+        audit_task = asyncio.create_task(audit_scheduler_worker(AsyncSessionLocal))
+    except Exception as e:
+        logger.warning(f"Audit scheduler startup skipped: {e}")
+
     yield
 
-    # Clean shutdown of background worker
+    # Clean shutdown of background workers
     cleanup_task.cancel()
+    if audit_task:
+        audit_task.cancel()
     try:
         await cleanup_task
     except asyncio.CancelledError:
         pass
+    if audit_task:
+        try:
+            await audit_task
+        except asyncio.CancelledError:
+            pass
 
     await engine.dispose()
 
@@ -289,6 +309,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="BLE Attendance Verification API",
     version="1.0.0",
+    # orjson (Rust) serialization: records/courses payloads are the large
+    # JSON paths; stdlib json remains for the hand-built JSONResponse above.
+    default_response_class=ORJSONResponse,
     docs_url="/docs" if settings.APP_ENV != "production" else None,
     redoc_url="/redoc" if settings.APP_ENV != "production" else None,
     lifespan=lifespan,
@@ -353,10 +376,13 @@ async def log_requests(request: Request, call_next):
     path = request.url.path
     if path == "/health":
         return await call_next(request)
-    client_ip = request.client.host if request.client else "unknown"
-    raw_xff = request.headers.get("x-forwarded-for", "none")
+    # Logs the limiter-trusted client IP (CF-Connecting-IP when present) —
+    # NOT the uvicorn-resolved XFF value, which is attacker-controlled. The
+    # raw xff=/cf= probe dump from the spoofing investigation is gone: probe
+    # verified, header dumps were log noise.
+    client_ip = limiter_ip(request)
     method = request.method
-    logger.info(f"==> Incoming {method} {path} from {client_ip} | xff={raw_xff}")
+    logger.info(f"==> Incoming {method} {path} from {client_ip}")
     response = await call_next(request)
     logger.info(f"<== Finished {method} {path} - Status {response.status_code}")
     return response
@@ -369,40 +395,8 @@ app.include_router(library.router, prefix=settings.API_V1_STR)
 app.include_router(leave.router, prefix=settings.API_V1_STR)
 
 
-# Returns basic service discovery information
-@app.get("/", tags=["System"])
-async def root():
-    return {
-        "status": "online",
-        "service": "BLE Attendance Verification API",
-        "docs": "/docs",
-        "health": "/health"
-    }
-
-
 # Health check probe for container platforms and load balancers
 @app.get("/health", tags=["System"])
 async def health_check():
     return {"status": "ok", "env": settings.APP_ENV}
 
-
-# Diagnostic endpoint restricted to test environments
-@app.get("/debug-db", tags=["System"])
-async def debug_db():
-    if not is_test_environment():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
-    try:
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-            if is_postgres:
-                await conn.execute(text(POSTGRES_SCHEMA_SYNC_BLOCK))
-            sess_rows = (await conn.execute(text("SELECT id, session_token, status, total_verified, total_unverified, started_at FROM attendance_sessions ORDER BY started_at DESC LIMIT 5;"))).mappings().all()
-            rec_rows = (await conn.execute(text("SELECT id, session_id, ble_device_id, status, verification_method, recorded_at FROM attendance_records ORDER BY recorded_at DESC LIMIT 5;"))).mappings().all()
-
-        return {
-            "status": "connected",
-            "recent_sessions": [dict(r) for r in sess_rows],
-            "recent_records": [dict(r) for r in rec_rows],
-        }
-    except Exception as e:
-        return {"status": "connection_error", "error": str(e), "type": type(e).__name__}

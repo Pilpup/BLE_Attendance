@@ -5,29 +5,19 @@ import base64
 import hashlib
 import hmac
 import logging
-import os
 import re
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator, Dict, List, Optional, Union
+from typing import List, Optional, Union
 
 logger = logging.getLogger("uvicorn.error")
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
-from sqlalchemy import delete, func, and_, or_, select, update
+from sqlalchemy import delete, func, and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-
-
-# R2 (review §3.1): request-scoped finalize gate. FastAPI acquires it BEFORE
-# the route body starts and releases it in the dependency's finally, even on
-# exceptions — so no early 4xx, audit crash, or crash-aborted commit can ever
-# leave a submission stranded between drain and commit.
-async def _session_gate_dependency(session_id: str) -> AsyncGenerator[None, None]:
-    async with submission_buffer.session_gate(session_id):
-        yield
 
 
 def _is_session_stale(started_at: Optional[datetime], minutes: int) -> bool:
@@ -42,10 +32,11 @@ from app.core.security import (
     get_current_user,
     get_optional_user,
     is_test_environment,
+    limiter_ip,
     require_teacher,
 )
 from app.database import get_db
-from app.services.rate_limiter import submit_rate_limiter
+from app.services.rate_limiter import join_rate_limiter
 from app.models.attendance import (
     AttendanceRecord,
     AttendanceSession,
@@ -67,6 +58,8 @@ from app.schemas.attendance import (
     RecordOverrideRequest,
     SessionCreateRequest,
     SessionFinalizeRequest,
+    SessionJoinRequest,
+    SessionJoinResponse,
     SubmitNeighborsRequest,
     UnitTopicCreate,
     UnitTopicResponse,
@@ -75,9 +68,17 @@ from app.schemas.attendance import (
     FaceLabCompareRequest,
     FaceLabCompareResponse,
 )
-from app.services.face_engine import face_registry
-from app.services.graph_engine import audit_classroom_mesh
-from app.services.rate_limiter import face_lab_limiter
+from app.services.face_engine import FaceCheckResult, face_registry
+from app.services import face_enrollment
+from app.services.rate_limiter import face_lab_limiter, submit_rate_limiter
+from app.services.session_audit import (
+    lock_session as svc_lock_session,
+    maybe_run_due_audit,
+    maybe_run_due_lock,
+    register_session_schedule,
+    run_engine_audit as svc_run_engine_audit,
+    unregister_session_schedule,
+)
 from app.services.submission_buffer import submission_buffer
 
 # --- H5: server-issued session salt helpers ---
@@ -193,6 +194,7 @@ async def _resolve_session(session_id: str, db: AsyncSession) -> Optional[Attend
         debug_sess = debug_res.scalars().first()
         if not debug_sess:
             teacher, course = await _get_or_create_mock_context(db)
+            started_at = datetime.now(timezone.utc)
             debug_sess = AttendanceSession(
                 id=uuid.uuid4(),
                 course_id=course.id,
@@ -200,13 +202,23 @@ async def _resolve_session(session_id: str, db: AsyncSession) -> Optional[Attend
                 session_token=debug_token,
                 session_salt="DEMO1",
                 status="ACTIVE",
-                started_at=datetime.now(timezone.utc),
+                started_at=started_at,
+                game_starts_at=started_at + timedelta(seconds=10),
+                game_ends_at=started_at + timedelta(seconds=37, microseconds=500000),
             )
             db.add(debug_sess)
             await db.commit()
             await db.refresh(debug_sess)
         else:
             debug_sess.status = "ACTIVE"
+            if debug_sess.started_at is None:
+                debug_sess.started_at = datetime.now(timezone.utc)
+            if debug_sess.game_starts_at is None or debug_sess.game_ends_at is None:
+                base = debug_sess.started_at
+                if base.tzinfo is None:
+                    base = base.replace(tzinfo=timezone.utc)
+                debug_sess.game_starts_at = base + timedelta(seconds=10)
+                debug_sess.game_ends_at = base + timedelta(seconds=37, microseconds=500000)
             debug_sess.session_salt = "DEMO1"
             debug_sess.started_at = datetime.now(timezone.utc)
             await db.commit()
@@ -335,7 +347,9 @@ async def _recompute_session_counters(session_obj: AttendanceSession, db: AsyncS
     verified_res = await db.execute(
         select(func.count()).select_from(AttendanceRecord).where(
             AttendanceRecord.session_id == session_obj.id,
-            AttendanceRecord.status == "VERIFIED_PRESENT",
+            # Two-flag engine writes VERIFIED; legacy rows (pre-migration
+            # sessions, old-APK finalize payloads) carry VERIFIED_PRESENT.
+            AttendanceRecord.status.in_(["VERIFIED", "VERIFIED_PRESENT"]),
         )
     )
     session_obj.total_verified = verified_res.scalar() or 0
@@ -344,7 +358,9 @@ async def _recompute_session_counters(session_obj: AttendanceSession, db: AsyncS
     unverified_res = await db.execute(
         select(func.count()).select_from(AttendanceRecord).where(
             AttendanceRecord.session_id == session_obj.id,
-            AttendanceRecord.status.not_in(["VERIFIED_PRESENT", "LEAVE"]),
+            AttendanceRecord.status.not_in(
+                ["VERIFIED", "VERIFIED_PRESENT", "LEAVE"]
+            ),
         )
     )
     session_obj.total_unverified = unverified_res.scalar() or 0
@@ -372,165 +388,6 @@ async def _populate_record_student_details(
         if u is not None:
             r.roll_number = u.roll_number
             r.student_name = u.full_name
-
-
-# Approved-leave overlay (leave feature): after finalize verdicts exist but
-# BEFORE the finalize commit, enrolled students whose APPROVED leave covers
-# the session date are marked "LEAVE" instead of "ABSENT" (or given a LEAVE
-# row outright — both finalize paths only create records for students who
-# participated). Presence beats leave: VERIFIED_PRESENT, challenge failures,
-# and proxy verdicts are never overwritten — approved leave explains absence,
-# not a student who showed up and failed the check. Roster is derived from
-# the same eligibility snapshot the check-in gate uses (semester + program
-# over active STUDENT accounts); legacy sessions without a snapshot have no
-# derivable roster and are skipped.
-async def _apply_approved_leave_overlay(
-    session_obj: AttendanceSession, db: AsyncSession
-) -> int:
-    semester = session_obj.eligibility_semester
-    program = (session_obj.eligibility_program or "").strip()
-    started = session_obj.started_at
-    session_date = started.date() if started else None
-    if semester is None or not program or session_date is None:
-        return 0
-    # IST calendar day: started_at is stored in UTC, so a session beginning
-    # 00:00–05:30 IST lands on the PREVIOUS UTC calendar day and slicing
-    # .date() alone never matches a leave approved for the student's local
-    # date. A leave covering EITHER calendar day now matches.
-    session_date_ist = (started + timedelta(hours=5, minutes=30)).date()
-
-    candidates = await db.execute(
-        select(User).where(
-            User.semester == semester,
-            User.is_active.is_(True),
-            User.role == "STUDENT",
-        )
-    )
-    roster = [
-        u for u in candidates.scalars().all()
-        if u.roll_number and _program_key(u.program) == _program_key(program)
-    ]
-    if not roster:
-        return 0
-
-    roster_ids = [u.id for u in roster]
-    coverage = [
-        and_(
-            LeaveApplication.from_date <= session_date,
-            LeaveApplication.to_date >= session_date,
-        )
-    ]
-    if session_date_ist != session_date:
-        coverage.append(
-            and_(
-                LeaveApplication.from_date <= session_date_ist,
-                LeaveApplication.to_date >= session_date_ist,
-            )
-        )
-    leave_res = await db.execute(
-        select(LeaveApplication)
-        .where(
-            LeaveApplication.student_id.in_(roster_ids),
-            LeaveApplication.status == "APPROVED",
-            or_(*coverage),
-        )
-        .order_by(LeaveApplication.created_at)
-    )
-    # Latest covering application wins if a student has several for this date
-    leave_by_student: dict[uuid.UUID, LeaveApplication] = {}
-    for leave_row in leave_res.scalars().all():
-        leave_by_student[leave_row.student_id] = leave_row
-    if not leave_by_student:
-        return 0
-
-    rec_res = await db.execute(
-        select(AttendanceRecord).where(AttendanceRecord.session_id == session_obj.id)
-    )
-    existing_recs = rec_res.scalars().all()
-    by_student = {r.student_id: r for r in existing_recs if r.student_id}
-    by_device = {r.ble_device_id.upper(): r for r in existing_recs}
-
-    created = 0
-    for student in roster:
-        leave_row = leave_by_student.get(student.id)
-        if not leave_row:
-            continue
-        range_text = f"{leave_row.from_date.isoformat()}..{leave_row.to_date.isoformat()}"
-        rec = by_student.get(student.id)
-        if rec is None:
-            # Unbound-but-keyed row (submitted without a resolvable account):
-            # matching by the derived device key keeps one row per student.
-            rec = by_device.get(derive_short_device_key(student.roll_number))
-        if rec is None:
-            db.add(
-                AttendanceRecord(
-                    id=uuid.uuid4(),
-                    session_id=session_obj.id,
-                    student_id=student.id,
-                    ble_device_id=derive_short_device_key(student.roll_number),
-                    status="LEAVE",
-                    verification_method="LEAVE_APPROVAL",
-                    affinity_score=0.00,
-                    reported_neighbors=[],
-                    remarks=f"Approved leave {range_text}",
-                    recorded_at=datetime.now(timezone.utc),
-                )
-            )
-            created += 1
-        elif rec.status == "ABSENT":
-            rec.status = "LEAVE"
-            rec.verification_method = "LEAVE_APPROVAL"
-            rec.remarks = f"Approved leave {range_text}"
-    return created
-
-
-# Binds unbound attendance records (student_id NULL) to roster accounts.
-# Witness/offline rows (e.g. FLAGGED_WITNESSED) and legacy payload rows carry
-# only the BLE device key — that device never authenticated, so no account
-# was bound at check-in. Device keys are the DETERMINISTIC derivation
-# derive_short_device_key(roll), so the server can reverse-map them against
-# the session's eligibility roster (same snapshot the check-in gate uses).
-# Without this the teacher dashboard shows "Student <key-suffix>" instead of
-# the student's real name and roll number. 6-hex key collisions across a
-# roster resolve last-wins (same policy as the leave overlay).
-async def _bind_unbound_records_to_roster(
-    session_obj: AttendanceSession, db: AsyncSession
-) -> int:
-    semester = session_obj.eligibility_semester
-    program = (session_obj.eligibility_program or "").strip()
-    if semester is None or not program:
-        return 0
-
-    candidates = await db.execute(
-        select(User).where(
-            User.semester == semester,
-            User.is_active.is_(True),
-            User.role == "STUDENT",
-        )
-    )
-    key_to_student: dict[str, uuid.UUID] = {}
-    for u in candidates.scalars().all():
-        if u.roll_number:
-            key_to_student[derive_short_device_key(u.roll_number)] = u.id
-    if not key_to_student:
-        return 0
-
-    rec_res = await db.execute(
-        select(AttendanceRecord).where(
-            AttendanceRecord.session_id == session_obj.id,
-            AttendanceRecord.student_id.is_(None),
-        )
-    )
-    bound = 0
-    for rec in rec_res.scalars().all():
-        uid = key_to_student.get(rec.ble_device_id.upper())
-        if uid:
-            rec.student_id = uid
-            bound += 1
-            logger.info(
-                f"[Roster Bind] Session {session_obj.id}: unbound record {rec.ble_device_id} -> student {uid}"
-            )
-    return bound
 
 
 # Record or update a proxy violation record for a device
@@ -667,7 +524,14 @@ async def create_course(
         periods_p=payload.periods_p,
     )
     db.add(course)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A course with this course_code already exists",
+        )
     await db.refresh(course)
     return course
 
@@ -809,7 +673,10 @@ async def list_course_sessions(
     course = course_res.scalars().first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
-    if course.teacher_id != current_user.id:
+    # Same owner-gate policy as every other session endpoint: owner OR
+    # DEVELOPER/ADMIN (dev/support tooling must read course sessions).
+    user_role = (current_user.role or "").upper()
+    if course.teacher_id != current_user.id and user_role not in ("DEVELOPER", "ADMIN"):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You are not authorized to view sessions for this course",
@@ -980,6 +847,7 @@ async def create_attendance_session(
     # student class-binding gate). H5: server generates canonical salt;
     # client-supplied value is ignored. Wire salt is derived for the beacon.
     canonical_salt = secrets.token_hex(16)
+    started_at = datetime.now(timezone.utc)
     session = AttendanceSession(
         id=uuid.uuid4(),
         course_id=target_course_id,
@@ -991,7 +859,9 @@ async def create_attendance_session(
         eligibility_semester=eligibility_semester,
         status="ACTIVE",
         total_enrolled=roster_enrolled,
-        started_at=datetime.now(timezone.utc),
+        started_at=started_at,
+        game_starts_at=started_at + timedelta(seconds=10),
+        game_ends_at=started_at + timedelta(seconds=37, microseconds=500000),
     )
     db.add(session)
     try:
@@ -1019,23 +889,76 @@ async def create_attendance_session(
 
     await _populate_course_metadata(session, db)
 
+    # Register event-driven audit/lock schedule (no DB polling).
+    try:
+        await register_session_schedule(str(session.id), session.started_at, session.game_ends_at)
+    except Exception:
+        logger.warning("Failed to register audit schedule for session %s", session.id)
+
     # M9 (audit): never log gate material — token/salt in container logs
     # defeats the BLE-range assumption (anyone with log access gets the gate).
     logger.info(f"[Session Created] ID: {session.id}, Course: {session.course_code}")
     # Roster diagnostic: the enrolled count is DERIVED from the eligibility
     # snapshot (semester + program) over active STUDENT accounts — the teacher
-    # app sends no roster. Log the matched roll numbers so a surprising count
-    # (stale test account, wrong program on a profile) is self-explaining.
-    # Roll numbers are roster data, not gate material (M9 covers token/salt).
+    # app sends no roster. Only the COUNT is logged: individual roll numbers
+    # are PII and were sitting in Render's retained logs for no runtime
+    # benefit.
     if roster_roll_numbers:
         logger.info(
-            "[Roster] Derived total_enrolled=%d for program=%r semester=%r from active STUDENT accounts: %s",
+            "[Roster] Derived total_enrolled=%d for program=%r semester=%r (%d matched active STUDENT accounts)",
             roster_enrolled, eligibility_program, eligibility_semester,
-            ", ".join(roster_roll_numbers),
+            len(roster_roll_numbers),
         )
-    session.enrolled_roll_numbers = roster_roll_numbers or None
     _attach_wire_salt(session)
     return session
+
+
+# Student join preflight (latch-time): eligibility + salt + authoritative schedule
+@router.post("/sessions/{session_id}/join", response_model=SessionJoinResponse)
+async def join_attendance_session(
+    session_id: str,
+    payload: SessionJoinRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    server_time = datetime.now(timezone.utc)
+    session_obj = await _resolve_session(session_id, db)
+    if not session_obj:
+        raise HTTPException(status_code=404, detail="Attendance session not found")
+    if session_obj.status == "CANCELLED":
+        raise HTTPException(status_code=400, detail="Attendance session has been cancelled")
+    if session_obj.status in ("COMPLETED", "EXPIRED"):
+        raise HTTPException(status_code=410, detail="Attendance session is no longer active")
+    if session_obj.status != "ACTIVE":
+        raise HTTPException(status_code=400, detail="Attendance session is not active")
+    if _is_session_stale(session_obj.started_at, minutes=5):
+        raise HTTPException(status_code=400, detail="Attendance session has expired")
+    if session_obj.game_starts_at is None or session_obj.game_ends_at is None:
+        raise HTTPException(status_code=400, detail="Session uses old timing — restart class")
+
+    # Brute-force budget (per account): the wire salt gate is only 16 bits, so
+    # an unthrottled /join would let an off-site student discover the in-room
+    # salt by enumeration and then check in remotely.
+    if not await join_rate_limiter.check(f"{session_obj.id}:{current_user.id}"):
+        raise HTTPException(status_code=429, detail="Too many join attempts — wait a moment")
+
+    provided_salt = (payload.session_salt or "").strip().upper()
+    expected_salts = valid_wire_salts(session_obj)
+    salt_ok = bool(provided_salt) and any(secrets.compare_digest(provided_salt, w) for w in expected_salts)
+    if not salt_ok:
+        logger.warning("[Join Gate] Session %s: salt mismatch for user %s", session_obj.id, current_user.id)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="In-room beacon verification failed")
+
+    eligibility_detail = student_eligibility_detail(session_obj, current_user)
+    if eligibility_detail:
+        logger.warning("[Join Gate] Session %s: ineligible user %s — %s", session_obj.id, current_user.id, eligibility_detail)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't belong to this class session")
+
+    return SessionJoinResponse(
+        game_starts_at=session_obj.game_starts_at,
+        game_ends_at=session_obj.game_ends_at,
+        server_time=server_time,
+    )
 
 
 # Cancel an attendance session
@@ -1082,13 +1005,14 @@ async def cancel_attendance_session(
     # Discard volatile in-RAM state so a cancelled session leaves nothing behind
     await submission_buffer.clear_session(str(session_obj.id))
     face_registry.clear_session(str(session_obj.id))
+    await unregister_session_schedule(str(session_obj.id))
 
     await _populate_course_metadata(session_obj, db)
     logger.info(f"[Session Cancelled] Session: {session_obj.id}")
     return _attach_wire_salt(session_obj)
 
 
-# Finalize attendance session with client-provided records
+# Finalize attendance session (idempotent wrapper; engine runs server-side at t=45/lock)
 @router.post(
     "/sessions/{session_id}/finalize",
     response_model=AttendanceSessionResponse,
@@ -1098,275 +1022,88 @@ async def finalize_attendance_session(
     payload: SessionFinalizeRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_teacher),
-    _finalize_gate: None = Depends(_session_gate_dependency),
 ):
     session_obj = await _resolve_session(session_id, db)
-
     if not session_obj:
         raise HTTPException(status_code=404, detail="Attendance session not found")
     user_role = (current_user.role or "").upper()
     if session_obj.teacher_id != current_user.id and user_role not in ("DEVELOPER", "ADMIN"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only finalize your own attendance sessions",
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only finalize your own attendance sessions")
     if session_obj.status == "CANCELLED":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot finalize a cancelled session",
-        )
-    # Serialize overlapping finalizes: block on the session row, then re-read committed status
-    session_obj = await _lock_session_for_finalize(db, session_obj)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot finalize a cancelled session")
 
-    if session_obj.status == "COMPLETED":
-        # Idempotent exit: attach the finalized counters and records so the caller gets the
-        # completed session rather than the stale pre-lock snapshot
-        await db.refresh(session_obj)
-        final_recs = await db.execute(
-            select(AttendanceRecord).where(AttendanceRecord.session_id == session_obj.id)
-        )
-        session_obj.records = list(final_recs.scalars().all())
-        await _populate_course_metadata(session_obj, db)
-        await _populate_record_student_details(session_obj, db)
-        return _attach_wire_salt(session_obj)
-
-    # Load prior records to update existing entries and avoid duplicates
-    prior_res = await db.execute(
-        select(AttendanceRecord).where(AttendanceRecord.session_id == session_obj.id)
-    )
-    prior_records = prior_res.scalars().all()
-    prior_device_map = {r.ble_device_id.upper(): r for r in prior_records}
-    prior_student_map = {r.student_id: r for r in prior_records if r.student_id}
-    seen_devices = set(prior_device_map.keys())
-    seen_students = set(prior_student_map.keys())
-
-    verified_count = 0
-    # M5: frozen security verdicts (written out-of-band by the defense layers —
-    # salt gate, face dedup, no-face) are preserved in place, but they must still
-    # count toward total_unverified even though the finalize loop skips updating them.
-    spoofer_count = sum(
-        1 for r in prior_records
-        if r.status in (
-            "DUPLICATE_FACE_PROXY",
-            "CO_LOCATED_SAME_DESK_PROXY",
-            "NO_FACE_DETECTED",
-            "SPOOFER_REJECTED",
-        )
-    )
-
-    records_to_create = []
-    for item in payload.records:
-        device_id = item.ble_device_id.upper()
-        prior_rec = prior_device_map.get(device_id) or (prior_student_map.get(item.student_id) if item.student_id else None)
-        if prior_rec:
-            if prior_rec.status in (
-                "DUPLICATE_FACE_PROXY",
-                "CO_LOCATED_SAME_DESK_PROXY",
-                "NO_FACE_DETECTED",
-                "SPOOFER_REJECTED",
-            ):
+    # Compatibility: ingest client-provided records before server audit/lock.
+    if payload and getattr(payload, "records", None):
+        for item in payload.records:
+            device_id = (item.ble_device_id or "").strip().upper()
+            if not device_id:
                 continue
-            if item.status == "VERIFIED_PRESENT":
-                verified_count += 1
-            elif item.status == "SPOOFER_REJECTED":
-                spoofer_count += 1
-            prior_rec.status = item.status
-            prior_rec.verification_method = item.verification_method
-            prior_rec.affinity_score = item.affinity_score
-            prior_rec.remarks = item.remarks
-            prior_rec.reported_neighbors = item.reported_neighbors
-            new_score = item.game_score
-            if new_score is not None:
-                prior_rec.game_score = (
-                    new_score if prior_rec.game_score is None
-                    else max(prior_rec.game_score, new_score)
+            rec_res = await db.execute(select(AttendanceRecord).where(
+                AttendanceRecord.session_id == session_obj.id,
+                AttendanceRecord.ble_device_id == device_id,
+            ))
+            rec = rec_res.scalars().first()
+            if rec is None and item.student_id:
+                rec_res = await db.execute(select(AttendanceRecord).where(
+                    AttendanceRecord.session_id == session_obj.id,
+                    AttendanceRecord.student_id == item.student_id,
+                ))
+                rec = rec_res.scalars().first()
+            status = getattr(item, "status", None) or "UNVERIFIED"
+            if status == "VERIFIED_PRESENT":
+                status = "VERIFIED"
+            if rec is None:
+                rec = AttendanceRecord(
+                    id=uuid.uuid4(), session_id=session_obj.id, student_id=item.student_id,
+                    ble_device_id=device_id, status=status,
+                    verification_method=getattr(item, "verification_method", "NONE") or "NONE",
+                    affinity_score=float(getattr(item, "affinity_score", 0.0) or 0.0),
+                    bridge_device_id=(item.bridge_device_id.upper() if getattr(item, "bridge_device_id", None) else None),
+                    reported_neighbors=getattr(item, "reported_neighbors", None) or [],
+                    remarks=getattr(item, "remarks", None),
+                    game_score=getattr(item, "game_score", None),
+                    recorded_at=datetime.now(timezone.utc),
                 )
-            continue
+                db.add(rec)
+            else:
+                frozen = {"DUPLICATE_FACE_PROXY","CO_LOCATED_SAME_DESK_PROXY","DIVIDED_ATTENTION_PROXY","COGNITIVE_CHALLENGE_FAILED","NO_FACE_DETECTED","SPOOFER_REJECTED","ELIGIBILITY_REJECTED"}
+                if rec.status not in frozen:
+                    rec.status = status
+                    rec.verification_method = getattr(item, "verification_method", rec.verification_method) or rec.verification_method
+                    rec.affinity_score = float(getattr(item, "affinity_score", rec.affinity_score) or 0.0)
+                    if getattr(item, "remarks", None) is not None:
+                        rec.remarks = item.remarks
+                    if getattr(item, "reported_neighbors", None) is not None:
+                        rec.reported_neighbors = item.reported_neighbors
+                    if getattr(item, "game_score", None) is not None:
+                        gs = item.game_score
+                        rec.game_score = gs if rec.game_score is None else max(rec.game_score, gs)
+                if item.student_id and not rec.student_id:
+                    rec.student_id = item.student_id
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
 
-        if device_id in seen_devices or (item.student_id and item.student_id in seen_students):
-            continue
-        seen_devices.add(device_id)
-        if item.student_id:
-            seen_students.add(item.student_id)
+    try:
+        await svc_run_engine_audit(session_obj.id, db)
+        await svc_lock_session(session_obj.id, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("Finalize wrapper failed for session %s: %s", session_id, e)
+        raise HTTPException(status_code=500, detail="Failed to finalize session")
 
-        if item.status == "VERIFIED_PRESENT":
-            verified_count += 1
-        elif item.status == "SPOOFER_REJECTED":
-            spoofer_count += 1
-
-        records_to_create.append(
-            AttendanceRecord(
-                id=uuid.uuid4(),
-                session_id=session_obj.id,
-                student_id=item.student_id,
-                ble_device_id=device_id,
-                status=item.status,
-                verification_method=item.verification_method,
-                affinity_score=item.affinity_score,
-                bridge_device_id=item.bridge_device_id.upper() if item.bridge_device_id else None,
-                reported_neighbors=item.reported_neighbors,
-                remarks=item.remarks,
-                game_score=item.game_score,
-                recorded_at=datetime.now(timezone.utc),
-            )
-        )
-
-    # Read cloud-staged submissions (PEEK, not pop): the buffer is drained
-    # only AFTER the durable commit below, so a failure between read and
-    # commit leaves the staged check-ins intact for a finalize retry.
-    staged = await submission_buffer.peek_submissions(str(session_obj.id))
-
-    # [ULTRASONIC-DISABLED 2026-11] Layer 4 (ultrasonic co-location) is turned
-    # OFF. Field testing showed the reciprocal handshake never fires (0%
-    # efficacy), and phase-locked chimp-game rounds make dual-phone play
-    # impossible anyway. ultrasonic_pairs is kept as an always-empty dict so
-    # the override branches below compile; they are dead while disabled.
-    # To restore: uncomment the pairing loop here, the override branches in
-    # both finalize paths, the M3-lite claim staging in the submit endpoint,
-    # the schema fields, and the app-side audio stack call sites.
-    ultrasonic_pairs: dict[str, str] = {}
-    # for claim_key, claim_sub in staged.items():
-    #     claim_peer = claim_sub.claimed_ultrasonic
-    #     if not claim_peer:
-    #         continue
-    #     peer_sub = staged.get(claim_peer)
-    #     if peer_sub and peer_sub.claimed_ultrasonic == claim_key:
-    #         ultrasonic_pairs[claim_key] = claim_peer
-    #         ultrasonic_pairs[claim_peer] = claim_key
-    #     else:
-    #         logger.warning(f"[Layer 4] Unreciprocated ultrasonic claim ignored: {claim_key} -> {claim_peer}")
-
-    # Leniency seal: a staged student earns VERIFIED_PRESENT only with at least
-    # one RECIPROCATED BLE neighbor (mirrors the audit engine's direct-mutual
-    # rule). A self-reported neighbor list alone can never verify anyone.
-    drain_reports: dict[str, set[str]] = {}
-    for rec_item in payload.records:
-        drain_reports.setdefault(rec_item.ble_device_id.upper(), set()).update(
-            n.strip().upper() for n in (rec_item.reported_neighbors or [])
-        )
-    for staged_key_extra, staged_sub_extra in staged.items():
-        drain_reports.setdefault(staged_key_extra.upper(), set()).update(
-            n.strip().upper() for n in staged_sub_extra.reported_neighbors
-        )
-
-    for staged_key, staged_sub in staged.items():
-        dev_upper = staged_key.upper()
-        if dev_upper in seen_devices or (staged_sub.student_id and staged_sub.student_id in seen_students):
-            continue
-        seen_devices.add(dev_upper)
-        if staged_sub.student_id:
-            seen_students.add(staged_sub.student_id)
-
-        # [ULTRASONIC-DISABLED] pair override branch — dead while disabled
-        # (ultrasonic_pairs is always empty).
-        # pair_peer = ultrasonic_pairs.get(dev_upper)
-        # if pair_peer:
-        #     # Mutual ultrasonic confirmation overrides the benign staged verdict;
-        #     # NO blanket 1.00 VERIFIED_PRESENT for desk co-located partners.
-        #     spoofer_count += 1
-        #     records_to_create.append(
-        #         AttendanceRecord(
-        #             id=uuid.uuid4(),
-        #             session_id=session_obj.id,
-        #             student_id=staged_sub.student_id,
-        #             ble_device_id=dev_upper,
-        #             status="CO_LOCATED_SAME_DESK_PROXY",
-        #             verification_method="ULTRASONIC_ACOUSTIC_MATCH",
-        #             affinity_score=0.00,
-        #             reported_neighbors=staged_sub.reported_neighbors,
-        #             remarks=f"Ultrasonic proximity rejected: Co-located on same desk (< 20 cm) with {pair_peer}",
-        #             recorded_at=datetime.now(timezone.utc),
-        #         )
-        #     )
-        #     continue
-
-        confirmed_peers = [
-            peer.strip().upper()
-            for peer in staged_sub.reported_neighbors
-            if dev_upper in drain_reports.get(peer.strip().upper(), set())
-        ]
-        is_ver = bool(confirmed_peers)
-        if is_ver:
-            verified_count += 1
-            rec_status = "VERIFIED_PRESENT"
-            verif_method = "BLE_MESH"
-            rec_affinity = 1.00
-            rec_remarks = f"Cloud staged check-in confirmed via mutual desk neighbor [{', '.join(confirmed_peers)}]"
-        elif staged_sub.reported_neighbors:
-            rec_status = "ISOLATED_FLAGGED"
-            verif_method = "NONE"
-            rec_affinity = 0.50
-            rec_remarks = f"Cloud staged check-in without confirmed desk neighbor (Reported: [{', '.join(staged_sub.reported_neighbors)}]) - manual review recommended"
-        else:
-            rec_status = "ISOLATED_FLAGGED"
-            verif_method = "NONE"
-            rec_affinity = 0.00
-            rec_remarks = "Zero desk neighbors detected (isolated seat)"
-        records_to_create.append(
-            AttendanceRecord(
-                id=uuid.uuid4(),
-                session_id=session_obj.id,
-                student_id=staged_sub.student_id,
-                ble_device_id=dev_upper,
-                status=rec_status,
-                verification_method=verif_method,
-                affinity_score=rec_affinity,
-                reported_neighbors=staged_sub.reported_neighbors,
-                remarks=rec_remarks,
-                game_score=staged_sub.game_score,
-                recorded_at=datetime.now(timezone.utc),
-            )
-        )
-
-    # Score gate at verdict time (parity with audit-and-finalize): a VERIFIED
-    # verdict without a passing chimp score can never stand — the legacy path
-    # previously produced VERIFIED rows with a NULL game_score, silently
-    # bypassing the challenge gate.
-    for rec in [*prior_records, *records_to_create]:
-        if rec.status == "VERIFIED_PRESENT" and (rec.game_score is None or rec.game_score < 15):
-            rec.status = "COGNITIVE_CHALLENGE_FAILED"
-            rec.verification_method = "COGNITIVE_CHALLENGE"
-            rec.remarks = (
-                f"Chimp challenge failed: score "
-                f"{rec.game_score if rec.game_score is not None else 'missing'} < 15"
-            )
-
-    # Batch inserts all records and cleans staged submissions
-    if records_to_create:
-        db.add_all(records_to_create)
-        await db.flush()
-
-    # Bind unbound (witness/offline/legacy) rows to roster accounts so the
-    # teacher dashboard shows real names/rolls, not "Student <key-suffix>".
-    await _bind_unbound_records_to_roster(session_obj, db)
-
-    # Approved-leave overlay: enrolled students with an APPROVED leave covering
-    # the session date are marked LEAVE instead of ABSENT (or given a LEAVE
-    # row). Runs after the verdict gate so the gate never sees LEAVE rows.
-    await _apply_approved_leave_overlay(session_obj, db)
-
-    session_obj.status = "COMPLETED"
-    session_obj.ended_at = datetime.now(timezone.utc)
-
-    # R5 (review §5 honesty): counters must reflect committed DB rows — see
-    # _recompute_session_counters.
-    await _recompute_session_counters(session_obj, db)
-
-    await db.commit()
-    await db.refresh(session_obj)
-    # Staged buffer drained only now (it was peeked, never popped mid-flight):
-    # a failure before this commit left the check-ins staged for a finalize
-    # retry instead of losing them permanently.
-    await submission_buffer.pop_submissions(str(session_obj.id))
-    # H2: clear face biometrics only AFTER the commit (final grace-window dedup
-    # must keep its registry until the records are durable) — see finalize path.
-    face_registry.clear_session(str(session_obj.id))
-
+    session_obj = await _resolve_session(session_id, db)
+    if not session_obj:
+        raise HTTPException(status_code=404, detail="Attendance session not found")
+    final_recs = await db.execute(select(AttendanceRecord).where(AttendanceRecord.session_id == session_obj.id))
+    session_obj.records = list(final_recs.scalars().all())
     await _populate_course_metadata(session_obj, db)
     await _populate_record_student_details(session_obj, db)
-
-    logger.info(f"[Legacy Finalized] Session: {session_obj.id}, Verified: {session_obj.total_verified}, Unverified: {session_obj.total_unverified}, Total Records: {len(payload.records)}")
+    await unregister_session_schedule(str(session_obj.id))
     return _attach_wire_salt(session_obj)
+
 
 @router.post(
     "/sessions/{session_id}/submit-neighbors",
@@ -1379,7 +1116,6 @@ async def submit_student_neighbors(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    # Extracts binary face bytes and headers if request is raw image payload
     raw_face_bytes = None
     if isinstance(payload, bytes):
         raw_face_bytes = payload
@@ -1389,10 +1125,6 @@ async def submit_student_neighbors(
         neighbors = [n.strip() for n in neighbors_raw.split(",") if n.strip()] if neighbors_raw else []
         close_raw = request.headers.get("x-close-neighbors", "")
         close_neighbors = [n.strip() for n in close_raw.split(",") if n.strip()] if close_raw else []
-        # [ULTRASONIC-DISABLED] Layer 4 headers no longer parsed.
-        # co_located_peer_id = request.headers.get("x-co-located-peer-id")
-        # ultrasonic_proximity_str = request.headers.get("x-ultrasonic-proximity-detected")
-        # ultrasonic_proximity = ultrasonic_proximity_str.lower() in ("true", "1") if ultrasonic_proximity_str is not None else False
         challenge_report_hdr = request.headers.get("x-challenge-report")
         challenge_report = None
         game_score = None
@@ -1420,16 +1152,16 @@ async def submit_student_neighbors(
                         game_score = int(challenge_report_hdr.strip())
                     except Exception:
                         pass
-
+        # Mirror the JSON schema cap (0-26): the raw-bytes header path must not
+        # bypass the gate, else x-game-score: 99 trivially passes >= 15 checks.
+        if game_score is not None:
+            game_score = max(0, min(26, game_score))
         payload = SubmitNeighborsRequest(
             student_id=student_id,
             neighbors=neighbors,
             close_neighbors=close_neighbors,
             session_salt=session_salt,
             face_image_base64=None,
-            # [ULTRASONIC-DISABLED] Layer 4 fields dropped from the payload.
-            # ultrasonic_proximity_detected=ultrasonic_proximity,
-            # co_located_peer_id=co_located_peer_id,
             challenge_report=challenge_report,
             game_score=game_score,
         )
@@ -1439,139 +1171,74 @@ async def submit_student_neighbors(
         raise HTTPException(status_code=404, detail="Attendance session not found")
     if session_obj.status == "CANCELLED":
         raise HTTPException(status_code=400, detail="Attendance session has been cancelled")
+    if session_obj.status == "COMPLETED":
+        # Stragglers allowed only while within lock window is handled below; post-lock -> 400.
+        pass
     if session_obj.status not in ("ACTIVE", "COMPLETED"):
         raise HTTPException(status_code=400, detail="Attendance session is not active")
-    if session_obj.status == "COMPLETED":
-        # Allow 90-second grace period for in-flight student game completions and biometric face deduplication
-        if session_obj.ended_at:
-            # Mirror _is_session_stale's naive/aware tolerance: SQLite (tests)
-            # surfaces naive datetimes; Postgres (prod) surfaces tz-aware ones.
-            grace_ended_at = session_obj.ended_at
-            if grace_ended_at.tzinfo is None:
-                grace_ended_at = grace_ended_at.replace(tzinfo=timezone.utc)
-            if (datetime.now(timezone.utc) - grace_ended_at).total_seconds() > 90:
-                raise HTTPException(status_code=400, detail="Attendance session has expired")
-
-    # TTL check: Auto-expire ACTIVE sessions older than 5 minutes. Status
-    # guard: without it, a straggler submit during the grace window of a
-    # COMPLETED session whose started_at is > 5 min old rewrote the committed
-    # COMPLETED status to EXPIRED — status corruption plus a dead grace path
-    # for long-running classes.
     if session_obj.status == "ACTIVE" and _is_session_stale(session_obj.started_at, minutes=5):
         session_obj.status = "EXPIRED"
         session_obj.ended_at = datetime.now(timezone.utc)
         await db.commit()
         raise HTTPException(status_code=400, detail="Attendance session has expired")
 
-    # Class-eligibility gate: a student may only check in to the class the
-    # session is FOR. Runs on objects already loaded (session + JWT user) and
-    # before the rate limiter, so wrong-class attempts cost zero quota and no
-    # face/neighbor work. Mirrors the salt gate's rejection + flag pattern so
-    # the attempt stays visible on the teacher's audit dashboard.
+    # Hard cutover: legacy sessions without schedule cannot use new pipeline.
+    if session_obj.game_starts_at is None or session_obj.game_ends_at is None:
+        raise HTTPException(status_code=400, detail="Session uses old timing — restart class")
+
+    # Lock window: started_at + 60s. After lock, reject.
+    started = session_obj.started_at
+    if started and started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    if started and (datetime.now(timezone.utc) - started).total_seconds() >= 60 and session_obj.status == "COMPLETED":
+        raise HTTPException(status_code=400, detail="Session finalized")
+
     eligibility_detail = student_eligibility_detail(session_obj, current_user)
-    if eligibility_detail:
-        claimed_key = user_device_key(current_user)
-        logger.warning(
-            f"[Eligibility Gate] Session {session_obj.id}: submit rejected for key {claimed_key} "
-            f"(authenticated) — {eligibility_detail}"
-        )
-        await _record_proxy_violation(
-            db=db,
-            session_id=session_obj.id,
-            device_id=claimed_key,
-            status="SPOOFER_REJECTED",
-            verification_method="ELIGIBILITY_REJECTED",
-            remarks=eligibility_detail,
-            student_id=current_user.id,
-            reported_neighbors=[
-                n.strip().upper()[-6:] if len(n.strip()) >= 6 else n.strip().upper() for n in payload.neighbors
-            ],
-        )
-        await _commit_proxy_violation(db)
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=eligibility_detail,
-        )
-
-    # Per-(session, account) submit budget — deliberately NOT per-IP, the whole
-    # classroom shares one Wi-Fi gateway address. Throttles salt brute-forcing
-    # and resubmit floods for a single account without 429-ing its classmates.
-    if not await submit_rate_limiter.check(str(session_obj.id), str(current_user.id)):
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many check-in submissions for this session; resubmit shortly",
-        )
-
-    # Layer 2 anti-remote-submission guard (H5): student must possess the
-    # WIRE salt broadcast by the in-room teacher beacon. Server stores only the
-    # canonical salt; valid wire tokens are derived (current + grace window)
-    # and compared in constant time. Client-supplied value never chooses truth.
-    provided_salt = (payload.session_salt or "").strip().upper()
-    expected_salts = valid_wire_salts(session_obj)
-    salt_ok = bool(provided_salt) and any(
-        secrets.compare_digest(provided_salt, w) for w in expected_salts
-    )
-    if not salt_ok:
-        # Flag the attempted remote submission so it surfaces on the teacher's
-        # audit dashboard instead of vanishing as a silent rejection.
-        # JWT identity only (auth is mandatory on submit): rejected keys always
-        # belong to a real enrolled account — client-chosen keys are impossible,
-        # so spoofer flags can no longer be framed onto honest classmates.
-        claimed_key = user_device_key(current_user)
-        logger.warning(
-            f"[Salt Gate] Session {session_obj.id}: submit rejected for key {claimed_key} "
-            f"(authenticated) — beacon salt mismatch"
-        )
-
-        # Record spoofer flag for beacon salt mismatch
-        await _record_proxy_violation(
-            db=db,
-            session_id=session_obj.id,
-            device_id=claimed_key,
-            status="SPOOFER_REJECTED",
-            verification_method="SALT_REJECTED",
-            remarks="Remote check-in blocked: in-room beacon salt mismatch",
-            student_id=current_user.id,
-            reported_neighbors=[
-                n.strip().upper()[-6:] if len(n.strip()) >= 6 else n.strip().upper() for n in payload.neighbors
-            ],
-        )
-        await _commit_proxy_violation(db)
-
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Nice try lil bro",
-        )
-
-    target_session_id = session_obj.id
-    user_id = current_user.id
-
-    # M4: bind submission identity to JWT account via collision-resistant key
-    # (hash of full roll/UUID). Client-chosen keys cannot select another node.
     student_key = user_device_key(current_user)
 
-    normalized_neighbors = [n.strip().upper()[-6:] if len(n.strip()) >= 6 else n.strip().upper() for n in payload.neighbors]
-    normalized_close = [n.strip().upper()[-6:] if len(n.strip()) >= 6 else n.strip().upper() for n in (payload.close_neighbors or [])]
+    def _norm_list(items: list[str] | None) -> list[str]:
+        if not items:
+            return []
+        out = []
+        seen = set()
+        for n in items:
+            k = str(n).strip().upper()
+            k = k[-6:] if len(k) >= 6 else k
+            if k and k not in seen:
+                seen.add(k)
+                out.append(k)
+        return out
 
-    # Observability-only: payload fingerprint, logged BEFORE the face/ultrasonic
-    # gates so even rejected attempts are tracked. If the same fingerprint ever
-    # appears twice near-simultaneously (seen once from 10.26.34.133), that is a
-    # network-stack retry duplicating one check-in — not two real students.
-    fingerprint_material = "|".join([
-        student_key,
-        hashlib.sha256((payload.session_salt or "").encode()).hexdigest()[:8],
-        ",".join(sorted(normalized_neighbors)),
-        # [ULTRASONIC-DISABLED] Layer 4 component removed.
-        # f"ultra:{1 if payload.ultrasonic_proximity_detected else 0}:{(payload.co_located_peer_id or '-').upper()}",
-        f"facebytes:{len(payload.face_image_base64) if payload.face_image_base64 else 0}",
-    ])
-    logger.info(
-        f"[Check-In Fingerprint] Session: {target_session_id} Key: {student_key} "
-        f"IP: {request.client.host if request.client else 'unknown'} "
-        f"FP: {hashlib.sha256(fingerprint_material.encode()).hexdigest()[:12]}"
-    )
+    normalized_neighbors = _norm_list(payload.neighbors)
+    normalized_close = _norm_list(payload.close_neighbors)
 
-    # Challenge score gate (security): chimp score < 15 => unverified.
+    if eligibility_detail:
+        await _record_proxy_violation(
+            db=db, session_id=session_obj.id, device_id=student_key,
+            status="SPOOFER_REJECTED", verification_method="ELIGIBILITY_REJECTED",
+            remarks=eligibility_detail, student_id=current_user.id,
+            reported_neighbors=normalized_neighbors,
+        )
+        await _commit_proxy_violation(db)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=eligibility_detail)
+
+    if not await submit_rate_limiter.check(str(session_obj.id), str(current_user.id)):
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many check-in submissions for this session; resubmit shortly")
+
+    provided_salt = (payload.session_salt or "").strip().upper()
+    expected_salts = valid_wire_salts(session_obj)
+    salt_ok = bool(provided_salt) and any(secrets.compare_digest(provided_salt, w) for w in expected_salts)
+    if not salt_ok:
+        await _record_proxy_violation(
+            db=db, session_id=session_obj.id, device_id=student_key,
+            status="SPOOFER_REJECTED", verification_method="SALT_REJECTED",
+            remarks="Remote check-in blocked: in-room beacon salt mismatch",
+            student_id=current_user.id, reported_neighbors=normalized_neighbors,
+        )
+        await _commit_proxy_violation(db)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Nice try lil bro")
+
+    # Score: stored on upload; engine stamps UNVERIFIED below gate (no 403 here).
     challenge_score = payload.game_score
     if challenge_score is None and payload.challenge_report:
         for k in ("chimp_score", "score", "game_score"):
@@ -1579,343 +1246,239 @@ async def submit_student_neighbors(
                 try:
                     challenge_score = int(payload.challenge_report[k])
                 except Exception:
-                    challenge_score = None
+                    pass
                 break
-    if payload.challenge_report or challenge_score is not None:
-        logger.info(
-            f"[Challenge Telemetry] Session: {target_session_id} Key: {student_key} "
-            f"Report: {payload.challenge_report} Score: {challenge_score}"
-        )
-    # Hard gate: real check-ins (face-bearing) must carry a passing score.
-    # Scoreless mid-window neighbor syncs (no face) are telemetry only — they
-    # stage claims for the finalize audit but can never self-verify: finalize
-    # marks any VERIFIED verdict whose best score is missing/below threshold
-    # COGNITIVE_CHALLENGE_FAILED, and the 90 s grace path re-evaluates late
-    # arrivals that do carry a score.
-    face_present = bool(payload.face_image_base64) or raw_face_bytes is not None
-    if face_present and (challenge_score is None or challenge_score < 15):
-        score_val = challenge_score if challenge_score is not None else "missing"
-        await _record_proxy_violation(
-            db=db,
-            session_id=target_session_id,
-            device_id=student_key,
-            status="COGNITIVE_CHALLENGE_FAILED",
-            verification_method="COGNITIVE_CHALLENGE",
-            remarks=f"Chimp challenge failed: score {score_val} < 15",
-            student_id=current_user.id if current_user else None,
-            reported_neighbors=normalized_neighbors,
-            game_score=challenge_score,
-        )
-        await _commit_proxy_violation(db)
-        detail_score = challenge_score if challenge_score is not None else "missing"
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Cognitive challenge failed: score {detail_score} < 15",
-        )
 
-    # Face deduplication check (Layer 3: Camera Face Biometric Deduplication)
     face_check_result = None
     if payload.face_image_base64 or raw_face_bytes:
         raw_roll = current_user.roll_number or student_key
-
-        # Compile proximity cluster peers: close peers (RSSI >= -65), reported desk neighbors, and co-located peer
         cluster_peers = set(normalized_close)
         cluster_peers.update(normalized_neighbors)
-        # [ULTRASONIC-DISABLED] co-located peer no longer joins the face cluster.
-        # if payload.co_located_peer_id:
-        #     co_key = payload.co_located_peer_id[-6:].upper() if len(payload.co_located_peer_id) >= 6 else payload.co_located_peer_id.upper()
-        #     cluster_peers.add(co_key)
 
-        # Run facial biometric matching in background thread pool
-        face_check_result = await asyncio.to_thread(
-            face_registry.register_and_check,
-            session_id=str(session_obj.id),
-            student_key=student_key,
-            roll_number=raw_roll,
-            face_base64=payload.face_image_base64,
-            face_bytes=raw_face_bytes,
-            cluster_peers=cluster_peers,
-        )
-
-        if not face_check_result.has_human_face:
-            logger.warning(f"[Layer 3 Face Biometric] No face detected for {student_key}: {face_check_result.remarks}")
+        # F1 (docs/future_plans.md): extract ONCE, then either closed-set 1:1
+        # verification against the student's own harvested references (flipped)
+        # or the legacy open-set desk-dedup path (fallback, unenrolled/low-N).
+        clean_b64 = (payload.face_image_base64 or "").strip()
+        if "," in clean_b64:
+            clean_b64 = clean_b64.split(",", 1)[1].strip()
+        try:
+            decode_bytes = raw_face_bytes if raw_face_bytes is not None else base64.b64decode(clean_b64)
+        except Exception as decode_err:
+            # Malformed payload takes the same NO_FACE violation path as a
+            # frame the engine cannot read — 403, never a 500.
+            has_face, live_embedding, face_remark = False, None, f"Failed to decode face image: {decode_err}"
+            capture_meta = {}
+        else:
+            capture = await asyncio.to_thread(
+                face_registry.engine.extract_capture, decode_bytes
+            )
+            has_face = capture.has_face
+            live_embedding = capture.embedding
+            face_remark = capture.remark
+            capture_meta = capture.metadata()
+        if not has_face or live_embedding is None:
             await _record_proxy_violation(
-                db=db,
-                session_id=session_obj.id,
-                device_id=student_key,
-                status="NO_FACE_DETECTED",
-                verification_method="FACE_BIOMETRIC_FAILED",
-                remarks=face_check_result.remarks,
-                student_id=current_user.id if current_user else None,
+                db=db, session_id=session_obj.id, device_id=student_key,
+                status="NO_FACE_DETECTED", verification_method="FACE_BIOMETRIC_FAILED",
+                remarks=face_remark or "REJECTED: No human face detected", student_id=current_user.id,
                 reported_neighbors=normalized_neighbors,
             )
             await _commit_proxy_violation(db)
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Biometric proxy rejected: {face_check_result.remarks}",
-            )
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Biometric proxy rejected: {face_remark}")
 
-        if face_check_result.is_duplicate:
-            # Flag ONLY the submitting student. The matched earlier student is
-            # innocent — writing them a DUPLICATE_FACE_PROXY row at submit time
-            # (a) vandalized an honest classmate's record, (b) blocked their
-            # audit verdict at finalize via the violation-status skip list, and
-            # (c) created their row with student_id=None (no account binding on
-            # a matched key). The registry already marks the matched student
-            # flagged=True, which excludes them from finalize's face-anchor set
-            # so the component falls to instructor review, and the flagged
-            # pair (both images + similarity) stays available for that review.
-            await _record_proxy_violation(
-                db=db,
-                session_id=session_obj.id,
-                device_id=student_key,
-                status="DUPLICATE_FACE_PROXY",
-                verification_method="FACE_BIOMETRIC_MATCH",
-                remarks=face_check_result.remarks,
-                student_id=current_user.id if current_user else None,
-                reported_neighbors=normalized_neighbors,
-            )
-            await _commit_proxy_violation(db)
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Biometric proxy rejected: {face_check_result.remarks}",
-            )
-
-    # M3-lite: an ultrasonic desk handshake (Layer 4) is a CLAIM, not a verdict.
-    # The claimant stages normally; only a RECIPROCATED pair (both students claim
-    # each other) is materialized into CO_LOCATED_SAME_DESK_PROXY rows at finalize.
-    # One-sided claims are logged and ignored, so a prankster can never vandalize
-    # a classmate's record with a fake "we sat together" claim.
-    # [ULTRASONIC-DISABLED] claim staging removed — stage_submission no longer
-    # receives a claimed_ultrasonic value (defaults to None in the buffer).
-    # ultrasonic_claim: Optional[str] = None
-    # if payload.ultrasonic_proximity_detected:
-    #     raw_claim = (payload.co_located_peer_id or "").strip()
-    #     # Keys are already last-4-normalized everywhere on this route — mirror it
-    #     # so the claim can pair against the partner's staged device key.
-    #     normalized_claim = raw_claim[-6:].upper() if len(raw_claim) >= 6 else raw_claim.upper()
-    #     if not normalized_claim or normalized_claim == "UNKNOWN" or normalized_claim == student_key:
-    #         logger.warning(f"[Layer 4] Ultrasonic claim from {student_key} dropped: invalid co-located peer '{raw_claim}'")
-    #     else:
-    #         ultrasonic_claim = normalized_claim
-    #         logger.info(f"[Layer 4] Ultrasonic claim received from {student_key}: co-located with {normalized_claim} (deferred to finalize for reciprocal confirmation)")
-
-    # R2 (review §3.1): the gate MUST span both the stage and the post-stage
-    # committed-status re-read — a stage entering between finalize's drain and
-    # its commit otherwise reads the still-ACTIVE (uncommitted) status and is
-    # silently orphaned moments later by finalize's buffer clear. Holding the
-    # same per-session lock finalize holds makes intake atomic either way.
-    async with submission_buffer.session_gate(str(target_session_id)):
-        # Stage student check-in submission into in-memory buffer
-        await submission_buffer.stage_submission(
-            session_id=str(target_session_id),
-            device_key=student_key,
-            student_id=user_id,
-            reported_neighbors=normalized_neighbors,
-            # [ULTRASONIC-DISABLED] claim staging removed.
-            # claimed_ultrasonic=ultrasonic_claim,
-            game_score=challenge_score,
-        )
-
-        # Re-read session status after staging: if finalize committed while this submission was in
-        # flight (the finalize already popped the buffer), reroute through the grace path below so
-        # the straggler gets an attendance record instead of being silently orphaned.
-        fresh_status_res = await db.execute(
-            select(AttendanceSession.status).where(AttendanceSession.id == session_obj.id)
-        )
-        session_obj.status = fresh_status_res.scalar_one_or_none() or session_obj.status
-
-    if session_obj.status == "CANCELLED":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Attendance session has been cancelled",
-        )
-
-    # [ULTRASONIC-DISABLED] late-claim logging removed with claim staging.
-    # if ultrasonic_claim and session_obj.status == "COMPLETED":
-    #     # M3-lite: finalize already popped the staging buffer, so reciprocity for
-    #     # this late claim can no longer be evaluated. Log only — never vandalize.
-    #     logger.warning(f"[Layer 4] Post-finalize ultrasonic claim ignored (mutuality unevaluable): {student_key} -> {ultrasonic_claim}")
-
-    # For in-flight submissions arriving during the grace period of an already COMPLETED session,
-    # immediately evaluate and record their attendance so they don't get orphaned without an AttendanceRecord.
-    if session_obj.status == "COMPLETED":
-        rec_stmt = select(AttendanceRecord).where(
-            AttendanceRecord.session_id == target_session_id,
-            AttendanceRecord.ble_device_id == student_key,
-        )
-        rec_res = await db.execute(rec_stmt)
-        existing_record = rec_res.scalars().first()
-
-        if existing_record and challenge_score is not None:
-            prev_score = existing_record.game_score
-            existing_record.game_score = (
-                challenge_score if prev_score is None else max(prev_score, challenge_score)
-            )
-            # Rescue (finalize-after-game race): the audit stamped this record
-            # COGNITIVE_CHALLENGE_FAILED because no score had arrived when the
-            # teacher's timer ended. A late legitimate score upgrades a
-            # missing-score failure only — a stored sub-threshold score stays
-            # frozen. Reciprocity reads the partner's claimed neighbors, not its
-            # current status, so rescue order never matters.
-            if (
-                existing_record.status == "COGNITIVE_CHALLENGE_FAILED"
-                and prev_score is None
-                and challenge_score >= 15
-            ):
-                partner_stmt = select(AttendanceRecord).where(
-                    AttendanceRecord.session_id == target_session_id,
-                    AttendanceRecord.ble_device_id.in_(normalized_neighbors or []),
+        enrollment_row = await face_enrollment.load_enrollment(db, current_user.id)
+        if face_enrollment.is_flip_ready(enrollment_row):
+            # Closed-set path: honest submissions are never cross-compared with
+            # classmates, so lookalike false-"duplicate" flags cannot occur.
+            matched, best_sim, student_threshold = await face_enrollment.verify_1to1(db, current_user.id, live_embedding)
+            if matched:
+                # Bounded adaptation: only captures clearing BOTH this
+                # student's verification gate and the global strong-match gate
+                # fold back into the template (drift: glasses, haircut).
+                adapt_gate = face_enrollment.adaptation_gate(student_threshold)
+                if best_sim >= adapt_gate:
+                    await face_enrollment.harvest(db, current_user.id, live_embedding, meta=capture_meta)
+                face_check_result = FaceCheckResult(
+                    is_duplicate=False,
+                    has_human_face=True,
+                    similarity_score=best_sim,
+                    remarks=f"1:1 FACE VERIFIED against enrolled reference (similarity: {best_sim:.3f}, gate: {student_threshold:.3f})",
+                    passed=True,
                 )
-                partner_res = await db.execute(partner_stmt)
-                mutual = False
-                hard_violations = {
-                    "DUPLICATE_FACE_PROXY",
-                    "CO_LOCATED_SAME_DESK_PROXY",
-                    "DIVIDED_ATTENTION_PROXY",
-                    "SPOOFER_REJECTED",
-                    "NO_FACE_DETECTED",
-                    "ELIGIBILITY_REJECTED",
-                }
-                for partner in partner_res.scalars().all():
-                    if partner.status in hard_violations:
-                        continue
-                    partner_neighbors = partner.reported_neighbors or []
-                    if student_key.upper() in {str(n).upper() for n in partner_neighbors}:
-                        mutual = True
-                        break
-                if mutual:
-                    existing_record.status = "VERIFIED_PRESENT"
-                    existing_record.verification_method = "IN_FLIGHT_GRACE_PEER"
-                    existing_record.affinity_score = 1.00
-                    existing_record.remarks = (
-                        f"In-flight check-in verified via mutual desk neighbor (score {challenge_score})"
-                    )
-                    # Atomic in-DB increment: two concurrent grace rescues
-                    # racing a read-modify-write on the ORM attribute lost one
-                    # increment (READ COMMITTED sees the old value twice).
-                    await db.execute(
-                        update(AttendanceSession)
-                        .where(AttendanceSession.id == target_session_id)
-                        .values(
-                            total_verified=func.coalesce(AttendanceSession.total_verified, 0) + 1
-                        )
-                        .execution_options(synchronize_session=False)
-                    )
-                    logger.info(
-                        f"[In-Flight Grace Audit] Rescued late arrival {student_key} "
-                        f"-> VERIFIED_PRESENT (score {challenge_score}, mutual neighbor)"
-                    )
-                else:
-                    existing_record.status = "ISOLATED_FLAGGED"
-                    existing_record.verification_method = "IN_FLIGHT_GRACE"
-                    existing_record.affinity_score = 0.50
-                    existing_record.remarks = (
-                        f"In-flight check-in after finalize without reciprocal neighbor "
-                        f"(score {challenge_score}, Reported: [{', '.join(normalized_neighbors)}])"
-                    )
-                    logger.info(
-                        f"[In-Flight Grace Audit] Late arrival {student_key} scored "
-                        f"{challenge_score} but no reciprocal neighbor — ISOLATED_FLAGGED"
-                    )
-            try:
-                await db.commit()
-            except IntegrityError:
-                await db.rollback()
-
-        if not existing_record:
-            verified_neighbors = []
-            if normalized_neighbors:
-                v_stmt = select(AttendanceRecord).where(
-                    AttendanceRecord.session_id == target_session_id,
-                    AttendanceRecord.ble_device_id.in_(normalized_neighbors),
-                    AttendanceRecord.status == "VERIFIED_PRESENT",
-                )
-                v_res = await db.execute(v_stmt)
-                verified_neighbors = [r.ble_device_id for r in v_res.scalars().all()]
-
-            if verified_neighbors:
-                rec_status = "VERIFIED_PRESENT"
-                verif_method = "IN_FLIGHT_GRACE_PEER"
-                affinity = 1.00
-                bridge = None
-                remarks = f"In-flight check-in verified via mutual desk neighbor [{', '.join(verified_neighbors)}]"
-                # Atomic in-DB increment (see rescue path comment).
-                await db.execute(
-                    update(AttendanceSession)
-                    .where(AttendanceSession.id == target_session_id)
-                    .values(
-                        total_verified=func.coalesce(AttendanceSession.total_verified, 0) + 1
-                    )
-                    .execution_options(synchronize_session=False)
-                )
-            elif normalized_neighbors:
-                rec_status = "ISOLATED_FLAGGED"
-                verif_method = "IN_FLIGHT_GRACE"
-                affinity = 0.50
-                bridge = None
-                remarks = f"In-flight check-in during grace period without verified neighbor (Reported: [{', '.join(normalized_neighbors)}]) - manual review recommended"
             else:
-                rec_status = "ISOLATED_FLAGGED"
-                verif_method = "NONE"
-                affinity = 0.00
-                bridge = None
-                remarks = "Zero desk neighbors detected (isolated seat)"
-
-            # M5 (audit): identity is the JWT account ONLY. The old ilike
-            # substring fallback could bind a crafted id prefix to another
-            # student's row. user_id is always set for an authenticated
-            # caller, so no fallback resolution is permitted.
-            resolved_student_id = user_id
-
-            new_record = AttendanceRecord(
-                id=uuid.uuid4(),
-                session_id=session_obj.id,
-                student_id=resolved_student_id,
-                ble_device_id=student_key,
-                status=rec_status,
-                verification_method=verif_method,
-                affinity_score=affinity,
-                bridge_device_id=bridge,
-                reported_neighbors=normalized_neighbors,
-                remarks=remarks,
-                game_score=challenge_score,
-                recorded_at=datetime.now(timezone.utc),
-            )
-            db.add(new_record)
-            try:
-                await db.commit()
-            except IntegrityError:
-                # R1 race guard (review §3.1): a valid retrying student — a
-                # double grace claim or a replayed app keep-alive after their
-                # check-in — re-hits one of the session's unique keys
-                # (device/student/submission). Their attendance already
-                # exists; treat the claim as accepted, never 500 them.
-                await db.rollback()
-                logger.info(
-                    f"[In-Flight Grace Audit] Duplicate grace claim for late arrival {student_key} "
-                    f"in session {session_obj.id} — attendance record already present."
+                # Remark-grade only (F1 constraint): an uncalibrated 1:1 gate
+                # must never hard-reject an honest student — hold for review.
+                await _record_proxy_violation(
+                    db=db, session_id=session_obj.id, device_id=student_key,
+                    status="IDENTITY_MISMATCH_REVIEW", verification_method="FACE_1TO1_MISMATCH",
+                    remarks=f"1:1 face mismatch vs enrolled reference (sim {best_sim:.3f}, gate {student_threshold:.3f}) — held for teacher review",
+                    student_id=current_user.id, reported_neighbors=normalized_neighbors,
                 )
-            logger.info(f"[In-Flight Grace Audit] Generated {rec_status} record for late arrival {student_key} in session {session_obj.id}")
+                await _commit_proxy_violation(db)
+                face_check_result = FaceCheckResult(
+                    is_duplicate=False,
+                    has_human_face=True,
+                    similarity_score=best_sim,
+                    remarks=f"1:1 IDENTITY MISMATCH vs enrolled reference (sim {best_sim:.3f}, gate {student_threshold:.3f}) — held for teacher review",
+                    passed=False,
+                )
+        else:
+            face_check_result = await asyncio.to_thread(
+                face_registry.register_and_check,
+                session_id=str(session_obj.id),
+                student_key=student_key,
+                roll_number=raw_roll,
+                face_base64=payload.face_image_base64,
+                face_bytes=raw_face_bytes,
+                cluster_peers=cluster_peers,
+                embedding=live_embedding,
+            )
+            if face_check_result.is_duplicate:
+                await _record_proxy_violation(
+                    db=db, session_id=session_obj.id, device_id=student_key,
+                    status="DUPLICATE_FACE_PROXY", verification_method="FACE_BIOMETRIC_MATCH",
+                    remarks=face_check_result.remarks, student_id=current_user.id,
+                    reported_neighbors=normalized_neighbors,
+                )
+                await _commit_proxy_violation(db)
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Biometric proxy rejected: {face_check_result.remarks}")
+            # Reference forging (trust gate): auto-verified non-duplicate
+            # captures only — teacher overrides never reach this path.
+            if face_check_result.embedding is not None:
+                await face_enrollment.harvest(db, current_user.id, face_check_result.embedding, meta=capture_meta)
 
-    logger.info(f"[Check-In] Student: {student_key} submitted {len(normalized_neighbors)} neighbors: {normalized_neighbors} for session: {target_session_id}")
+    # Upsert by (session_id, ble_device_id); fallback on (session_id, student_id).
+    rec_res = await db.execute(select(AttendanceRecord).where(
+        AttendanceRecord.session_id == session_obj.id,
+        AttendanceRecord.ble_device_id == student_key,
+    ))
+    rec = rec_res.scalars().first()
+    if rec is None:
+        rec_res2 = await db.execute(select(AttendanceRecord).where(
+            AttendanceRecord.session_id == session_obj.id,
+            AttendanceRecord.student_id == current_user.id,
+        ))
+        rec = rec_res2.scalars().first()
+
+    now_utc = datetime.now(timezone.utc)
+    if rec is None:
+        rec = AttendanceRecord(
+            id=uuid.uuid4(), session_id=session_obj.id, student_id=current_user.id,
+            ble_device_id=student_key, status="UNVERIFIED", verification_method="AWAITING_AUDIT",
+            affinity_score=0.00, reported_neighbors=normalized_neighbors,
+            remarks="Check-in received; awaiting audit", game_score=challenge_score,
+            recorded_at=now_utc,
+        )
+        db.add(rec)
+    else:
+        # Do not overwrite frozen security verdicts except allow score/list refresh context.
+        # IDENTITY_MISMATCH_REVIEW (F1 1:1) is remark-grade and frozen for the
+        # teacher's finalize review — the audit engine must not clear it.
+        if rec.status not in ("DUPLICATE_FACE_PROXY", "CO_LOCATED_SAME_DESK_PROXY", "DIVIDED_ATTENTION_PROXY", "NO_FACE_DETECTED", "SPOOFER_REJECTED", "ELIGIBILITY_REJECTED", "IDENTITY_MISMATCH_REVIEW"):
+            rec.reported_neighbors = normalized_neighbors
+            rec.remarks = "Check-in received; awaiting audit"
+            if session_obj.audit_run_at is None:
+                rec.status = "UNVERIFIED"
+                rec.verification_method = "AWAITING_AUDIT"
+                rec.affinity_score = 0.00
+        if challenge_score is not None:
+            rec.game_score = challenge_score if rec.game_score is None else max(rec.game_score, challenge_score)
+        if not rec.student_id:
+            rec.student_id = current_user.id
+        rec.recorded_at = now_utc
+
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        # Retry once: fetch existing row and update.
+        rec_res = await db.execute(select(AttendanceRecord).where(
+            AttendanceRecord.session_id == session_obj.id,
+            AttendanceRecord.ble_device_id == student_key,
+        ))
+        rec = rec_res.scalars().first()
+        if rec:
+            if rec.status not in ("DUPLICATE_FACE_PROXY", "CO_LOCATED_SAME_DESK_PROXY", "DIVIDED_ATTENTION_PROXY", "NO_FACE_DETECTED", "SPOOFER_REJECTED", "ELIGIBILITY_REJECTED") and session_obj.audit_run_at is None:
+                rec.reported_neighbors = normalized_neighbors
+                rec.status = "UNVERIFIED"
+                rec.verification_method = "AWAITING_AUDIT"
+                rec.affinity_score = 0.00
+            if challenge_score is not None:
+                rec.game_score = challenge_score if rec.game_score is None else max(rec.game_score, challenge_score)
+
+    # Straggler O(1) path: audit already ran.
+    if session_obj.audit_run_at is not None and session_obj.status == "ACTIVE":
+        started = session_obj.started_at
+        if started and started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        if started and (datetime.now(timezone.utc) - started).total_seconds() >= 60:
+            await db.commit()
+            raise HTTPException(status_code=400, detail="Session finalized")
+        # Strict reciprocated edge with an already-VERIFIED, non-frozen row.
+        hard_violations = {"DUPLICATE_FACE_PROXY", "CO_LOCATED_SAME_DESK_PROXY", "DIVIDED_ATTENTION_PROXY", "SPOOFER_REJECTED", "NO_FACE_DETECTED", "ELIGIBILITY_REJECTED"}
+        verified_partners = []
+        if normalized_neighbors and rec and rec.status not in hard_violations:
+            p_res = await db.execute(select(AttendanceRecord).where(
+                AttendanceRecord.session_id == session_obj.id,
+                AttendanceRecord.ble_device_id.in_(normalized_neighbors),
+                AttendanceRecord.status.in_(["VERIFIED", "VERIFIED_PRESENT"]),
+            ))
+            for partner in p_res.scalars().all():
+                if partner.status in hard_violations:
+                    continue
+                partner_neighbors = {str(n).strip().upper()[-6:] if len(str(n).strip()) >= 6 else str(n).strip().upper() for n in (partner.reported_neighbors or [])}
+                if student_key.upper() in partner_neighbors:
+                    verified_partners.append(partner.ble_device_id)
+        if rec and rec.status not in hard_violations and rec.status not in ("VERIFIED", "VERIFIED_PRESENT"):
+            # Engine already issued a verdict this lock window; a straggler
+            # re-check-in must never downgrade an existing VERIFIED row.
+            score_ok = (rec.game_score is not None and rec.game_score >= 15)
+            if verified_partners and score_ok:
+                rec.status = "VERIFIED"
+                rec.verification_method = "STRAGGLER_MUTUAL"
+                rec.affinity_score = 1.00
+                rec.remarks = f"Late check-in verified via mutual desk neighbor [{', '.join(verified_partners)}]"
+            else:
+                rec.status = "UNVERIFIED"
+                rec.verification_method = "STRAGGLER"
+                rec.affinity_score = 0.00
+                if not score_ok:
+                    rec.remarks = f"Late check-in: challenge score {rec.game_score if rec.game_score is not None else 'missing'} < 15 - Teacher check"
+                elif verified_partners:
+                    rec.remarks = "Late check-in: mutual evidence insufficient - Teacher check"
+                else:
+                    rec.remarks = "Late check-in without reciprocal verified neighbor - Teacher check"
+        await db.flush()
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+
+    # Keep session counters fresh for live reads; audit_run_at lock recomputes at 60.
+    try:
+        await _recompute_session_counters(session_obj, db)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+
+    logger.info("[Check-In] Student: %s neighbors=%d session=%s", student_key, len(normalized_neighbors), session_obj.id)
     return {
         "status": "success",
         "student": student_key,
         "recorded_neighbors": normalized_neighbors,
-        # R5 (review §5 honesty): bound to the CHECK OUTCOME, not to payload
-        # presence — this can only be True after the biometric check both
-        # detected a face and did not flag it as a duplicate (the no-face and
-        # duplicate branches raise 403 above).
         "face_verified": (
-            (face_check_result.has_human_face and not face_check_result.is_duplicate)
+            (
+                face_check_result.passed
+                if face_check_result.passed is not None
+                else (face_check_result.has_human_face and not face_check_result.is_duplicate)
+            )
             if face_check_result else None
         ),
         "face_diagnostic": face_check_result.remarks if face_check_result else None,
     }
 
-
-# Execute social-graph audit and finalize session
+# Execute social-graph audit and finalize session (idempotent wrapper)
 @router.post(
     "/sessions/{session_id}/audit-and-finalize",
     response_model=AttendanceSessionResponse,
@@ -1925,278 +1488,34 @@ async def audit_and_finalize_session(
     payload: MeshAuditRunRequest,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_teacher),
-    _finalize_gate: None = Depends(_session_gate_dependency),
 ):
     session_obj = await _resolve_session(session_id, db)
-
     if not session_obj:
         raise HTTPException(status_code=404, detail="Attendance session not found")
     user_role = (current_user.role or "").upper()
     if session_obj.teacher_id != current_user.id and user_role not in ("DEVELOPER", "ADMIN"):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You can only finalize your own attendance sessions",
-        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only finalize your own attendance sessions")
     if session_obj.status == "CANCELLED":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Cannot finalize a cancelled session",
-        )
-    # Serialize overlapping finalizes: block on the session row, then re-read committed status
-    session_obj = await _lock_session_for_finalize(db, session_obj)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot finalize a cancelled session")
 
-    if session_obj.status == "COMPLETED":
-        # Idempotent exit: attach the finalized counters and records so the caller gets the
-        # completed session rather than the stale pre-lock snapshot
-        await db.refresh(session_obj)
-        final_recs = await db.execute(
-            select(AttendanceRecord).where(AttendanceRecord.session_id == session_obj.id)
-        )
-        session_obj.records = list(final_recs.scalars().all())
-        await _populate_course_metadata(session_obj, db)
-        await _populate_record_student_details(session_obj, db)
-        return _attach_wire_salt(session_obj)
-
-    # Fetch all cloud-submitted student and relay reports from memory buffer and
-    # fallback database. PEEK, not pop: the buffer is drained only AFTER the
-    # durable commit below, so a failure between read and commit (DB blip,
-    # flush error) leaves the staged check-ins intact for a finalize retry.
-    staged = await submission_buffer.peek_submissions(str(session_obj.id))
-
-    sub_stmt = select(SessionSubmission).where(SessionSubmission.session_id == session_obj.id)
-    sub_res = await db.execute(sub_stmt)
-    submissions = sub_res.scalars().all()
-    if submissions:
-        await db.execute(delete(SessionSubmission).where(SessionSubmission.session_id == session_obj.id))
-
-    cloud_reports: dict[str, List[str]] = {s.device_key: s.reported_neighbors for s in submissions}
-    user_map: dict[str, uuid.UUID] = {s.device_key: s.student_id for s in submissions if s.student_id}
-
-    for dev_key, staged_sub in staged.items():
-        cloud_reports[dev_key] = staged_sub.reported_neighbors
-        if staged_sub.student_id:
-            user_map[dev_key] = staged_sub.student_id
-
-    # Normalize teacher-reported keys/neighbors to match the staged/cloud
-    # convention (uppercased). graph_engine matches keys exactly, so a
-    # mixed-case payload key would never pair with its peers' reports and the
-    # honest node would land ISOLATED_FLAGGED.
-    normalized_payload_reports = {
-        k.strip().upper(): [n.strip().upper() for n in v]
-        for k, v in payload.reports.items()
-    }
-    combined_reports = {**cloud_reports, **normalized_payload_reports}
-
-    # H3 (audit): anchor mesh verdicts to enrolled class size and to
-    # server-observed face evidence so a colluder-only clique cannot
-    # self-verify as "the room". Face registry holds per-session unique
-    # (non-duplicate) successful face checks — still populated here because
-    # clear_session runs only after commit.
-    face_verified_keys = None
     try:
-        session_store = face_registry._registry.get(str(session_obj.id), {})
-        if session_store:
-            face_verified_keys = {
-                k.upper() for k, v in session_store.items()
-                if not v.get("flagged", False)
-            }
-    except Exception:
-        face_verified_keys = None
+        await svc_run_engine_audit(session_obj.id, db)
+        await svc_lock_session(session_obj.id, db)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("Audit-finalize wrapper failed for session %s: %s", session_id, e)
+        raise HTTPException(status_code=500, detail="Failed to audit/finalize session")
 
-    # Execute social-graph audit engine
-    audit_results = audit_classroom_mesh(
-        combined_reports,
-        total_enrolled=session_obj.total_enrolled or 0,
-        face_verified_keys=face_verified_keys,
-    )
-
-    # M3-lite: materialize RECIPROCATED ultrasonic desk claims. Both parties must
-    # claim each other from their staged submissions; the matched pair's benign
-    # audit verdict rows are transformed in place into the proxy violation row —
-    # preserving the one-row-per-student shape. Unreciprocated claims are ignored.
-    # [ULTRASONIC-DISABLED 2026-11] Layer 4 pairing loop off (see legacy path
-    # note above). Kept as always-empty dict so the override block compiles.
-    ultrasonic_pairs: dict[str, str] = {}
-    # for claim_key, claim_sub in staged.items():
-    #     claim_peer = claim_sub.claimed_ultrasonic
-    #     if not claim_peer:
-    #         continue
-    #     peer_sub = staged.get(claim_peer)
-    #     if peer_sub and peer_sub.claimed_ultrasonic == claim_key:
-    #         ultrasonic_pairs[claim_key] = claim_peer
-    #         ultrasonic_pairs[claim_peer] = claim_key
-    #     else:
-    #         logger.warning(f"[Layer 4] Unreciprocated ultrasonic claim ignored: {claim_key} -> {claim_peer}")
-
-    # [ULTRASONIC-DISABLED] verdict override block — dead while disabled.
-    # if ultrasonic_pairs:
-    #     for item in audit_results:
-    #         pair_peer = ultrasonic_pairs.get(item["ble_device_id"].upper())
-    #         if pair_peer:
-    #             item["status"] = "CO_LOCATED_SAME_DESK_PROXY"
-    #             item["verification_method"] = "ULTRASONIC_ACOUSTIC_MATCH"
-    #             item["remarks"] = f"Ultrasonic proximity rejected: Co-located on same desk (< 20 cm) with {pair_peer}"
-
-    # Attach client-attested chimp challenge scores (best seen per device) so the
-    # finalized attendance records carry them for instructor review.
-    challenge_scores: dict[str, int] = {}
-    for sub_key, staged_sub in staged.items():
-        if staged_sub.game_score is not None:
-            k = sub_key.upper()
-            challenge_scores[k] = max(challenge_scores.get(k, 0), staged_sub.game_score)
-    for item in audit_results:
-        k = item["ble_device_id"].upper()
-        if k in challenge_scores:
-            item["game_score"] = challenge_scores[k]
-
-    # Score gate at verdict time: a VERIFIED verdict without a passing challenge
-    # score can never stand (syncs stage claims but carry no score — a student
-    # who never plays must not auto-verify through mutual claims alone). The
-    # 90 s grace path rescues late arrivals that do carry a legitimate score.
-    for item in audit_results:
-        score = item.get("game_score")
-        if item["status"] == "VERIFIED_PRESENT" and (score is None or score < 15):
-            item["status"] = "COGNITIVE_CHALLENGE_FAILED"
-            item["verification_method"] = "COGNITIVE_CHALLENGE"
-            item["remarks"] = (
-                f"Chimp challenge failed: score {score if score is not None else 'missing'} < 15"
-            )
-
-    # Log the verdict so manual classroom tests are self-explaining in server logs
-    verdict_counts: dict[str, int] = {}
-    for item in audit_results:
-        verdict_counts[item["status"]] = verdict_counts.get(item["status"], 0) + 1
-    logger.info(f"[Audit Verdict] Session: {session_obj.id} -> {verdict_counts}")
-    for item in audit_results:
-        if item["status"] != "VERIFIED_PRESENT":
-            logger.info(
-                f"[Audit Detail] Session: {session_obj.id} node {item['ble_device_id']} "
-                f"-> {item['status']} :: {item['remarks']}"
-            )
-
-    # Batch load all prior attendance records for this session
-    prior_records_res = await db.execute(
-        select(AttendanceRecord).where(AttendanceRecord.session_id == session_obj.id)
-    )
-    prior_records = prior_records_res.scalars().all()
-    prior_device_map = {r.ble_device_id.upper(): r for r in prior_records}
-    prior_student_map = {r.student_id: r for r in prior_records if r.student_id}
-    seen_devices = set(prior_device_map.keys())
-    seen_students = set(prior_student_map.keys())
-
-    # M5-consistent identity: only AUTHENTICATED submissions bind identities
-    # (user_map is filled exclusively from staged/DB submissions that carried a
-    # JWT account). The old ilike roll-suffix fallback tried to match 4-hex
-    # device keys against roll numbers ending in those hex chars — it almost
-    # never matched a real roll, and when it did it could bind an audit node to
-    # the WRONG account. Unresolvable keys now simply keep student_id NULL.
-
-    verified_count = 0
-    spoofer_count = 0
-    records_to_create = []
-
-    for item in audit_results:
-        device_id = item["ble_device_id"].upper()
-        resolved_student_id = user_map.get(device_id)
-
-        prior_rec = prior_device_map.get(device_id) or (prior_student_map.get(resolved_student_id) if resolved_student_id else None)
-        if prior_rec:
-            # Skip modifying existing security proxy violations
-            if prior_rec.status in (
-                "DUPLICATE_FACE_PROXY",
-                "CO_LOCATED_SAME_DESK_PROXY",
-                "DIVIDED_ATTENTION_PROXY",
-                "COGNITIVE_CHALLENGE_FAILED",
-                "NO_FACE_DETECTED",
-                "SPOOFER_REJECTED",
-            ):
-                continue
-            # Update existing record in place without duplicate insert
-            if item["status"] == "VERIFIED_PRESENT":
-                verified_count += 1
-            elif item["status"] == "SPOOFER_REJECTED":
-                spoofer_count += 1
-            prior_rec.status = item["status"]
-            prior_rec.verification_method = item["verification_method"]
-            prior_rec.affinity_score = item["affinity_score"]
-            prior_rec.remarks = item["remarks"]
-            prior_rec.reported_neighbors = item["reported_neighbors"]
-            new_score = item.get("game_score")
-            if new_score is not None:
-                prior_rec.game_score = (
-                    new_score if prior_rec.game_score is None
-                    else max(prior_rec.game_score, new_score)
-                )
-            if resolved_student_id and not prior_rec.student_id:
-                prior_rec.student_id = resolved_student_id
-            continue
-
-        if device_id in seen_devices or (resolved_student_id and resolved_student_id in seen_students):
-            continue
-        seen_devices.add(device_id)
-        if resolved_student_id:
-            seen_students.add(resolved_student_id)
-
-        if item["status"] == "VERIFIED_PRESENT":
-            verified_count += 1
-        elif item["status"] == "SPOOFER_REJECTED":
-            spoofer_count += 1
-
-        records_to_create.append(
-            AttendanceRecord(
-                id=uuid.uuid4(),
-                session_id=session_obj.id,
-                student_id=resolved_student_id,
-                ble_device_id=device_id,
-                status=item["status"],
-                verification_method=item["verification_method"],
-                affinity_score=item["affinity_score"],
-                bridge_device_id=item["bridge_device_id"].upper() if item["bridge_device_id"] else None,
-                reported_neighbors=item["reported_neighbors"],
-                remarks=item["remarks"],
-                game_score=item.get("game_score"),
-                recorded_at=datetime.now(timezone.utc),
-            )
-        )
-
-    # Batch insert all attendance records and flush to ensure visibility
-    if records_to_create:
-        db.add_all(records_to_create)
-        await db.flush()
-
-    # Bind unbound (witness/offline/legacy) rows to roster accounts so the
-    # teacher dashboard shows real names/rolls, not "Student <key-suffix>".
-    await _bind_unbound_records_to_roster(session_obj, db)
-
-    # Approved-leave overlay: enrolled students with an APPROVED leave covering
-    # the session date are marked LEAVE instead of ABSENT (or given a LEAVE
-    # row). Runs after the verdict gate so the gate never sees LEAVE rows.
-    await _apply_approved_leave_overlay(session_obj, db)
-
-    session_obj.status = "COMPLETED"
-    session_obj.ended_at = datetime.now(timezone.utc)
-
-    # R5 (review §5 honesty): verified count is recounted from durable rows —
-    # the payload-computed tally could be clobbered by grace-path increments.
-    await _recompute_session_counters(session_obj, db)
-
-    await db.commit()
-    await db.refresh(session_obj)
-    # Staged buffer drained only now (it was peeked, never popped mid-flight):
-    # a failure before this commit left the check-ins staged for a finalize
-    # retry instead of losing them permanently.
-    await submission_buffer.pop_submissions(str(session_obj.id))
-    # H2: clear face biometrics only AFTER the commit — clearing before commit
-    # left a blind window during the 90s grace period where a duplicate-face
-    # resubmission hit an empty registry and slipped past dedup.
-    face_registry.clear_session(str(session_obj.id))
-
+    session_obj = await _resolve_session(session_id, db)
+    if not session_obj:
+        raise HTTPException(status_code=404, detail="Attendance session not found")
+    final_recs = await db.execute(select(AttendanceRecord).where(AttendanceRecord.session_id == session_obj.id))
+    session_obj.records = list(final_recs.scalars().all())
     await _populate_course_metadata(session_obj, db)
     await _populate_record_student_details(session_obj, db)
-
-    logger.info(f"[Audit Finalized] Session: {session_obj.id}, Verified: {session_obj.total_verified}, Unverified: {session_obj.total_unverified}, Total Records: {len(audit_results)}")
+    await unregister_session_schedule(str(session_obj.id))
     return _attach_wire_salt(session_obj)
-
 
 # Retrieve detailed session information
 @router.get("/sessions/{session_id}", response_model=AttendanceSessionResponse)
@@ -2224,6 +1543,15 @@ async def get_session_details(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You are not authorized to view this attendance session",
             )
+
+    # Lazy trigger (Render/Neon safe): roster fetch / student poll may be the only wakeup.
+    try:
+        await maybe_run_due_audit(session_obj, db)
+        await db.refresh(session_obj)
+        await maybe_run_due_lock(session_obj, db)
+        session_obj = await _resolve_session(session_id, db) or session_obj
+    except Exception as e:
+        logger.warning("Lazy audit/lock trigger failed for session %s: %s", session_id, e)
 
     await _populate_course_metadata(session_obj, db)
 
@@ -2323,7 +1651,7 @@ async def override_attendance_record(
         record_obj.remarks = payload.remarks
 
     # Deliberate chimp-gate exemption: the instructor's manual verdict is the
-    # trusted authority, so an override may set VERIFIED_PRESENT without a
+    # trusted authority, so an override may set VERIFIED without a
     # passing game_score (the schema whitelist at RecordOverrideRequest bounds
     # what can be stamped). Counters are recomputed from durable rows (the
     # helper flushes) so the dashboard reflects the override immediately.

@@ -117,7 +117,7 @@ def test_library_routes_registered():
 
 
 def test_library_seed_data_integrity():
-    from seed import SAMPLE_LIBRARY_BOOKS
+    from app.seed import SAMPLE_LIBRARY_BOOKS
 
     assert len(SAMPLE_LIBRARY_BOOKS) == 8
     isbns = [b["isbn"] for b in SAMPLE_LIBRARY_BOOKS]
@@ -362,18 +362,27 @@ async def test_library_reserve_decrement_and_zero_copy_conflict():
         student_headers = await _register_and_login(
             client, name="Carl Rex", email="carl@univ.edu", role="STUDENT", roll_number="22BCSE003"
         )
+        other_student_headers = await _register_and_login(
+            client, name="Dana Roy", email="dana@univ.edu", role="STUDENT", roll_number="22BCSE004"
+        )
 
         first = await client.post(f"{LIBRARY_URL}/{book_id}/reserve", headers=student_headers)
         assert first.status_code == 200
         assert first.json()["available_copies"] == 1
 
-        second = await client.post(f"{LIBRARY_URL}/{book_id}/reserve", headers=student_headers)
+        # Same user cannot reserve the same book twice while reservation is active.
+        duplicate = await client.post(f"{LIBRARY_URL}/{book_id}/reserve", headers=student_headers)
+        assert duplicate.status_code == 409
+        assert "already" in duplicate.json().get("detail", "").lower()
+
+        second = await client.post(f"{LIBRARY_URL}/{book_id}/reserve", headers=other_student_headers)
         assert second.status_code == 200
         assert second.json()["available_copies"] == 0
 
         last_copy_gone = await client.post(f"{LIBRARY_URL}/{book_id}/reserve", headers=student_headers)
         assert last_copy_gone.status_code == 409
-        assert "No copies available" in last_copy_gone.json()["detail"]
+        detail = last_copy_gone.json().get("detail", "").lower()
+        assert "no copies" in detail or "available" in detail or "already" in detail
 
         # The stock counter must never go negative, and every hold is logged
         async with session_factory() as session:

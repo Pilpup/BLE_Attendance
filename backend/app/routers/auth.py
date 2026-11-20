@@ -13,6 +13,7 @@ from app.core.security import (
     create_access_token,
     get_current_user,
     hash_password,
+    limiter_ip,
     verify_password,
 )
 from app.database import get_db
@@ -82,7 +83,7 @@ async def register_send_otp(
     # checking the abundant per-day IP budget first keeps a denied request
     # from consuming a scarce per-mailbox slot.
     email = payload.email.strip().lower()
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = limiter_ip(request)
     if not await register_ip_limiter.check(client_ip) or not await register_email_limiter.check(email):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -317,7 +318,9 @@ async def login(
     # success — that is the point. Per-gateway floor: calibrated far above a
     # whole classroom logging in through one shared NAT address, so genuine
     # students never trip it (budget rationale in services/rate_limiter.py).
-    client_ip = request.client.host if request.client else "unknown"
+    # IP keyed on CF-Connecting-IP (edge-controlled; XFF is spoofable — see
+    # limiter_ip). Attempts count regardless of success — that is the point.
+    client_ip = limiter_ip(request)
     if not await login_email_limiter.check(email) or not await login_ip_limiter.check(client_ip):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -473,7 +476,7 @@ async def resend_otp(
     # generous per-IP floor calibrated like login's: a shared campus NAT must
     # survive a burst of legitimate resends, so the IP layer only stops
     # distributed spraying. Rejected 429 attempts do not consume budget.
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = limiter_ip(request)
     if not await otp_resend_email_limiter.check(email) or not await otp_resend_ip_limiter.check(client_ip):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,

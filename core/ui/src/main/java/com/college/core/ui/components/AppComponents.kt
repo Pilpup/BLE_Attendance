@@ -256,6 +256,7 @@ fun PokemonTrainerCard(
     }
     val avatarColor = when (primaryRole) {
         Role.TEACHER -> AppTheme.colors.primaryPurple
+        Role.HOD -> AppTheme.colors.primaryPurple
         Role.DEVELOPER -> AppTheme.colors.warningAmber
         Role.STAFF -> AppTheme.colors.infoBlue
         else -> AppTheme.colors.accentOrange

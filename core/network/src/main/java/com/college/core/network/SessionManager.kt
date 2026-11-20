@@ -114,6 +114,13 @@ class SessionManager {
         val token = sp.getString(KEY_TOKEN, null)
         val userJson = sp.getString(KEY_USER, null)
         if (!token.isNullOrBlank() && !userJson.isNullOrBlank()) {
+            // A restored JWT with a passed exp must not silently authenticate
+            // the process — the 401 interceptor only fires on the first API
+            // call, so expiry is checked eagerly here.
+            if (isJwtExpired(token)) {
+                sp.edit().clear().apply()
+                return
+            }
             try {
                 val user = gson.fromJson(userJson, User::class.java)
                 if (user != null && user.id.isNotBlank()) {
@@ -130,6 +137,26 @@ class SessionManager {
         }
     }
 
+    // Decodes the JWT exp claim (unix seconds). Opaque tokens (no dots) have
+    // no exp to check — treated as unexpired here; the 401 interceptor is
+    // their expiry path.
+    private fun isJwtExpired(token: String, nowMs: Long = System.currentTimeMillis()): Boolean {
+        val parts = token.split(".")
+        if (parts.size < 2) return false
+        return try {
+            val payload = String(
+                android.util.Base64.decode(
+                    parts[1],
+                    android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP or android.util.Base64.NO_PADDING
+                )
+            )
+            val expSec = org.json.JSONObject(payload).optLong("exp", 0L)
+            expSec in 1..(nowMs / 1000L)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     fun startSession(user: User, token: String) {
         // Fresh login always presents the real role; clear any leftover acting mask
         _realUser.value = user
@@ -140,10 +167,6 @@ class SessionManager {
             ?.putString(KEY_USER, gson.toJson(user))
             ?.putString(KEY_ACTING_ROLE, null)
             ?.apply()
-    }
-
-    fun markLoading() {
-        _state.value = SessionState.Loading
     }
 
     fun endSession() {

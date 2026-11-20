@@ -15,11 +15,6 @@ interface AttendanceApiService {
     suspend fun listCourses(
     ): Response<List<CourseResponse>>
 
-    @GET("api/v1/attendance/courses/{courseId}/syllabus")
-    suspend fun getCourseSyllabus(
-        @Path("courseId") courseId: String
-    ): Response<List<CourseUnitResponse>>
-
     @POST("api/v1/attendance/courses")
     suspend fun createCourse(
         @Body body: CourseCreateRequest
@@ -29,6 +24,12 @@ interface AttendanceApiService {
     suspend fun createSession(
         @Body body: SessionCreateRequest
     ): Response<AttendanceSessionResponse>
+
+    @POST("api/v1/attendance/sessions/{sessionId}/join")
+    suspend fun joinSession(
+        @Path("sessionId") sessionId: String,
+        @Body body: SessionJoinRequest
+    ): Response<SessionJoinResponse>
 
     @POST("api/v1/attendance/sessions/{sessionId}/cancel")
     suspend fun cancelSession(
@@ -87,14 +88,4 @@ interface AttendanceApiService {
         @Path("recordId") recordId: String,
         @Body body: RecordOverrideRequest
     ): Response<AttendanceRecordItem>
-
-    @POST("api/v1/attendance/lab/face-check")
-    suspend fun checkLabFace(
-        @Body body: FaceLabCheckRequest
-    ): Response<FaceLabCheckResponse>
-
-    @POST("api/v1/attendance/lab/face-compare")
-    suspend fun compareLabFaces(
-        @Body body: FaceLabCompareRequest
-    ): Response<FaceLabCompareResponse>
 }

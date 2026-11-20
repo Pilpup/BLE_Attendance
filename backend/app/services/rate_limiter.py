@@ -55,6 +55,13 @@ class SubmitRateLimiter(SlidingWindowRateLimiter):
         return await super().check(f"{session_id}:{identity}")
 
 
+# Join preflight brute-force budget: the wire salt gate is 16 bits, so an
+# unthrottled /join lets an off-site account brute-force the in-room salt
+# (65,536 tries) and then check in remotely. Per-ACCOUNT (not IP: one
+# classroom shares a gateway). 10/5min is far above legitimate latching
+# (join once + a few retries) and far below the guesses the salt needs.
+join_rate_limiter = SlidingWindowRateLimiter(max_events=10, window_seconds=300.0)
+
 submit_rate_limiter = SubmitRateLimiter()
 
 # Login attempt budgets (review §1.2.1):

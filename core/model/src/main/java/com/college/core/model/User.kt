@@ -5,13 +5,10 @@ data class User(
     val name: String,
     val email: String,
     val roles: Set<Role>,
-    val avatarUrl: String? = null,
     val rollNumber: String? = null,
     val department: String? = null,
-    val year: String? = null,
     val program: String? = null,
-    val semester: Int? = null,
-    val section: String? = null
+    val semester: Int? = null
 ) {
     val primaryRole: Role? get() = roles.maxByOrNull { it.priority }
 

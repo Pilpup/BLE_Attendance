@@ -6,13 +6,14 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.front" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
-    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <!-- [ULTRASONIC-DISABLED] Mic not required while ultrasonic proximity is disabled. -->
+    <!-- <uses-feature android:name="android.hardware.microphone" android:required="false" /> -->
 
     <!-- Camera for face capture in reflex challenge -->
     <uses-permission android:name="android.permission.CAMERA" />
 
-    <!-- Microphone for ultrasonic proximity check -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- [ULTRASONIC-DISABLED] Mic permission not requested while ultrasonic proximity is disabled. -->
+    <!-- <uses-permission android:name="android.permission.RECORD_AUDIO" /> -->
 
     <!-- Bluetooth permissions for Android 12+ (API 31+) -->
     <!-- neverForLocation allows BLE scanning without prompting for GPS permission -->

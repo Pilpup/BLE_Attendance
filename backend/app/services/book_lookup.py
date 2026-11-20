@@ -249,21 +249,31 @@ async def lookup_book_by_isbn(isbn: str) -> Optional[BookLookupResponse]:
 
     # Fills in missing fields from remaining providers
     for secondary in sources[1:]:
+        contributed = False
         if not title and secondary.get("title"):
             title = secondary["title"]
+            contributed = True
         if not author and secondary.get("author"):
             author = secondary["author"]
+            contributed = True
         if not edition and secondary.get("edition"):
             edition = secondary["edition"]
+            contributed = True
         if (not category or category == "GENERAL") and secondary.get("category"):
             category = secondary["category"]
+            contributed = True
         if not overview and secondary.get("overview"):
             overview = secondary["overview"]
+            contributed = True
         if not table_of_contents and secondary.get("table_of_contents"):
             table_of_contents = secondary["table_of_contents"]
+            contributed = True
         if (not index or index == "Main Hall") and secondary.get("index"):
             index = secondary["index"]
-        source += f" + {secondary['source']}"
+            contributed = True
+        # Provenance only lists providers that actually contributed a field.
+        if contributed:
+            source += f" + {secondary['source']}"
 
     if category:
         category = category[:50].strip()

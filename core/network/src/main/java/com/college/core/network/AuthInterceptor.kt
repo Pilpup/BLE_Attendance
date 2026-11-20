@@ -12,7 +12,8 @@ class AuthInterceptor(
         val token = sessionManager.activeToken
         val path = request.url.encodedPath.trimEnd('/')
         val isExplicitNoAuth = request.header(NO_AUTH_HEADER)?.equals("true", ignoreCase = true) == true
-        val isAuthEndpoint = isExplicitNoAuth || (path.contains("/auth/") && !path.endsWith("/me"))
+        val isAuthEndpoint = isExplicitNoAuth ||
+            (path.contains("/auth/") && !path.endsWith("/me") && !path.endsWith("/logout"))
 
         val requestBuilder = request.newBuilder()
         if (isExplicitNoAuth) {
@@ -23,18 +24,13 @@ class AuthInterceptor(
         }
         val authorized = requestBuilder.build()
 
-        val isRealJwt = token?.contains(".") == true
-        var response = chain.proceed(authorized)
+        val response = chain.proceed(authorized)
 
-        if (response.code == 401 && isRealJwt && !isAuthEndpoint) {
-            // A single 401 can be transient (clock skew, cold-start hiccup):
-            // drain the failed body and retry once before purging the session
-            // — a one-off 401 should not dump the user to login mid-lecture.
-            response.close()
-            response = chain.proceed(authorized)
-            if (response.code == 401) {
-                sessionManager.endSession()
-            }
+        if (response.code == 401 && !isAuthEndpoint) {
+            // 401 means the token is no longer accepted (expired/revoked/invalid)
+            // — for JWTs AND opaque tokens alike. Clear local session
+            // immediately; do not replay the request.
+            sessionManager.endSession()
         }
 
         return response

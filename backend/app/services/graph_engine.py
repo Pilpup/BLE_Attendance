@@ -1,272 +1,361 @@
+"""Graph engine v3.1 - production mesh-audit engine (replaces v1).
+
+Two-flag taxonomy (user decision): the engine emits exactly two statuses -
+VERIFIED and UNVERIFIED. Every non-verified outcome (isolated desk,
+below-threshold corroboration, unanchored cluster, witnessed non-submitter,
+oversubscribed session) collapses to UNVERIFIED so the teacher manually
+checks it. There is no "outside classroom" label anywhere: the engine never
+claims to know WHERE an unverified student was, only that the mesh could
+not verify them. verification_method carries the cause for the teacher's
+context; affinity_score is binary (1.00 verified, 0.00 unverified).
+
+Locked rule set (validated in backend/simulations/, layers L1-L5):
+1. FULL LISTS: report ALL visible peers, capped at 64 stored entries.
+2. DIRECT threshold: T(1)=1, T(2)=2, T(3)=2, T(N>3)=ceil(N/2) (halves
+   round up). Safe at T(1)=1 because a single mutual must be
+   triangularly corroborated (rule 5) - except in a two-submitter
+   session (rule 8).
+3. BRIDGE: need = max(1, T(N) - |M|). The bridge node must itself be
+   direct-verified; bridges cannot cascade.
+4. FEDERATION FLOOR: two verified components join the same room only
+   when >= max(4, ceil(0.3 * |smaller|)) DISTINCT members of each
+   component claim verified members of the other ("at least 4 people
+   from group A must hear group B and 4 people from group B must hear
+   group A").
+5. TRIANGLE CORROBORATION: a mutual edge counts toward verification only
+   when both endpoints share a common mutual neighbor; demoted edges
+   remain as claim material (witness context) only.
+6. ANCHORING (user decision, replaces ratio/face floors): the room
+   containing the LARGEST verified component is the main class, always.
+   No enrollment-ratio check - submissions are auth-bound to the session
+   roster, so every submitter is an enrolled member of that class.
+   No face gate - face proves identity, not location (a corridor gang
+   face-verifies fine).
+7. OVERSUBSCRIPTION: submission count exceeding enrollment holds the
+   whole session for teacher check.
+8. TWO-SUBMITTER SESSION (user decision: the two-phone honest test):
+   with exactly two submitters, T(2)=2 is unreachable (no third member
+   exists to corroborate a triangle), so the single mutual edge A<->B is
+   accepted as sufficient evidence. Fires only when the WHOLE session is
+   two submitters; a spoofed pair inside a larger session is unaffected.
+   total_enrolled <= 0 is treated as unknown enrollment (oversubscription
+   check skipped, like v1).
+
+Ingest hardening: reported lists are deduplicated (order-preserving) and
+self-references dropped before any counting, so a client echoing its own
+advert or double-listing a peer cannot inflate mutual counts or
+thresholds. A client that double-lists a peer gains nothing; one that
+echoes its own advert gains no phantom self-mutual.
+
+Not implemented (user standing rejections): rule-4 mutual-edge cap, per-B
+sponsorship cap, enrollment-ratio anchoring, face-gated anchoring.
+"""
+
 from collections import deque
 from math import ceil
 
+FULL_LIST_CAP = 64         # payload sanity cap on stored list length
+SUBMIT_LIST_MIN = 0        # optional gate: submitters listing fewer peers
+                           # than this are held for review. 0 = off.
+FED_ABS_MIN = 4            # user: at least 4 claimers from each side
+FED_FRAC = 0.30            # ...or 30% of the smaller component, whichever
+                           # is larger
 
-# Audits classroom BLE discovery reports to verify attendance using mesh graph topology
+VERIFIED = "VERIFIED"
+UNVERIFIED = "UNVERIFIED"
+
+
+def _threshold(n: int) -> int:
+    # User's final table: T(1)=1, T(2)=2, T(3)=2, T(N>3)=ceil(N/2).
+    if n <= 1:
+        return 1
+    if n == 2 or n == 3:
+        return 2
+    return (n + 1) // 2
+
+
+def _sanitize(raw_lists: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Deduplicate each reported list (order-preserving) and drop
+    self-references before any counting. Without this, a client that
+    double-lists a peer inflates its own mutual count past the threshold,
+    and one that echoes its own advert gains a phantom self-mutual that
+    trivially satisfies triangle corroboration."""
+    out: dict[str, list[str]] = {}
+    for u, claimed in raw_lists.items():
+        seen: dict[str, None] = {}
+        for peer in claimed:
+            if peer != u:
+                seen[peer] = None
+        out[u] = list(seen)[:FULL_LIST_CAP]
+    return out
+
+
 def audit_classroom_mesh(
     reports: dict[str, list[str]],
     *,
     total_enrolled: int | None = None,
+    # Accepted for call-site parity; v3.1 deliberately does NOT gate
+    # anchoring on face evidence (user decision: face proves identity,
+    # not location).
     face_verified_keys: set[str] | None = None,
 ) -> list[dict]:
-    direct_mutuals: dict[str, list[str]] = {}
-    results: list[dict] = []
-    reports_sets: dict[str, set[str]] = {k: set(v) for k, v in reports.items()}
-    empty_set: set[str] = set()
+    lists = _sanitize(reports)
+    sets = {u: set(l) for u, l in lists.items()}
 
-    # Identifies direct mutual links where peer A sees B and peer B sees A
-    for student_id, claimed_neighbors in reports.items():
-        mutual_peers = [
-            peer for peer in claimed_neighbors
-            if student_id in reports_sets.get(peer, empty_set)
-        ]
-        direct_mutuals[student_id] = mutual_peers
+    # Raw mutual graph: edge iff each side listed the other.
+    mut = {u: [v for v in lists[u] if v in lists and u in sets[v]] for u in lists}
+    mutset = {u: set(peers) for u, peers in mut.items()}
 
-    # Discovers connected mutual components using breadth-first search
-    visited_nodes: set[str] = set()
-    components: list[set[str]] = []
+    # Triangle corroboration: keep only mutual edges with a common mutual
+    # neighbor. Demoted edges remain as claim material only.
+    strong = {u: [v for v in mut[u] if mutset[u] & mutset[v]] for u in lists}
+    m = {u: len(strong[u]) for u in lists}
+    t_of = {u: _threshold(len(lists[u])) for u in lists}
 
-    for student_id in reports.keys():
-        if student_id not in visited_nodes and direct_mutuals.get(student_id):
-            component: set[str] = set()
-            queue = deque([student_id])
-            visited_nodes.add(student_id)
-            while queue:
-                curr = queue.popleft()
-                component.add(curr)
-                for nbr in direct_mutuals.get(curr, []):
-                    if nbr not in visited_nodes:
-                        visited_nodes.add(nbr)
-                        queue.append(nbr)
-            components.append(component)
+    held = {u for u in lists if len(lists[u]) < SUBMIT_LIST_MIN}
+    direct = {u for u in lists if u not in held and m[u] >= t_of[u]}
 
-    # Sorts connected components by size descending
-    components.sort(key=len, reverse=True)
+    # Bridge verification over strong edges only.
+    bridge_verified: set[str] = set()
+    bridge_info: dict[str, tuple[str, list[str]]] = {}
+    for u in lists:
+        if u in direct:
+            continue
+        mu = strong[u]
+        if not mu:
+            continue
+        mu_set = set(mu)
+        need = max(1, t_of[u] - len(mu))
+        cs: set[str] = set()
+        bridge_node: str | None = None
+        for b in sorted(mu, key=lambda x: lists[u].index(x)):
+            if b not in direct:
+                continue  # B must be direct-verified; bridges cannot cascade
+            if bridge_node is None:
+                bridge_node = b
+            for c in strong[b]:
+                if c != u and c not in mu_set:
+                    cs.add(c)
+        if bridge_node is not None and len(cs) >= need:
+            bridge_verified.add(u)
+            bridge_info[u] = (bridge_node, sorted(cs)[:need])
 
-    # Identifies the dominant in-room classroom component and isolates outside satellites
-    verified_set: set[str] = set()
-    satellite_clusters: dict[str, set[str]] = {}
+    verified = direct | bridge_verified
 
-    if len(components) == 1:
-        verified_set = set(components[0])
-    elif len(components) > 1:
-        main_component = components[0]
-        verified_set.update(main_component)
-        total_reporters = len(reports)
-        max_satellite_size = max(6, int(len(main_component) * 0.35))
-        in_degree_req = 2 if len(main_component) >= 12 else 1
+    # Components over verified nodes (strong edges only).
+    adjacency = {u: [v for v in strong[u] if v in verified] for u in verified}
+    comps = _components(adjacency)
+    comp_of = {u: i for i, comp in enumerate(comps) for u in comp}
 
-        for comp in components[1:]:
-            # Counts incoming links from classroom core to candidate cluster
-            incoming_anchors = sum(
-                1 for m_node in main_component
-                if bool(reports_sets.get(m_node, empty_set) & comp)
-            )
-            # Checks for cross-links between candidate cluster and classroom core
-            has_link_to_main = incoming_anchors > 0 or any(
-                bool(reports_sets.get(node, empty_set) & main_component)
-                for node in comp
-            )
+    # Federation: union components into rooms when enough DISTINCT claimers
+    # exist in both directions (user floor: max(4, 30% of the smaller
+    # room)). Evaluated at ROOM level with LIVE sizes and claims aggregated
+    # across every original component in each room, repeated to fixpoint:
+    # a merge changes room sizes, which can raise (or satisfy) later
+    # floors. Using the stale pre-union component sizes let a small stale
+    # component collapse the floor to 4 and chain-merge large rooms below
+    # the intended 30%-of-smaller-side rule.
+    n = len(comps)
+    parent = list(range(n))
 
-            # Enforces quarantine for disconnected clusters in small seminar rooms
-            if total_reporters <= 12:
-                if not has_link_to_main or incoming_anchors < 1:
-                    for node in comp:
-                        satellite_clusters[node] = comp
-                else:
-                    verified_set.update(comp)
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
 
-            # Quarantines completely isolated components in standard classrooms
-            elif not has_link_to_main and len(main_component) >= 6:
-                for node in comp:
-                    satellite_clusters[node] = comp
+    # Live room size, indexed by DSU root.
+    size = [len(comp) for comp in comps]
 
-            # Rejects unreciprocated out-degree claims without classroom anchors
-            elif incoming_anchors < in_degree_req and len(comp) <= max_satellite_size and len(main_component) >= 6:
-                for node in comp:
-                    satellite_clusters[node] = comp
-            else:
-                verified_set.update(comp)
+    # claimers[i][j]: distinct members of original comp i claiming
+    # verified members of original comp j (aggregated per room at eval).
+    claimers: list[list[set[str]]] = [
+        [set() for _ in range(n)] for _ in range(n)
+    ]
+    for u in verified:
+        i = comp_of[u]
+        for v in lists[u]:
+            if v in verified and comp_of[v] != i:
+                claimers[i][comp_of[v]].add(u)
 
-    # H3 (audit): a mutual component must be ANCHORED to reality before its
-    # members become VERIFIED_PRESENT. Enrollment-anchored mode activates only
-    # when the caller knows the expected class size (total_enrolled > 0) —
-    # that is the production finalize path. Pure-topology callers/tests that
-    # omit anchors keep legacy shape-based verdicts. This closes the
-    # colluder-only-clique self-verify: 5 mutual reporters in a 40-seat class
-    # fail enroll_ratio and fall to NEEDS_REVIEW instead of auto-verified.
-    needs_review_components: dict[str, set[str]] = {}
-    enrollment_anchored = isinstance(total_enrolled, int) and total_enrolled > 0
-    face_set = {k.upper() for k in face_verified_keys} if face_verified_keys is not None else None
-    if enrollment_anchored and verified_set:
-        expected = total_enrolled
-        # Tiny-class/test bypass: with an eligible roster of <= 4 the "large
-        # enough mutual cluster" floor can never be met and every honest session
-        # would fall to instructor review. Collusion protection is meaningless
-        # at that scale (the instructor knows everyone present).
-        if expected > 4:
-            component_index = {node: comp for comp in components for node in comp}
-            candidate_comps: dict[int, set[str]] = {}
-            for node in list(verified_set):
-                comp = component_index.get(node)
-                if comp is not None:
-                    candidate_comps[id(comp)] = comp
-
-            for comp in candidate_comps.values():
-                comp_size = len(comp)
-                enroll_ratio = comp_size / expected if expected > 0 else 0.0
-                # Face anchor: enforce only when meaningful evidence exists (a
-                # non-empty set). Unknown/empty evidence can't prove or disprove
-                # biometric coverage — requiring it would break sessions where
-                # face capture wasn't active.
-                if face_set:
-                    face_count = len({n for n in comp if n.upper() in face_set})
-                    face_ok = face_count >= ceil(0.5 * comp_size)
-                else:
-                    face_ok = True
-
-                anchored = (
-                    comp_size >= max(4, ceil(0.35 * expected))
-                    and enroll_ratio >= 0.5
-                    and face_ok
+    merged = True
+    while merged:
+        merged = False
+        # Aggregate cross-room claims over the CURRENT partition.
+        cross: dict[tuple[int, int], set[str]] = {}
+        for i in range(n):
+            ri = find(i)
+            for j in range(n):
+                cl = claimers[i][j]
+                if cl:
+                    rj = find(j)
+                    if rj != ri:
+                        cross.setdefault((ri, rj), set()).update(cl)
+        roots = sorted({find(i) for i in range(n)})
+        # At most ONE merge per pass: a union invalidates every other
+        # (root, size, claims) triple in this pass, so re-aggregate first.
+        did_merge = False
+        for a in range(len(roots)):
+            if did_merge:
+                break
+            for b in range(a + 1, len(roots)):
+                ra, rb = roots[a], roots[b]
+                req = max(
+                    FED_ABS_MIN,
+                    ceil(FED_FRAC * min(size[ra], size[rb])),
                 )
-                if not anchored:
-                    for node in comp:
-                        needs_review_components[node] = comp
-                    verified_set.difference_update(comp)
+                if (
+                    len(cross.get((ra, rb), ())) >= req
+                    and len(cross.get((rb, ra), ())) >= req
+                ):
+                    # Attach the smaller room's root under the larger.
+                    small, big = (ra, rb) if size[ra] <= size[rb] else (rb, ra)
+                    parent[small] = big
+                    size[big] += size[small]
+                    merged = True
+                    did_merge = True
+                    break
+        # Re-loop: sizes changed, so later floors must be re-evaluated.
 
-    # Evaluates presence status and calculates affinity scores for all reporting devices
-    for student_id, claimed_neighbors in reports.items():
-        mutuals = direct_mutuals.get(student_id, [])
+    rooms: dict[int, set[str]] = {}
+    for i in range(n):
+        rooms.setdefault(find(i), set()).update(comps[i])
 
-        if student_id in needs_review_components:
-            # H3: mutual component exists but cannot be anchored to the enrolled
-            # class / biometric evidence — hold for instructor review instead of
-            # auto-verifying. Never a spoofer verdict, never auto-present.
-            comp_nodes = sorted(list(needs_review_components[student_id]))
-            comp = needs_review_components[student_id]
-            face_count = len({n for n in comp if n.upper() in face_set}) if face_set else 0
-            status = "NEEDS_REVIEW"
-            method = "MESH_UNANCHORED"
-            affinity = 0.25
-            bridge = None
-            remarks = (
-                f"Mutual cluster [{', '.join(comp_nodes)}] not anchored to enrolled class "
-                f"(cluster {len(comp)}/{total_enrolled} enrolled, face evidence {face_count}) "
-                "- instructor review required"
-            )
+    # Rule 8: two-submitter session. The mutual edge must be raw (both
+    # directions present); triangle corroboration is unreachable here by
+    # construction, which is why the rule exists.
+    pair_ids = sorted(lists)
+    pair_direct = (
+        len(pair_ids) == 2
+        and pair_ids[1] in lists[pair_ids[0]]
+        and pair_ids[0] in lists[pair_ids[1]]
+    )
 
-        elif student_id in satellite_clusters:
-            # Flags disconnected satellite cluster detected outside classroom
-            comp_nodes = sorted(list(satellite_clusters[student_id]))
-            status = "ISOLATED_FLAGGED"
-            method = "NONE"
-            affinity = 0.00
-            bridge = None
-            remarks = f"Disconnected satellite cluster [{', '.join(comp_nodes)}] (Likely outside classroom) - Teacher manual override recommended"
+    # total_enrolled <= 0 means unknown enrollment (v1 parity): skip the
+    # oversubscription hold instead of holding every session.
+    oversubscribed = (
+        total_enrolled is not None
+        and total_enrolled > 0
+        and len(reports) > total_enrolled
+    )
+    anchored: set[str] = set()
+    if n and not oversubscribed:
+        # Layer 8 (user decision): the room containing the largest verified
+        # component IS the main class. No ratio floor, no face gate.
+        # Tie-break: earliest-built component (smallest member id).
+        core_comp = max(range(n), key=lambda i: (len(comps[i]), -i))
+        anchored = rooms[find(core_comp)]
 
-        elif student_id in verified_set:
-            # Verifies student with mutual peer confirmations inside classroom core
-            status = "VERIFIED_PRESENT"
-            method = "DIRECT_MUTUAL"
-            affinity = 1.00
-            bridge = None
-            remarks = f"Direct mutual desk neighbor with [{', '.join(mutuals)}]"
-
-        elif len(claimed_neighbors) == 0:
-            # Flags corner desk or solitary student reporting zero neighbors
-            status = "ISOLATED_FLAGGED"
-            method = "NONE"
-            affinity = 0.00
-            bridge = None
-            remarks = "Zero desk neighbors detected (isolated seat)"
-
-        else:
-            # Evaluates unreciprocated claims against verified classroom nodes
-            shared_bridges = reports_sets.get(student_id, empty_set) & verified_set
-            if len(shared_bridges) >= 2:
-                status = "ISOLATED_FLAGGED"
-                method = "TRIADIC_CLOSURE"
-                affinity = 0.50
-                sorted_bridges = sorted(list(shared_bridges))
-                bridge = sorted_bridges[0]
-                remarks = f"Unreciprocated link to [{', '.join(sorted_bridges)}] (Pending Teacher Confirmation)"
-
-            elif len(shared_bridges) == 1:
-                # Classic component-riding attack: claiming a verified classroom
-                # node without reciprocation stays flagged as spoofer
-                status = "SPOOFER_REJECTED"
-                method = "NONE"
-                affinity = 0.00
-                bridge = None
-                remarks = f"Unreciprocated link to [{', '.join(claimed_neighbors)}] (Hallway Spoofer - claimed a verified classroom node without reciprocation)"
-
+    results: list[dict] = []
+    for u in sorted(lists):
+        mu = strong[u]
+        if oversubscribed:
+            results.append(_row(
+                u, UNVERIFIED, "SESSION_OVERSUBSCRIBED", 0.00, None,
+                lists[u], mu,
+                f"Submission count ({len(reports)}) exceeds enrollment "
+                f"({total_enrolled}) - Teacher check",
+            ))
+        elif pair_direct:
+            partner = pair_ids[1] if u == pair_ids[0] else pair_ids[0]
+            results.append(_row(
+                u, VERIFIED, "DIRECT_CONNECTION", 1.00, None,
+                lists[u], mut[u],
+                f"Two-submitter session: mutual edge with [{partner}] - "
+                f"verified (two-phone test)",
+            ))
+        elif u in anchored:
+            if u in direct:
+                results.append(_row(
+                    u, VERIFIED, "DIRECT_CONNECTION", 1.00, None,
+                    lists[u], mu,
+                    f"Direct mutual with [{', '.join(mu)}] "
+                    f"({m[u]}/{t_of[u]} threshold met)",
+                ))
             else:
-                # Zero verified bridges: distinguishes radio-timing asymmetry from
-                # fabricated claims. A claim pointing at a peer that itself
-                # submitted a report during this session is a plausible real-world
-                # neighbor that simply did not reciprocate before finalize (BLE
-                # discovery windows are asymmetric) — flag for manual review, not
-                # spoofer. Claims referencing keys that never checked in remain
-                # spoofed — nobody with that device was in the room.
-                submitted_peers = [peer for peer in claimed_neighbors if peer in reports]
-                if submitted_peers:
-                    status = "ISOLATED_FLAGGED"
-                    method = "PEER_UNCONFIRMED"
-                    affinity = 0.25
-                    bridge = None
-                    remarks = f"Unreciprocated link to [{', '.join(sorted(claimed_neighbors))}] (Referenced peer submitted a report but did not confirm) - Teacher manual override recommended"
-                else:
-                    status = "SPOOFER_REJECTED"
-                    method = "NONE"
-                    affinity = 0.00
-                    bridge = None
-                    remarks = f"Unreciprocated link to [{', '.join(claimed_neighbors)}] (Claimed peers never checked in during the session)"
-
-        results.append({
-            "ble_device_id": student_id,
-            "status": status,
-            "verification_method": method,
-            "affinity_score": affinity,
-            "bridge_device_id": bridge,
-            "reported_neighbors": claimed_neighbors,
-            "remarks": remarks,
-            "mutuals": mutuals,
-        })
-
-    # Collects offline peers reported by verified in-room classmates. Peer
-    # witnessing is hearsay — two colluding friends could ghost an absent
-    # classmate from home by appending a known id. Witnessing must therefore
-    # only RAISE a record to instructor review, never auto-verify it.
-    witness_map: dict[str, list[str]] = {}
-    for reporter_id in verified_set:
-        for neighbor in reports.get(reporter_id, []):
-            if neighbor not in reports:
-                witness_map.setdefault(neighbor, []).append(reporter_id)
-
-    # Flags offline peers for instructor review based on witness support
-    for offline_id, witnesses in witness_map.items():
-        if len(witnesses) >= 2:
-            results.append({
-                "ble_device_id": offline_id,
-                "status": "FLAGGED_WITNESSED",
-                "verification_method": "PEER_WITNESS",
-                "affinity_score": 0.00,
-                "bridge_device_id": witnesses[0],
-                "reported_neighbors": [],
-                "remarks": f"Witnessed by {len(witnesses)} verified classmates [{', '.join(witnesses)}] - Instructor confirmation required",
-                "mutuals": witnesses,
-            })
+                b_node, cs = bridge_info[u]
+                results.append(_row(
+                    u, VERIFIED, "BRIDGE_CONNECTION", 1.00, b_node,
+                    lists[u], mu,
+                    f"Verified via bridge path through [{b_node}] to "
+                    f"[{', '.join(cs)}]",
+                ))
+        elif u in verified:
+            results.append(_row(
+                u, UNVERIFIED, "MESH_UNANCHORED", 0.00, None, lists[u], mu,
+                "Verified cluster could not be anchored to the main class "
+                "- Teacher check",
+            ))
+        elif m[u] == 0:
+            rescuers = [v for v in lists if v in verified and u in lists[v]]
+            if len(rescuers) >= 3:
+                results.append(_row(
+                    u, UNVERIFIED, "PEER_WITNESS", 0.00, None, lists[u], mu,
+                    f"No corroborated mutuals but reported present by "
+                    f"[{', '.join(rescuers)}] - likely radio failure - "
+                    f"Teacher check",
+                ))
+            else:
+                results.append(_row(
+                    u, UNVERIFIED, "NONE", 0.00, None, lists[u], mu,
+                    "Submitted report with 0 corroborated mutuals - isolated "
+                    "desk or outside spoofer - Teacher check",
+                ))
         else:
-            results.append({
-                "ble_device_id": offline_id,
-                "status": "ISOLATED_FLAGGED",
-                "verification_method": "NONE",
-                "affinity_score": 0.00,
-                "bridge_device_id": witnesses[0],
-                "reported_neighbors": [],
-                "remarks": f"Single verified witness [{witnesses[0]}] - Teacher manual override recommended",
-                "mutuals": witnesses,
-            })
+            results.append(_row(
+                u, UNVERIFIED, "BELOW_THRESHOLD", 0.00, None, lists[u], mu,
+                f"Corroboration below threshold ({m[u]} mutuals, "
+                f"needs {t_of[u]}) and bridge paths insufficient - "
+                f"Teacher check",
+            ))
+
+    # Offline witnessing; reporters must be verified.
+    witness_map: dict[str, list[str]] = {}
+    for u in lists:
+        for peer in lists[u]:
+            if peer not in lists:
+                witness_map.setdefault(peer, []).append(u)
+    for offline_id, witnesses in sorted(witness_map.items()):
+        strong_witnesses = [w for w in witnesses if w in verified]
+        if len(strong_witnesses) >= 3:
+            results.append(_row(
+                offline_id, UNVERIFIED, "PEER_WITNESS", 0.00,
+                strong_witnesses[0], [], witnesses,
+                f"Reported seen by {len(strong_witnesses)} verified peers "
+                f"but never submitted - Teacher check",
+            ))
 
     return results
+
+
+def _components(adjacency: dict[str, list[str]]) -> list[set[str]]:
+    seen: set[str] = set()
+    out: list[set[str]] = []
+    for start in sorted(adjacency):
+        if start in seen:
+            continue
+        comp: set[str] = set()
+        queue = deque([start])
+        seen.add(start)
+        while queue:
+            cur = queue.popleft()
+            comp.add(cur)
+            for nbr in adjacency[cur]:
+                if nbr not in seen:
+                    seen.add(nbr)
+                    queue.append(nbr)
+        out.append(comp)
+    return out
+
+
+def _row(device_id, status, method, affinity, bridge, claimed, mutuals, remarks):
+    return {
+        "ble_device_id": device_id,
+        "status": status,
+        "verification_method": method,
+        "affinity_score": affinity,
+        "bridge_device_id": bridge,
+        "reported_neighbors": list(claimed),
+        "mutuals": list(mutuals),
+        "remarks": remarks,
+    }

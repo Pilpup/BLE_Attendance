@@ -27,6 +27,7 @@ import com.college.feature.attendance.network.CourseResponse
 import com.college.feature.attendance.network.MeshAuditRunRequest
 import com.college.feature.attendance.network.RecordOverrideRequest
 import com.college.feature.attendance.network.SessionCreateRequest
+import com.college.feature.attendance.network.SessionJoinRequest
 import com.college.feature.attendance.network.SubmitNeighborsRequest
 // [ULTRASONIC-DISABLED] Layer 4 imports (restore with audio stack).
 // import com.college.feature.attendance.audio.AcousticStatisticalSummary
@@ -38,6 +39,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -172,6 +174,15 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var sessionId by mutableStateOf("----")
     var sessionSalt by mutableStateOf("------")
     var remainingSeconds by mutableIntStateOf(0)
+    // 60s server schedule (from create/join)
+    var gameStartsAtIso: String? by mutableStateOf(null)
+    var gameEndsAtIso: String? by mutableStateOf(null)
+    private var serverTimeOffsetMs: Long = 0L
+    private var uploadJob: Job? = null
+    private var scheduleTickJob: Job? = null
+    private var listeningCapJob: Job? = null
+    private var teardownJob: Job? = null
+    private var studentJoinInProgress: Boolean = false
 
     // Teacher navigation and history
     var teacherViewMode by mutableStateOf(TeacherViewMode.MENU)
@@ -194,36 +205,16 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     private fun selectedClassSemester(): Int? =
         selectedCourse?.semester?.filter { it.isDigit() }?.toIntOrNull()
 
-    // H5 beacon: "/"+token(4)+wireSalt(4)+[semester(1)][G<k>] — fixed positions,
-    // '/' distinguishes from 8-char peer probes and legacy S:/V: frames. The
-    // G suffix carries the synchronized game start countdown (seconds remaining)
-    // during the first SYNC seconds; old clients ignore it (fixed-position parse).
+    // H5 beacon: "/"+token(4)+wireSalt(4)+[semester(1)] (no G<k> countdown suffix)
     val currentBroadcastToken: String
         get() = if (isSessionActive) {
             val sem = selectedClassSemester()
-            val base = if (sem != null) "/$sessionId$sessionSalt$sem" else "/$sessionId$sessionSalt"
-            synchronizedGameCountdownSeconds()?.let { "${base}G$it" } ?: base
+            if (sem != null) "/$sessionId$sessionSalt$sem" else "/$sessionId$sessionSalt"
         } else "IDLE"
 
-    // Synchronized game start: every student phone that hears at least one
-    // countdown beacon starts the chimp challenge at the SAME instant. Without
-    // it, each phone latches the beacon (and starts its 25 s game) at its own
-    // scan latency — a desync that lets a student split attention across two
-    // phones and beat the challenge on both. Anchor is the teacher timer start
-    // on the monotonic clock; students estimate the target as (received + k),
-    // so delivery jitter never shifts the target.
     companion object {
-        const val SYNC_GAME_START_OFFSET_SECONDS = 7
-    }
-
-    private var teacherSessionStartedElapsedMs = 0L
-    private var lastBeaconCountdownEmitted: Int? = null
-
-    private fun synchronizedGameCountdownSeconds(): Int? {
-        if (!isSessionActive || teacherSessionStartedElapsedMs <= 0L) return null
-        val k = SYNC_GAME_START_OFFSET_SECONDS -
-            ((android.os.SystemClock.elapsedRealtime() - teacherSessionStartedElapsedMs) / 1000L).toInt()
-        return if (k in 1..SYNC_GAME_START_OFFSET_SECONDS) k else null
+        // 60s timeline (server schedule). Kept for UI fallback only.
+        const val TEACHER_SESSION_SECONDS_DEFAULT = 60
     }
 
     // Radio advertising configuration
@@ -239,7 +230,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Throttle for the unclassified-packet diagnostic log (one line / 2s max)
     private var lastNeglectedPacketLogMs = 0L
-    val discoveredPeers: Map<String, PeerData> get() = rawDiscoveredPeers
 
     var chimpChallengeFailed by mutableStateOf(false)
         private set
@@ -316,11 +306,21 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // Records the locked face biometric payload and immediately uploads to cloud registry
+    // Records locked face payload; upload is triggered once capture/score are ready.
     fun recordFaceCapture(faceB64: String, faceBytes: ByteArray? = null) {
         capturedFaceBase64 = faceB64
         capturedFaceBytes = faceBytes
-        submitMyNeighborsToCloud(keepRadioActive = true)
+        // If game window ended and we're waiting to upload, send now.
+        maybeTriggerPostGameUpload()
+    }
+
+    @Volatile private var postGameUploadTriggered = false
+    private fun maybeTriggerPostGameUpload() {
+        if (postGameUploadTriggered) return
+        val ge = gameEndsMs() ?: return
+        if (serverNowMs() < ge) return
+        postGameUploadTriggered = true
+        scheduleOneShotUpload()
     }
 
     // Layer 3 and Layer 4 anti-proxy state flags
@@ -340,8 +340,52 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     var isRefreshingAudit by mutableStateOf(false)
         private set
     private var auditPollingJob: Job? = null
-    private var airVerdictJob: Job? = null
     private var finalizedRefreshJob: Job? = null
+    // Bumped whenever teacher results are cleared; guards late finalize/refresh writes
+    private var teacherResultsEpoch = 0
+    // STOP pressed while create/retry or another finalize is still syncing:
+    // defer the finalize instead of dropping it (timer is done — nothing else
+    // would run it, and the beacon would resurrect for a never-finalized class).
+    private var pendingFinalizeAfterSync = false
+
+    private data class AirVerdictBatch(val ids: List<String>, val rounds: Int)
+    private val airVerdictQueue = Channel<AirVerdictBatch>(Channel.UNLIMITED)
+    private var airVerdictConsumerJob: Job? = null
+
+    private fun ensureAirVerdictConsumer() {
+        if (airVerdictConsumerJob?.isActive == true) return
+        airVerdictConsumerJob = viewModelScope.launch(Dispatchers.Default) {
+            for (batch in airVerdictQueue) {
+                repeat(batch.rounds) {
+                    if (!isActive) return@launch
+                    for (id in batch.ids) {
+                        if (!isActive) return@launch
+                        withContext(Dispatchers.Main) {
+                            onStartBroadcasting?.invoke("\\$id", teacherTxPower)
+                        }
+                        delay(350L)
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    onStopBroadcasting?.invoke()
+                }
+            }
+        }
+    }
+
+    private fun enqueueAirVerdicts(ids: List<String>, rounds: Int) {
+        val clean = ids.filter { it.isNotBlank() }.distinct()
+        if (clean.isEmpty()) return
+        ensureAirVerdictConsumer()
+        airVerdictQueue.trySend(AirVerdictBatch(clean, rounds))
+    }
+
+    private fun stopAirVerdicts() {
+        airVerdictConsumerJob?.cancel()
+        airVerdictConsumerJob = null
+        while (airVerdictQueue.tryReceive().isSuccess) { /* drain */ }
+        onStopBroadcasting?.invoke()
+    }
 
     // [ULTRASONIC-DISABLED] audio engine and tested-peer registry removed.
     // val proximityManager by lazy {
@@ -411,10 +455,14 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 val seen = peerRevision
                 if (seen == lastSeenRevision) continue
                 lastSeenRevision = seen
+                // v3.1 engine: report ALL discovered peers (RSSI floor -92 stays);
+                // threshold scales with list size, truncation breaks mesh math.
+                // Hard cap 64 = backend MAX_NEIGHBORS / engine FULL_LIST_CAP;
+                // closest-first order means the cap keeps the strongest links.
                 val top = rawDiscoveredPeers.values
                     .filter { it.medianRssi >= -92 }
                     .sortedByDescending { it.medianRssi }
-                    .take(3)
+                    .take(64)
                 withContext(Dispatchers.Main) {
                     topDeskNeighbours = top
                 }
@@ -428,11 +476,18 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun flushPeerBatchImmediately() {
+        // v3.1 engine: full list (hard cap 64 = backend MAX_NEIGHBORS /
+        // engine FULL_LIST_CAP, closest-first; see peerBatchUpdates note).
         topDeskNeighbours = rawDiscoveredPeers.values
             .filter { it.medianRssi >= -92 }
             .sortedByDescending { it.medianRssi }
-            .take(3)
+            .take(64)
     }
+
+    // Two-flag era (graph engine v3.1): records carry VERIFIED/UNVERIFIED;
+    // legacy sessions still carry VERIFIED_PRESENT. Both count as verified.
+    private fun isVerified(status: String?): Boolean =
+        status == "VERIFIED" || status == "VERIFIED_PRESENT"
 
     // Radio callbacks bound by host activity
     var onStartBroadcasting: ((token: String, txPower: Int) -> Unit)? = null
@@ -458,7 +513,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     fun onBleScanStateChanged(active: Boolean) {
         bleScanActive = active
         if (!active) {
-            android.util.Log.w("AttendanceViewModel", "BLE scan stopped/failed (listener reports inactive)")
+            // if (BuildConfig.DEBUG) android.util.Log.w("AttendanceViewModel", "BLE scan stopped/failed (listener reports inactive)")
         }
     }
 
@@ -472,13 +527,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         currentRollNumber = SessionManager.default.currentUser?.rollNumber
             ?: prefs.getString("roll_number", defaultLocalId)
             ?: defaultLocalId
-        // R9 (review §3.4): ServerConfigManager is the ONLY URL owner. It was
-        // initialized just above; its persisted value is scheme-normalized,
-        // already live for every request via HostSelectionInterceptor, and
-        // AttendanceApiClient.baseUrl reads from it. The old block re-read the
-        // same file/key, re-adjudicated the value with hand-rolled LAN-string
-        // filters, then re-persisted through a second writer — three URL
-        // sources of truth adjudicating each other on every cold start.
+        // Server endpoint is hardcoded in core/network; dynamic URL switching removed.
         hydrateSessionFromPrefs()
         if (isTeacherMode) {
             loadCourses()
@@ -504,11 +553,16 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
      * login replaces it with the real backend profile.
      */
     private fun hydrateSessionFromPrefs() {
+        // Always purge legacy plaintext token if it still exists.
+        val legacyToken = prefs.getString("auth_token", null)
         if (SessionManager.default.isLoggedIn) {
             SessionManager.default.currentUser?.rollNumber?.let { currentRollNumber = it }
+            if (legacyToken != null) {
+                prefs.edit().remove("auth_token").apply()
+            }
             return
         }
-        val legacyToken = prefs.getString("auth_token", null) ?: return
+        if (legacyToken == null) return
         val role = Role.fromBackendName(prefs.getString("user_role", null)) ?: Role.STUDENT
         val roll = prefs.getString("roll_number", null)
         SessionManager.default.startSession(
@@ -532,8 +586,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val sessId = backendSessionId
         val wasSessionActive = isSessionActive
         stopTeacherSession()
-        airVerdictJob?.cancel()
-        airVerdictJob = null
+        stopAirVerdicts()
 
         if (wasSessionActive && SessionManager.default.isLoggedIn && sessId != null) {
             isCancelling = true
@@ -561,6 +614,18 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    // Teacher backed out of the Audit Results screen: wipe results state so
+    // re-entering the feature starts fresh (history stays persisted).
+    fun clearTeacherResults() {
+        teacherResultsEpoch++
+        finalizedRefreshJob?.cancel()
+        finalizedRefreshJob = null
+        finalizedRecords = emptyList()
+        cloudStatusMessage = null
+        backendSessionId = null
+        selectedSessionForDetails = null
+    }
+
     // Persist and update student roll number (even offline)
     fun updateRollNumber(newRoll: String) {
         val trimmed = newRoll.trim().uppercase()
@@ -568,14 +633,6 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             currentRollNumber = trimmed
             prefs.edit().putString("roll_number", trimmed).apply()
         }
-    }
-
-    // R9 (review §3.4): single write path — the AttendanceApiClient.baseUrl
-    // delegate persists through ServerConfigManager, which owns scheme
-    // normalization. The removed direct prefs write was a second writer on the
-    // same file/key, able to race the normalized value with raw user input.
-    fun setServerUrl(url: String) {
-        AttendanceApiClient.baseUrl = url
     }
 
     fun login(email: String, pass: String, onOtpRequired: (String) -> Unit = {}, onComplete: (Boolean) -> Unit = {}) {
@@ -933,11 +990,69 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         return sb.toString()
     }
 
-    // Upload student's own top neighbors over Wi-Fi / cellular.
-    // K4: trailing debounce during active window (keepRadioActive=true) to
-    // collapse periodic ticks and first-sight bursts; immediate flush on
-    // boundary calls (keepRadioActive=false) so end-of-window / finalize
-    // snapshots are never delayed. Server grace tolerates trailing delivery.
+    // One-shot upload after game (60s timeline). Returns true on accepted submit.
+    private suspend fun submitNeighborsOnceAwaitingVerdict(): Boolean {
+        val sessId = detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: return false
+        val neighborIds = rawDiscoveredPeers.values
+            .filter { it.medianRssi >= -92 }
+            .sortedByDescending { it.medianRssi }
+            .take(64)
+            .map { it.peerId }
+        val closeNeighborIds = rawDiscoveredPeers.values
+            .filter { it.medianRssi >= -65 }
+            .sortedByDescending { it.medianRssi }
+            .take(64)
+            .map { it.peerId }
+        val saltHeader = detectedSessionSalt.takeIf { it != "------" }
+        val faceBytes = capturedFaceBytes
+        val facePayload = capturedFaceBase64
+        val result = if (faceBytes != null) {
+            val requestBody = faceBytes.toRequestBody("image/jpeg".toMediaTypeOrNull())
+            safeApiCall {
+                api.submitNeighborsBinary(
+                    sessionId = sessId,
+                    sessionSalt = saltHeader,
+                    studentId = studentShortId,
+                    neighbors = neighborIds.joinToString(","),
+                    closeNeighbors = closeNeighborIds.joinToString(",").takeIf { it.isNotEmpty() },
+                    gameScore = chimpScore,
+                    relayedReportsJson = null,
+                    imageBytes = requestBody
+                )
+            }
+        } else {
+            val req = SubmitNeighborsRequest(
+                studentId = studentShortId,
+                neighbors = neighborIds,
+                closeNeighbors = closeNeighborIds,
+                sessionSalt = saltHeader,
+                faceImageBase64 = facePayload,
+                challengeReport = chimpScore?.let { mapOf("chimp_score" to it) },
+                gameScore = chimpScore,
+            )
+            safeApiCall { api.submitNeighbors(sessId, req) }
+        }
+        return when (result) {
+            is NetworkResult.Success -> {
+                studentPhase = if (hasLocalDefenseFailed) StudentPhase.UNVERIFIED_FLAGGED else StudentPhase.WAITING_FOR_AUDIT
+                true
+            }
+            is NetworkResult.Error -> {
+                val detail = result.errorPayload?.detail ?: result.message
+                // Post-lock/finalized or hard rejections: stop retrying as success path
+                if (result.code == 400 || result.code == 403 || result.code == 404) {
+                    studentStatusMessage = detail
+                    studentPhase = StudentPhase.UNVERIFIED_FLAGGED
+                    true // treat as terminal for upload loop; poll for verdict/state
+                } else {
+                    false
+                }
+            }
+            is NetworkResult.Exception -> false
+        }
+    }
+
+    // Legacy/manual submit entrypoints kept for UI compatibility; routes to one-shot flow.
     fun submitMyNeighborsToCloud(keepRadioActive: Boolean = false) {
         if (!keepRadioActive) {
             pendingNeighborSubmitJob?.cancel()
@@ -954,123 +1069,28 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun submitMyNeighborsToCloudNow(keepRadioActive: Boolean) {
-        val sessId = detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: return
-        val neighborIds = topDeskNeighbours.map { it.peerId }
-        val closeNeighborIds = rawDiscoveredPeers.values
-            .filter { it.medianRssi >= -65 }
-            .map { it.peerId }
-        val facePayload = capturedFaceBase64
-        val faceBytes = capturedFaceBytes
+        // New timeline: one upload after game (scheduleOneShotUpload). During gather
+        // we only collect locally; explicit/manual calls trigger a best-effort upload.
+        if (keepRadioActive) return
         viewModelScope.launch(Dispatchers.IO) {
-            val result = if (faceBytes != null) {
-                // Submits attendance report with raw binary JPEG payload bypassing Base64 overhead
-                val requestBody = faceBytes.toRequestBody("image/jpeg".toMediaTypeOrNull())
-                val saltHeader = detectedSessionSalt.takeIf { it != "------" }
-                val neighborsHeader = neighborIds.joinToString(",")
-                val closeHeader = closeNeighborIds.joinToString(",").takeIf { it.isNotEmpty() }
-                safeApiCall {
-                    api.submitNeighborsBinary(
-                        sessionId = sessId,
-                        sessionSalt = saltHeader,
-                        studentId = studentShortId,
-                        neighbors = neighborsHeader,
-                        closeNeighbors = closeHeader,
-                        // [ULTRASONIC-DISABLED] Layer 4 fields removed.
-                        // coLocatedPeerId = coLocatedPeerId,
-                        // ultrasonicProximityDetected = ultrasonicProximityDetected,
-                        gameScore = chimpScore,
-                        relayedReportsJson = null,
-                        imageBytes = requestBody
-                    )
-                }
-            } else {
-                val req = SubmitNeighborsRequest(
-                    studentId = studentShortId,
-                    neighbors = neighborIds,
-                    closeNeighbors = closeNeighborIds,
-                    sessionSalt = detectedSessionSalt.takeIf { it != "------" },
-                    faceImageBase64 = facePayload,
-                    // [ULTRASONIC-DISABLED] Layer 4 fields removed.
-                    // ultrasonicProximityDetected = ultrasonicProximityDetected,
-                    // coLocatedPeerId = coLocatedPeerId,
-                    challengeReport = chimpScore?.let { mapOf("chimp_score" to it) },
-                    gameScore = chimpScore,
-                )
-                safeApiCall { api.submitNeighbors(sessId, req) }
-            }
+            val ok = submitNeighborsOnceAwaitingVerdict()
             withContext(Dispatchers.Main) {
-                when (result) {
-                    is NetworkResult.Success -> {
-                        if (!keepRadioActive && studentDiscoverySecondsRemaining == 0) {
-                            studentPhase = if (hasLocalDefenseFailed) StudentPhase.UNVERIFIED_FLAGGED else StudentPhase.WAITING_FOR_AUDIT
-                            startPollingForAudit(sessId)
-                        }
-                        // Keep probe advertising alive until the discovery window ends so
-                        // mutual claims converge before finalize (an early tap-Next submit
-                        // must not freeze its phone's peer snapshot mid-accumulation)
-                        if (!keepRadioActive && studentDiscoverySecondsRemaining <= 0) {
-                            onStopBroadcasting?.invoke()
-                        }
-                    }
-                    is NetworkResult.Error -> {
-                        val detail = result.errorPayload?.detail ?: result.message
-                        if (result.code == 403) {
-                            if (detail.contains("Biometric", ignoreCase = true) || detail.contains("Duplicate face", ignoreCase = true)) {
-                                faceProxyDetected = true
-                            }
-                            // [ULTRASONIC-DISABLED] Layer 4 verdict no longer produced by the server.
-                            // if (detail.contains("Ultrasonic", ignoreCase = true) || detail.contains("desk", ignoreCase = true)) {
-                            //     ultrasonicProximityDetected = true
-                            // }
-                            if (studentDiscoverySecondsRemaining <= 0) {
-                                studentStatusMessage = detail
-                                studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-                                startPollingForAudit(sessId)
-                                onStartScanning?.invoke()
-                                onStopBroadcasting?.invoke()
-                            } else {
-                                // Mid-window (game still running): a 403 detail
-                                // must never paint the game screen — the salt
-                                // gate's "Nice try lil bro" taunted students
-                                // mid-challenge. Log it; the window-end submit
-                                // surfaces the real outcome.
-                                android.util.Log.w("AttendanceViewModel", "Mid-window 403 suppressed from UI: $detail")
-                            }
-                        } else {
-                            if (studentDiscoverySecondsRemaining <= 0) {
-                                studentStatusMessage = detail
-                                studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-                                startPollingForAudit(sessId)
-                                onStartScanning?.invoke()
-                                onStopBroadcasting?.invoke()
-                            } else {
-                                // Mid-window rejection (e.g. session state flipped mid-submit):
-                                // stay in the discovery view and keep probing — the window-end
-                                // submit retries and the audit poll resolves the final state
-                                android.util.Log.w("AttendanceViewModel", "Mid-window peer sync pending: ${result.code} - $detail")
-                            }
-                        }
-                    }
-                    is NetworkResult.Exception -> {
-                        if (studentDiscoverySecondsRemaining <= 0) {
-                            studentStatusMessage = "Connection failed: Please verify classroom Wi-Fi connection"
-                            studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-                            onStartScanning?.invoke()
-                            onStopBroadcasting?.invoke()
-                        } else {
-                            // Mid-window network failure (e.g. cold backend latency): keep probing
-                            // and let the window-end submit retry instead of freezing early
-                            android.util.Log.w("AttendanceViewModel", "Mid-window peer sync network error (retry at window end): ${result.throwable.message}")
-                        }
-                    }
+                val sessId = detectedSessionId.takeIf { it != "----" } ?: backendSessionId
+                if (!ok) {
+                    studentStatusMessage = studentStatusMessage ?: "Upload pending — retrying"
+                    onSwitchScanLatency?.invoke(false)
+                    onStartScanning?.invoke()
                 }
-                Unit
+                if (sessId != null && studentPhase != StudentPhase.STANDBY) {
+                    startPollingForAudit(sessId)
+                }
+                onStopBroadcasting?.invoke()
             }
         }
     }
 
-    // Start teacher session and initialize backend record
-    fun startTeacherSession(durationSeconds: Int = 40, courseId: String? = null) {
+    // Start teacher session and initialize backend record (60s timeline)
+    fun startTeacherSession(durationSeconds: Int = TEACHER_SESSION_SECONDS_DEFAULT, courseId: String? = null) {
         val targetCourseId = courseId ?: selectedCourse?.id
         backendSessionId = null
         sessionId = UUID.randomUUID().toString().replace("-", "").take(4).uppercase()
@@ -1078,9 +1098,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         finalizedRefreshJob?.cancel()
         finalizedRecords = emptyList()
         cloudStatusMessage = null
+        gameStartsAtIso = null
+        gameEndsAtIso = null
+        pendingFinalizeAfterSync = false
 
         isSessionActive = true
-        remainingSeconds = durationSeconds
+        remainingSeconds = TEACHER_SESSION_SECONDS_DEFAULT
 
         val token = SessionManager.default.activeToken
         val hasRealCloudJwt = token?.contains(".") == true && !token.contains("mock")
@@ -1094,15 +1117,9 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     sessionSalt = sessionSalt,
                     courseCode = selectedCourse?.courseCode,
                     courseName = selectedCourse?.courseName,
-                    // Teacher-declared class identity — powers the eligibility
-                    // snapshot the server gates student check-ins against
                     courseProgram = selectedCourse?.program,
                     courseSemester = selectedClassSemester()
                 )
-                // Cold-start resilience: Render free tier may still be booting when
-                // the create lands — a timed-out/502 first attempt gets one retry
-                // so the session actually exists for submit/finalize instead of
-                // class-wide 404s.
                 var result = safeApiCall { api.createSession(req) }
                 if (result is NetworkResult.Exception ||
                     (result as? NetworkResult.Error)?.code?.let { it in 500..599 } == true
@@ -1111,35 +1128,41 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 }
                 withContext(Dispatchers.Main) {
                     isCloudSyncing = false
+                    // Late create/retry completion: the teacher may have stopped
+                    // or backed out while the request was in flight — never
+                    // resurrect the beacon for a dead session.
+                    if (!isSessionActive) return@withContext
                     when (result) {
                         is NetworkResult.Success -> {
-                            backendSessionId = result.data.id
-                            // H5: server generates canonical salt and returns the
-                            // wire token for the BLE beacon — adopt it so broadcasts
-                            // and check-ins agree.
-                            result.data.sessionWireSalt?.takeIf { it.isNotBlank() }?.let { sessionSalt = it }
+                            val body = result.data
+                            backendSessionId = body.id
+                            body.sessionWireSalt?.takeIf { it.isNotBlank() }?.let { sessionSalt = it }
+                            gameStartsAtIso = body.gameStartsAt ?: body.startedAt
+                            gameEndsAtIso = body.gameEndsAt
                             cloudStatusMessage = "Cloud session active: $sessionId"
                             onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
                         }
                         is NetworkResult.Error -> {
                             if (result.code == 409) {
-                                // M2: token collision with an ACTIVE session of another
-                                // teacher/class. Broadcasting now would cross-route student
-                                // submissions into that other session (resolves newest-wins),
-                                // so stay silent until the teacher picks a new ID.
                                 cloudStatusMessage = "Session ID $sessionId is already in use by an active session — pick a new ID before broadcasting"
-                                android.util.Log.e("AttendanceViewModel", "Session create rejected: HTTP 409 - ${result.message}")
+                                isSessionActive = false
+                                remainingSeconds = 0
+                                pendingFinalizeAfterSync = false
+                                return@withContext
                             } else {
                                 cloudStatusMessage = "Cloud sync warning (HTTP ${result.code}): session NOT created — students cannot check in until you STOP and start a new class with a new ID"
-                                android.util.Log.e("AttendanceViewModel", "Session create failed: HTTP ${result.code} - ${result.message}")
                                 onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
                             }
                         }
                         is NetworkResult.Exception -> {
                             cloudStatusMessage = "Cloud sync error: ${result.throwable.localizedMessage ?: "Offline"}"
-                            android.util.Log.e("AttendanceViewModel", "Session create exception", result.throwable)
                             onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
                         }
+                    }
+                    // Deferred finalize: a STOP/timer finalize was requested while
+                    // this create/retry was still in flight.
+                    if (pendingFinalizeAfterSync && isSessionActive) {
+                        finalizeSessionAndAudit()
                     }
                 }
             }
@@ -1148,44 +1171,28 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             onStartBroadcasting?.invoke(currentBroadcastToken, teacherTxPower)
         }
 
-        teacherSessionStartedElapsedMs = android.os.SystemClock.elapsedRealtime()
-        lastBeaconCountdownEmitted = null
         teacherTimer?.cancel()
-        teacherTimer = object : CountDownTimer(durationSeconds * 1000L, 1000L) {
+        teacherTimer = object : CountDownTimer(TEACHER_SESSION_SECONDS_DEFAULT * 1000L, 1000L) {
             override fun onTick(millisUntilFinished: Long) {
                 remainingSeconds = (millisUntilFinished / 1000L).toInt()
-                // Advertising is a static packet: the countdown only advances if
-                // the payload changes. Each value gets exactly one update via
-                // AdvertisingSet.setAdvertisingData — the transmission never
-                // restarts — and one final update drops the suffix for the rest
-                // of class.
-                val k = synchronizedGameCountdownSeconds()
-                if (k != lastBeaconCountdownEmitted) {
-                    lastBeaconCountdownEmitted = k
-                    onUpdateBroadcasting?.invoke(currentBroadcastToken)
-                }
             }
 
             override fun onFinish() {
-                // Grace window: a student game (25 s + face capture) may still be
-                // running — let its final check-in land before the audit pops the
-                // staging buffer. A manual Stop during this window finalizes
-                // immediately; this delayed call then exits idempotently.
-                cloudStatusMessage = "Wrapping up — waiting for students to finish…"
-                viewModelScope.launch(Dispatchers.Main) {
-                    delay(3000L)
-                    finalizeSessionAndAudit()
-                }
+                remainingSeconds = 0
+                cloudStatusMessage = "Time up — finalizing…"
+                finalizeSessionAndAudit()
             }
         }.start()
     }
 
 
-    // Finalize session and trigger server-side mesh audit
+    // Finalize session and trigger server-side mesh audit (engine runs at 45; lock at 60)
     fun finalizeSessionAndAudit() {
-        // Re-entry guard: the auto-finalize timer and a manual Stop tap can overlap;
-        // only one finalize request may be in flight at a time
-        if (isCloudSyncing) return
+        if (isCloudSyncing) {
+            pendingFinalizeAfterSync = true
+            return
+        }
+        pendingFinalizeAfterSync = false
         stopTeacherSession()
 
         val sessId = backendSessionId ?: sessionId.takeIf { it != "----" }
@@ -1200,31 +1207,33 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
         isCloudSyncing = true
         cloudStatusMessage = "Finalizing attendance..."
+        val resultsEpoch = teacherResultsEpoch
         viewModelScope.launch(Dispatchers.IO) {
-            val reportPayload = MeshAuditRunRequest(emptyMap())
+            val reportPayload = MeshAuditRunRequest()
             val result = safeApiCall { api.auditAndFinalize(sessId, reportPayload) }
             withContext(Dispatchers.Main) {
                 isCloudSyncing = false
+                pendingFinalizeAfterSync = false
+                if (teacherResultsEpoch != resultsEpoch) return@withContext
                 when (result) {
                     is NetworkResult.Success -> {
                         val body = result.data
                         finalizedRecords = body.records ?: emptyList()
                         recordSessionToHistory(finalizedRecords)
-                        val verifiedCount = finalizedRecords.count { it.status == "VERIFIED_PRESENT" }
-                        val reviewCount = finalizedRecords.count { it.status == "ISOLATED_FLAGGED" || it.status == "FLAGGED_WITNESSED" || it.status == "UNVERIFIED" }
+                        val verifiedCount = finalizedRecords.count { isVerified(it.status) }
+                        val reviewCount = finalizedRecords.count { it.status == "UNVERIFIED" || it.status == "ISOLATED_FLAGGED" || it.status == "FLAGGED_WITNESSED" || it.status == "NEEDS_REVIEW" }
                         cloudStatusMessage = if (reviewCount > 0) {
                             "Completed • $verifiedCount present, $reviewCount need review"
                         } else {
                             "Completed • $verifiedCount present"
                         }
                         broadcastAirVerdicts(finalizedRecords)
-                        // Late check-ins land server-side within the grace window —
-                        // keep the instructor's list current as rescues flip records.
+                        // Lazy roster refresh for stragglers/flips (short, event-driven by reads)
                         startFinalizedRecordsRefresh(sessId)
                     }
                     is NetworkResult.Error -> {
                         cloudStatusMessage = if (result.code == 404) {
-                            "Finalization failed (HTTP 404): the cloud session was never created — the create request at class start failed. See the banner shown then."
+                            "Finalization failed (HTTP 404): cloud session was never created."
                         } else {
                             "Finalization failed: HTTP ${result.code} - ${result.message}"
                         }
@@ -1239,40 +1248,34 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
-    // Post-finalize refresh: students finishing their game after the timer land
-    // late check-ins that the server rescues within the 90 s grace window —
-    // poll briefly so the instructor's list and counts reflect them.
+    // Lazy post-finalize refresh (stragglers/flips); no long grace window.
     private fun startFinalizedRecordsRefresh(sessId: String) {
         finalizedRefreshJob?.cancel()
+        val resultsEpoch = teacherResultsEpoch
         finalizedRefreshJob = viewModelScope.launch(Dispatchers.IO) {
-            repeat(10) {
+            repeat(12) {
                 delay(3000L)
+                if (teacherResultsEpoch != resultsEpoch) return@launch
                 try {
                     val res = api.getSessionDetails(sessId)
                     val session = if (res.isSuccessful) res.body() ?: return@launch else return@launch
-                    if (session.status == "CANCELLED" || session.status == "EXPIRED") return@launch
                     val records = session.records ?: return@launch
-                    val previousVerified = finalizedRecords
-                        .filter { it.status == "VERIFIED_PRESENT" }
-                        .map { it.bleDeviceId }
-                        .toSet()
+                    val previousVerified = finalizedRecords.filter { isVerified(it.status) }.map { it.bleDeviceId }.toSet()
                     withContext(Dispatchers.Main) {
+                        if (teacherResultsEpoch != resultsEpoch) return@withContext
                         finalizedRecords = records
-                        val verifiedCount = records.count { it.status == "VERIFIED_PRESENT" }
-                        val reviewCount = records.count {
-                            it.status == "ISOLATED_FLAGGED" || it.status == "FLAGGED_WITNESSED" || it.status == "UNVERIFIED"
-                        }
+                        val verifiedCount = records.count { isVerified(it.status) }
+                        val reviewCount = records.count { it.status == "UNVERIFIED" || it.status == "ISOLATED_FLAGGED" || it.status == "FLAGGED_WITNESSED" || it.status == "NEEDS_REVIEW" }
                         cloudStatusMessage = if (reviewCount > 0) {
                             "Completed • $verifiedCount present, $reviewCount need review"
                         } else {
                             "Completed • $verifiedCount present"
                         }
                     }
-                    val newlyVerified = records.filter {
-                        it.status == "VERIFIED_PRESENT" && it.bleDeviceId !in previousVerified
-                    }
-                    if (newlyVerified.isNotEmpty()) {
-                        broadcastAirVerdicts(newlyVerified)
+                    val newlyVerified = records.filter { isVerified(it.status) && it.bleDeviceId !in previousVerified }
+                    if (newlyVerified.isNotEmpty()) broadcastAirVerdicts(newlyVerified)
+                    if (session.status == "COMPLETED") {
+                        // brief extra window for late flips/stragglers already handled server-side
                     }
                 } catch (_: Exception) { }
             }
@@ -1281,44 +1284,24 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Option 2: Sequentially broadcast BLE air verdicts (\<ID>) for verified students
     fun broadcastAirVerdicts(records: List<AttendanceRecordItem>) {
-        val verified = records.filter { it.status == "VERIFIED_PRESENT" }
+        val verified = records.filter { isVerified(it.status) }
         if (verified.isEmpty()) return
 
-        airVerdictJob?.cancel()
-        airVerdictJob = viewModelScope.launch(Dispatchers.Default) {
-            repeat(2) {
-                for (rec in verified) {
-                    if (!isActive) break
-                    val ids = mutableListOf(rec.bleDeviceId)
-                    rec.rollNumber?.let { roll ->
-                        if (roll.isNotBlank() && roll != rec.bleDeviceId) {
-                            ids.add(roll)
-                        }
-                    }
-                    for (id in ids) {
-                        if (!isActive) break
-                        withContext(Dispatchers.Main) {
-                            onStartBroadcasting?.invoke("\\$id", teacherTxPower)
-                        }
-                        delay(350L)
-                    }
-                }
-            }
-            withContext(Dispatchers.Main) {
-                onStopBroadcasting?.invoke()
+        val ids = buildList {
+            for (rec in verified) {
+                add(rec.bleDeviceId)
+                rec.rollNumber?.takeIf { it.isNotBlank() && it != rec.bleDeviceId }?.let { add(it) }
             }
         }
+        enqueueAirVerdicts(ids, rounds = 2)
     }
 
     private fun recordSessionToHistory(records: List<AttendanceRecordItem>) {
         val timestamp = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
         val completedSession = AttendanceSessionResponse(
             id = backendSessionId ?: sessionId,
-            courseId = selectedCourse?.id ?: "",
             sessionToken = sessionId,
             status = "COMPLETED",
-            totalVerified = records.count { it.status == "VERIFIED_PRESENT" },
-            totalUnverified = records.count { it.status != "VERIFIED_PRESENT" && it.status != "LEAVE" },
             startedAt = timestamp,
             records = records,
             courseCode = selectedCourse?.courseCode ?: "",
@@ -1329,13 +1312,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun markStudentVerified(recordOrDeviceId: String) {
-        val target = finalizedRecords.firstOrNull { it.bleDeviceId == recordOrDeviceId || it.rollNumber == recordOrDeviceId }
+        val target = finalizedRecords.firstOrNull { it.id == recordOrDeviceId || it.bleDeviceId == recordOrDeviceId || it.rollNumber == recordOrDeviceId }
         finalizedRecords = finalizedRecords.map { rec ->
-            if (rec.bleDeviceId == recordOrDeviceId || rec.rollNumber == recordOrDeviceId) {
+            if (rec.id == recordOrDeviceId || rec.bleDeviceId == recordOrDeviceId || rec.rollNumber == recordOrDeviceId) {
                 rec.copy(
-                    status = "VERIFIED_PRESENT",
+                    status = "VERIFIED",
                     verificationMethod = "MANUAL_OVERRIDE",
-                    affinityScore = 1.0,
                     remarks = "Confirmed by instructor"
                 )
             } else {
@@ -1350,25 +1332,18 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             }
         }
 
-        // Option 2: Blast air verdict over BLE for manually confirmed student (\<ID>)
-        val idsToBroadcast = mutableListOf(recordOrDeviceId)
-        target?.bleDeviceId?.let { if (it !in idsToBroadcast) idsToBroadcast.add(it) }
-        target?.rollNumber?.let { if (it.isNotBlank() && it !in idsToBroadcast) idsToBroadcast.add(it) }
-
-        airVerdictJob?.cancel()
-        airVerdictJob = viewModelScope.launch(Dispatchers.Default) {
-            repeat(4) {
-                for (id in idsToBroadcast) {
-                    if (!isActive) break
-                    withContext(Dispatchers.Main) {
-                        onStartBroadcasting?.invoke("\\$id", teacherTxPower)
-                    }
-                    delay(350L)
-                }
-            }
-            withContext(Dispatchers.Main) {
-                onStopBroadcasting?.invoke()
-            }
+        // Option 2: Blast air verdict over BLE for manually confirmed student.
+        // Only SHORT identifiers fit the 31-byte legacy adv payload — and the
+        // student receiver matches against shortId/roll only. A record UUID
+        // (38 bytes on the wire) both overflows the adv packet and can never
+        // match anything.
+        val idsToBroadcast = buildList {
+            target?.bleDeviceId?.takeIf { it.isNotBlank() }?.let { add(it) }
+            target?.rollNumber?.takeIf { it.isNotBlank() }?.let { add(it) }
+            if (target == null && recordOrDeviceId.length <= 22) add(recordOrDeviceId)
+        }.distinct()
+        if (idsToBroadcast.isNotEmpty()) {
+            enqueueAirVerdicts(idsToBroadcast, rounds = 4)
         }
     }
 
@@ -1398,8 +1373,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         teacherTimer = null
         isSessionActive = false
         remainingSeconds = 0
-        airVerdictJob?.cancel()
-        airVerdictJob = null
+        stopAirVerdicts()
         onStopBroadcasting?.invoke()
     }
 
@@ -1432,29 +1406,45 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         auditPollingJob = null
 
         // Real classroom mode: Listen for teacher BLE beacon broadcast
+        stopStudentScheduleJobs()
         invalidateBeaconLatch()
         detectedSessionId = "----"
         detectedSessionSalt = "------"
+        gameStartsAtIso = null
+        gameEndsAtIso = null
+        serverTimeOffsetMs = 0L
+        studentJoinInProgress = false
         studentPhase = StudentPhase.LISTENING_FOR_TEACHER
-        // LOW_LATENCY listening: the synchronized start needs every phone to
-        // latch fast (BALANCED duty cycle adds ~1-2 s of first-heard lag).
-        // Density is pure state; this explicit start is the only scan op.
         onSwitchScanLatency?.invoke(true)
         ensureListeningWatchdog()
+        listeningCapJob?.cancel()
+        listeningCapJob = viewModelScope.launch {
+            delay(10 * 60 * 1000L)
+            if (studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
+                withContext(Dispatchers.Main) {
+                    onStopScanning?.invoke()
+                    onStopBroadcasting?.invoke()
+                    studentStatusMessage = "No session found"
+                    studentPhase = StudentPhase.STANDBY
+                }
+            }
+        }
         onStartScanning?.invoke()
     }
 
     // Student scanning stop
     fun stopStudentScanning() {
+        stopStudentScheduleJobs()
         pendingNeighborSubmitJob?.cancel()
         pendingNeighborSubmitJob = null
         stopPeerBatchUpdates()
-        releaseProbingWakeLock() // R11 (review §2.8): explicit CPU hold release
+        releaseProbingWakeLock()
         studentTimer?.cancel()
         studentTimer = null
         studentDiscoverySecondsRemaining = 0
         auditPollingJob?.cancel()
         auditPollingJob = null
+        studentStatusMessage = null
         studentPhase = StudentPhase.STANDBY
         onStopScanning?.invoke()
         onStopBroadcasting?.invoke()
@@ -1462,10 +1452,11 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
 
     // Reset student attendance session back to standby
     fun resetStudentSession() {
+        stopStudentScheduleJobs()
         pendingNeighborSubmitJob?.cancel()
         pendingNeighborSubmitJob = null
         stopPeerBatchUpdates()
-        releaseProbingWakeLock() // R11 (review §2.8): explicit CPU hold release
+        releaseProbingWakeLock()
         studentTimer?.cancel()
         studentTimer = null
         studentDiscoverySecondsRemaining = 0
@@ -1485,16 +1476,12 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         deferredStopBroadcasting = false
         deferredStartScanning = false
         faceProxyDetected = false
-        // [ULTRASONIC-DISABLED] Layer 4 state resets removed.
-        // ultrasonicProximityDetected = false
-        chimpChallengeFailed = false
-        chimpScore = null
-        // coLocatedPeerId = null
-        // ultrasonicSnrDb = 0.0
-        // testedUltrasonicPeers.clear()
         auditedRecord = null
-        // ultrasonicWasTriggered = false
         isRefreshingAudit = false
+        gameStartsAtIso = null
+        gameEndsAtIso = null
+        serverTimeOffsetMs = 0L
+        studentJoinInProgress = false
         detectedSessionId = "----"
         detectedSessionSalt = "------"
         invalidateBeaconLatch()
@@ -1503,92 +1490,22 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         onStopBroadcasting?.invoke()
     }
 
-    // Student proceeds past attention score screen
+    // Student proceeds after game/capture: ensure one upload, then await verdict.
     fun proceedStudentToNext() {
         studentTimer?.cancel()
         studentTimer = null
-        studentDiscoverySecondsRemaining = 0
-        // R11-C: drop scan density even when Next is tapped before the window
-        // closes (fast game finish) — audit wait/verdict listening runs BALANCED.
-        // Density is pure state now; restart the scan to apply it.
-        onSwitchScanLatency?.invoke(false)
-        onStartScanning?.invoke()
         val sessId = detectedSessionId.takeIf { it.isNotBlank() && it != "----" } ?: backendSessionId ?: ""
-        if (hasLocalDefenseFailed) {
-            if (studentStatusMessage == null) {
-                studentStatusMessage = "Attendance not confirmed. Please see instructor."
-            }
-            studentPhase = StudentPhase.UNVERIFIED_FLAGGED
-            submitMyNeighborsToCloud(keepRadioActive = false)
-            if (sessId.isNotBlank()) {
-                startPollingForAudit(sessId)
-            }
-            onStartScanning?.invoke()
-            onStopBroadcasting?.invoke()
-        } else {
-            studentPhase = StudentPhase.WAITING_FOR_AUDIT
-            studentStatusMessage = null
-            submitMyNeighborsToCloud(keepRadioActive = false)
-            if (sessId.isNotBlank()) {
-                startPollingForAudit(sessId)
-            }
-            onStartScanning?.invoke()
-            onStopBroadcasting?.invoke()
+        if (sessId.isBlank()) return
+        val ge = gameEndsMs()
+        if (ge != null && serverNowMs() >= ge) {
+            maybeTriggerPostGameUpload()
         }
-    }
-
-    private fun startStudentDiscoveryWindow() {
-        // Fresh discovery window → fresh peer graph: stale claims from a prior
-        // session (rapid back-to-back retests) must never leak into this report
-        rawDiscoveredPeers.clear()
-        // [ULTRASONIC-DISABLED] Layer 4 registry reset removed.
-        // testedUltrasonicPeers.clear()
-        topDeskNeighbours = emptyList()
-        startPeerBatchUpdates()
-        // R11-C (review §2.1): the only phase that needs packet density —
-        // 25 s peer discovery window (plus the reflex game that rides it).
-        onSwitchScanLatency?.invoke(true)
-        // R11 (review §2.8): hold the CPU for the whole probe sequence
-        // (BLE window + ultrasonic handshakes) even if the user pockets the
-        // phone; bounded by the 105 s timeout, released on teardown.
-        acquireProbingWakeLock()
-        studentDiscoverySecondsRemaining = 25
-        val probePayload = "$detectedSessionId$studentShortId"
-        if (currentRollNumber == defaultLocalId) {
-            // A device without a bound roll would broadcast a RANDOM default id —
-            // every listener nearby would ingest it as a phantom classmate that
-            // can never check in or reciprocate. Listen-only mode instead.
-            android.util.Log.w("AttendanceViewModel", "Probe broadcast suppressed: no real roll bound — default random id would fabricate a phantom peer for classmates")
-        } else {
-            onStartBroadcasting?.invoke(probePayload, AdvertiseSettings.ADVERTISE_TX_POWER_LOW)
+        if (studentPhase == StudentPhase.WAITING_FOR_AUDIT ||
+            studentPhase == StudentPhase.VERIFIED_PRESENT ||
+            studentPhase == StudentPhase.UNVERIFIED_FLAGGED
+        ) {
+            startPollingForAudit(sessId)
         }
-
-        studentTimer?.cancel()
-        studentTimer = object : CountDownTimer(25000L, 1000L) {
-            override fun onTick(millisUntilFinished: Long) {
-                studentDiscoverySecondsRemaining = (millisUntilFinished / 1000L).toInt()
-                val elapsed = 25 - studentDiscoverySecondsRemaining
-                // Initial quick cloud check-in after 3 seconds so the server records this student in the session
-                if (elapsed == 3 || (elapsed > 3 && elapsed % 4 == 0 && topDeskNeighbours.isNotEmpty())) {
-                    submitMyNeighborsToCloud(keepRadioActive = true)
-                }
-            }
-
-            override fun onFinish() {
-                studentDiscoverySecondsRemaining = 0
-                flushPeerBatchImmediately()
-                // R11-C (review §2.1): the 25 s discovery window is closed —
-                // the score window and audit wait run on BALANCED (battery).
-                onSwitchScanLatency?.invoke(false)
-                // Density change no longer restarts the scan itself — do it
-                // here: BALANCED from this point (audit wait runs on battery).
-                onStartScanning?.invoke()
-                // Background BLE discovery window complete; sync neighbors to cloud
-                submitMyNeighborsToCloud(keepRadioActive = true)
-                // studentPhase remains PROBING_NEIGHBORS so the score window stays visible
-                // until the student reviews their metrics and explicitly taps 'Next'
-            }
-        }.start()
     }
 
     // Processes incoming BLE advertising packets for beacon and peer discovery
@@ -1609,17 +1526,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
     // check-in pacing is unaffected.
     private val latchDecisionWindowMs = 2_000L
 
-    // Synchronized game start (teacher countdown beacons "G<k>"): the minimum
-    // (received + k) estimate seen while listening. Cleared on every listening
-    // reset so a stale target can never delay a fresh session's game.
+    // Legacy sync fields kept for UI compatibility; server schedule drives timing now.
     private var syncGameStartElapsedMs: Long? = null
-
-    // Delay applied to the chimp challenge after latching — 0 when no countdown
-    // was ever heard (old beacon / countdown expired). Exposed to the UI.
     var chimpStartDelayMs by mutableStateOf(0L)
         private set
-
-    private val beaconCountdownRegex = Regex("G(\\d{1,2})$")
 
     private data class BeaconCandidate(
         val sessionId: String,
@@ -1671,10 +1581,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                     continue
                 }
                 lastWatchdogRestartElapsedMs = now
-                android.util.Log.w(
-                    "AttendanceViewModel",
-                    "Scan watchdog: no packets for 12s while listening — restarting scan (scanActive=$bleScanActive)"
-                )
+                // if (BuildConfig.DEBUG) android.util.Log.w(
+                //     "AttendanceViewModel",
+                //     "Scan watchdog: no packets for 12s while listening — restarting scan (scanActive=$bleScanActive)"
+                // )
                 onStartScanning?.invoke()
             }
         }
@@ -1687,10 +1597,10 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
             return
         }
         beaconCandidates[sessionId] = BeaconCandidate(sessionId, sessionSalt, rssi)
-        android.util.Log.i(
-            "AttendanceViewModel",
-            "Beacon candidate: $sessionId @${rssi}dBm (pool size ${beaconCandidates.size})"
-        )
+        // if (BuildConfig.DEBUG) android.util.Log.i(
+        //     "AttendanceViewModel",
+        //     "Beacon candidate: $sessionId @${rssi}dBm (pool size ${beaconCandidates.size})"
+        // )
         if (beaconCandidates.size == 1) {
             val epoch = ++latchEpoch
             viewModelScope.launch {
@@ -1700,35 +1610,176 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         }
     }
 
+    private fun parseIsoToEpochMs(iso: String?): Long? {
+        if (iso.isNullOrBlank()) return null
+        return try {
+            java.time.Instant.parse(iso).toEpochMilli()
+        } catch (_: Exception) {
+            try { java.time.OffsetDateTime.parse(iso).toInstant().toEpochMilli() } catch (_: Exception) { null }
+        }
+    }
+
     private fun resolveBeaconLatch(epoch: Int) {
-        // A reset (start-listening / cancel / expiry paths) bumped the epoch,
-        // or the student left the listening phase — discard this era's pool.
         if (epoch != latchEpoch || studentPhase != StudentPhase.LISTENING_FOR_TEACHER) return
-        // Highest observed RSSI wins; deterministic lexicographic tie-break
-        // keeps the (pathological) equal-peak case from flip-flopping.
         val chosen = beaconCandidates.values
             .sortedWith(compareBy<BeaconCandidate> { -it.peakRssi }.thenBy { it.sessionId })
             .firstOrNull() ?: return
-        val pool = beaconCandidates.entries
-            .joinToString(",") { "${it.key}@${it.value.peakRssi}dBm" }
-        android.util.Log.i(
-            "AttendanceViewModel",
-            "Beacon latch: ${chosen.sessionId} @${chosen.peakRssi}dBm [candidates: $pool]"
-        )
-        val syncTarget = syncGameStartElapsedMs
         invalidateBeaconLatch()
         detectedSessionId = chosen.sessionId
         detectedSessionSalt = chosen.sessionSalt
-        // Synchronized game start: everyone who heard a countdown starts at the
-        // same instant. Target already passed (very late latch) or never heard →
-        // start immediately (legacy behavior).
-        chimpStartDelayMs = syncTarget
-            ?.let { it - android.os.SystemClock.elapsedRealtime() }
-            ?.takeIf { it > 0L }
-            ?.coerceAtMost(20_000L)
-            ?: 0L
-        studentPhase = StudentPhase.PROBING_NEIGHBORS
-        startStudentDiscoveryWindow()
+
+        // Latch: radio starts immediately; join runs in parallel (8s), fail closed.
+        // Block game/gather UI until join verdict.
+        studentJoinInProgress = true
+        studentStatusMessage = "Joining session…"
+        startPeerBatchUpdates()
+        rawDiscoveredPeers.clear()
+        topDeskNeighbours = emptyList()
+        acquireProbingWakeLock()
+        onSwitchScanLatency?.invoke(true)
+        onStartScanning?.invoke()
+        if (currentRollNumber != defaultLocalId) {
+            onStartBroadcasting?.invoke("$detectedSessionId$studentShortId", AdvertiseSettings.ADVERTISE_TX_POWER_LOW)
+        }
+
+        val sessId = detectedSessionId
+        val salt = detectedSessionSalt
+        viewModelScope.launch(Dispatchers.IO) {
+            val joinResult = try {
+                kotlinx.coroutines.withTimeout(8000L) {
+                    safeApiCall { api.joinSession(sessId, SessionJoinRequest(sessionSalt = salt)) }
+                }
+            } catch (_: Exception) {
+                null
+            }
+            withContext(Dispatchers.Main) {
+                if (studentPhase == StudentPhase.STANDBY || detectedSessionId != sessId) return@withContext
+                studentJoinInProgress = false
+                val ok = (joinResult as? com.college.core.network.NetworkResult.Success)?.data
+                val joinData = ok?.takeIf { it.eligible || it.gameStartsAt != null || it.gameEndsAt != null }
+                if (joinData == null) {
+                    val reason = when (joinResult) {
+                        is com.college.core.network.NetworkResult.Error ->
+                            joinResult.errorPayload?.detail ?: joinResult.message
+                        is com.college.core.network.NetworkResult.Exception ->
+                            "Network error — check connection"
+                        else -> ok?.reason ?: "Join failed or timed out"
+                    }
+                    abortStudentSession(reason)
+                    return@withContext
+                }
+                val serverNow = parseIsoToEpochMs(joinData.serverTime) ?: System.currentTimeMillis()
+                serverTimeOffsetMs = serverNow - System.currentTimeMillis()
+                gameStartsAtIso = joinData.gameStartsAt
+                gameEndsAtIso = joinData.gameEndsAt
+                listeningCapJob?.cancel(); listeningCapJob = null
+                studentStatusMessage = null
+                // Join OK: enter probing/game phase per server schedule
+                studentPhase = StudentPhase.PROBING_NEIGHBORS
+                startStudentScheduleLoop()
+                // Teardown +350s from game start = 5min after teacher's 60s timer end
+                // (game starts at session start + 10s; 60 + 300 - 10 = 350)
+                teardownJob?.cancel()
+                teardownJob = viewModelScope.launch {
+                    val gs = gameStartsMs() ?: return@launch
+                    val delayMs = (gs + 350_000L - serverNowMs()).coerceAtLeast(0L)
+                    delay(delayMs)
+                    withContext(Dispatchers.Main) {
+                        // Verdict/waiting screens persist until the user backs out or
+                        // closes the app; teardown only ends radio-era phases.
+                        if (studentPhase == StudentPhase.PROBING_NEIGHBORS ||
+                            studentPhase == StudentPhase.DISCOVERY_COMPLETE
+                        ) {
+                            stopStudentScanning()
+                            studentStatusMessage = studentStatusMessage ?: "Session ended"
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun abortStudentSession(reason: String) {
+        stopStudentScheduleJobs()
+        stopPeerBatchUpdates()
+        releaseProbingWakeLock()
+        studentTimer?.cancel(); studentTimer = null
+        auditPollingJob?.cancel(); auditPollingJob = null
+        onStopScanning?.invoke()
+        onStopBroadcasting?.invoke()
+        studentPhase = StudentPhase.STANDBY
+        studentStatusMessage = reason
+        detectedSessionId = "----"; detectedSessionSalt = "------"
+        isChimpChallengeActive = false
+    }
+
+    private fun stopStudentScheduleJobs() {
+        uploadJob?.cancel(); uploadJob = null
+        scheduleTickJob?.cancel(); scheduleTickJob = null
+        listeningCapJob?.cancel(); listeningCapJob = null
+        teardownJob?.cancel(); teardownJob = null
+    }
+
+    private fun serverNowMs(): Long = System.currentTimeMillis() + serverTimeOffsetMs
+    fun currentServerTimeOffsetMs(): Long = serverTimeOffsetMs
+    fun gameStartsAtMsValue(): Long? = parseIsoToEpochMs(gameStartsAtIso)
+    private fun gameStartsMs(): Long? = gameStartsAtMsValue()
+    private fun gameEndsMs(): Long? = parseIsoToEpochMs(gameEndsAtIso)
+
+    private fun startStudentScheduleLoop() {
+        postGameUploadTriggered = false
+        scheduleTickJob?.cancel()
+        scheduleTickJob = viewModelScope.launch(Dispatchers.Main) {
+            while (isActive && studentPhase != StudentPhase.STANDBY) {
+                val gs = gameStartsMs()
+                val ge = gameEndsMs()
+                val now = serverNowMs()
+                if (ge != null && now >= ge) {
+                    // Game over: stop gather radio; wait for face capture/score then upload.
+                    studentDiscoverySecondsRemaining = 0
+                    stopPeerBatchUpdates()
+                    flushPeerBatchImmediately()
+                    onSwitchScanLatency?.invoke(false)
+                    onStopScanning?.invoke()
+                    onStopBroadcasting?.invoke()
+                    // Fallback: if capture hasn't arrived shortly, upload anyway.
+                    viewModelScope.launch {
+                        delay(4000L)
+                        withContext(Dispatchers.Main) { maybeTriggerPostGameUpload() }
+                    }
+                    break
+                }
+                studentDiscoverySecondsRemaining = if (gs != null && now < gs) ((gs - now) / 1000L).toInt().coerceAtLeast(0) else 0
+                delay(500L)
+            }
+        }
+    }
+
+    private fun scheduleOneShotUpload() {
+        if (uploadJob?.isActive == true) return
+        uploadJob = viewModelScope.launch(Dispatchers.Main) {
+            val jitter = (0..3000).random().toLong()
+            delay(jitter)
+            // Upload window until ~45s mark relative to game end/start schedule; retry a few times
+            var attempts = 0
+            while (attempts < 4 && studentPhase != StudentPhase.STANDBY) {
+                attempts++
+                val ok = submitNeighborsOnceAwaitingVerdict()
+                if (ok) {
+                    onStopBroadcasting?.invoke()
+                    startPollingForAudit(detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: return@launch)
+                    break
+                }
+                delay(1500L)
+            }
+            if (studentPhase == StudentPhase.PROBING_NEIGHBORS) {
+                // keep light scan for verdict/poll if upload unresolved
+                onSwitchScanLatency?.invoke(false)
+                onStartScanning?.invoke()
+                studentPhase = if (hasLocalDefenseFailed) StudentPhase.UNVERIFIED_FLAGGED else StudentPhase.WAITING_FOR_AUDIT
+                startPollingForAudit(detectedSessionId.takeIf { it != "----" } ?: backendSessionId ?: return@launch)
+            }
+        }
     }
 
     fun onPacketReceived(rssi: Int, messageText: String) {
@@ -1737,6 +1788,16 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         if (isTeacherMode) return
         // Any received packet proves the scan is alive (watchdog silence check)
         lastBlePacketHeardElapsedMs = android.os.SystemClock.elapsedRealtime()
+
+        // Teacher beacon latch: "/" + token(4) + wireSalt(4) [+ semester(1)]
+        if (cleanMsg.startsWith("/") && cleanMsg.length >= 9 && studentPhase == StudentPhase.LISTENING_FOR_TEACHER) {
+            val token = cleanMsg.substring(1, 5)
+            val salt = cleanMsg.substring(5, 9)
+            if (token.all { it.isLetterOrDigit() } && salt.all { it.isLetterOrDigit() }) {
+                collectBeaconCandidate(token.uppercase(), salt.uppercase(), rssi)
+            }
+            return
+        }
 
         // Process teacher air verdict packets with offline/online gating
         // H5: '\'+targetId (compact), legacy V:<id>:OK
@@ -1793,7 +1854,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 val profileSemester = SessionManager.default.currentUser?.semester
                 if (bSem != null && profileSemester != null && bSem != profileSemester) {
                     studentStatusMessage = "Nearby class is Semester $bSem — your profile says Semester $profileSemester"
-                    android.util.Log.i("AttendanceViewModel", "Beacon rejected by semester pre-filter: bSem=$bSem profile=$profileSemester")
+                    // if (BuildConfig.DEBUG) android.util.Log.i("AttendanceViewModel", "Beacon rejected by semester pre-filter: bSem=$bSem profile=$profileSemester")
                     return
                 }
                 // Synchronized game start estimate: (now + k) on the monotonic
@@ -1801,10 +1862,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 // teacher's target regardless of BLE delivery jitter. Beacon
                 // suffix is anchored ($ = end), so salt tokens containing G/digits
                 // can never produce a false countdown.
-                beaconCountdownRegex.find(cleanMsg)?.groupValues?.get(1)?.toIntOrNull()?.let { k ->
-                    val est = android.os.SystemClock.elapsedRealtime() + k * 1000L
-                    syncGameStartElapsedMs = minOf(est, syncGameStartElapsedMs ?: est)
-                }
+                // G<k> countdown suffix removed in 60s timeline (ignored if seen)
                 collectBeaconCandidate(bToken, bSalt, rssi)
             }
             return
@@ -1837,7 +1895,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                 if (existing == null) {
                     // First sight of this peer this window — one diagnostic line
                     // so phantom emitters are identifiable from logcat alone
-                    android.util.Log.i("AttendanceViewModel", "Peer ingested: id=$peerId msg='$cleanMsg' rssi=$rssi session=$detectedSessionId")
+                    // if (BuildConfig.DEBUG) android.util.Log.i("AttendanceViewModel", "Peer ingested: id=$peerId msg='$cleanMsg' rssi=$rssi session=$detectedSessionId")
                     // Push updated peer list to server
                     submitMyNeighborsToCloud(keepRadioActive = true)
                 }
@@ -1868,7 +1926,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         val nowMs = android.os.SystemClock.elapsedRealtime()
         if (nowMs - lastNeglectedPacketLogMs > 2000) {
             lastNeglectedPacketLogMs = nowMs
-            android.util.Log.i("AttendanceViewModel", "BLE packet not ingested: '$cleanMsg' (rssi=$rssi phase=$studentPhase session=$detectedSessionId)")
+            // if (BuildConfig.DEBUG) android.util.Log.i("AttendanceViewModel", "BLE packet not ingested: '$cleanMsg' (rssi=$rssi phase=$studentPhase session=$detectedSessionId)")
         }
     }
 /* [ULTRASONIC-DISABLED 2026-11] whole function off (see trigger call site).
@@ -1965,7 +2023,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                             withContext(Dispatchers.Main) {
                                 auditedRecord = myRecord
                                 if (myRecord != null) {
-                                    if (myRecord.status == "VERIFIED_PRESENT") {
+                                    if (isVerified(myRecord.status)) {
                                         applyOrDeferStudentPhase(
                                             StudentPhase.VERIFIED_PRESENT,
                                             "Attendance Confirmed",
@@ -1991,6 +2049,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                             myRecord.status == "SALT_REJECTED" -> "In-room beacon verification failed"
                                             myRecord.status == "SPOOFER_REJECTED" && myRecord.verificationMethod == "SALT_REJECTED" -> "In-room beacon verification failed"
                                             myRecord.status == "SPOOFER_REJECTED" -> "Peer claims unconfirmed — please ask your instructor to review"
+                                            myRecord.status == "UNVERIFIED" -> "Attendance not confirmed — instructor will verify"
                                             myRecord.status == "ISOLATED_FLAGGED" -> "Needs instructor confirmation"
                                             myRecord.status == "FLAGGED_WITNESSED" -> "Verified classmates witnessed you — instructor confirmation needed"
                                             else -> myRecord.remarks ?: "Attendance not confirmed"
@@ -2001,7 +2060,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                     applyOrDeferStudentPhase(StudentPhase.UNVERIFIED_FLAGGED, "Attendance not confirmed", startScan = true)
                                 }
                             }
-                            if (myRecord?.status == "VERIFIED_PRESENT") {
+                            if (isVerified(myRecord?.status)) {
                                 break
                             }
                         } else if (session?.status == "CANCELLED") {
@@ -2106,7 +2165,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                         withContext(Dispatchers.Main) {
                             auditedRecord = myRecord
                             if (myRecord != null) {
-                                if (myRecord.status == "VERIFIED_PRESENT" && !hasLocalDefenseFailed) {
+                                if (isVerified(myRecord.status) && !hasLocalDefenseFailed) {
                                     applyOrDeferStudentPhase(
                                         StudentPhase.VERIFIED_PRESENT,
                                         "Attendance Confirmed",
@@ -2122,6 +2181,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
                                     val msg = when {
                                         hasLocalDefenseFailed -> "Attendance not confirmed. Please see instructor."
                                         myRecord.status == "SPOOFER_REJECTED" -> "Peer claims unconfirmed — please ask your instructor to review"
+                                        myRecord.status == "UNVERIFIED" -> "Attendance not confirmed — instructor will verify"
                                         myRecord.status == "ISOLATED_FLAGGED" -> "Needs instructor confirmation"
                                         myRecord.status == "FLAGGED_WITNESSED" -> "Verified classmates witnessed you — instructor confirmation needed"
                                         else -> "Attendance not confirmed"
@@ -2153,8 +2213,7 @@ class AttendanceViewModel(application: Application) : AndroidViewModel(applicati
         teacherTimer = null
         studentTimer?.cancel()
         studentTimer = null
-        airVerdictJob?.cancel()
-        airVerdictJob = null
+        stopAirVerdicts()
         auditPollingJob?.cancel()
         auditPollingJob = null
         // R8 (review §0.2): drop the Activity-wired BLE bridge lambdas. The

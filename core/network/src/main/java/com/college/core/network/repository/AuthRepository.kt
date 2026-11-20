@@ -65,8 +65,7 @@ class AuthRepository(
             rollNumber = userDto.rollNumber,
             department = userDto.department,
             program = userDto.program,
-            semester = userDto.semester,
-            section = userDto.section
+            semester = userDto.semester
         )
         sessionManager.startSession(user = domainUser, token = token)
     }

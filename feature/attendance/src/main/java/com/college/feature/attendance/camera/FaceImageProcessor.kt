@@ -2,7 +2,6 @@ package com.college.feature.attendance.camera
 
 import android.graphics.Bitmap
 import android.graphics.Matrix
-import android.util.Base64
 import android.util.Log
 import java.io.ByteArrayOutputStream
 import kotlin.math.min
@@ -59,18 +58,12 @@ object FaceImageProcessor {
             processedBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_COMPRESSION_QUALITY, outputStream)
             outputStream.toByteArray()
         } catch (e: Exception) {
-            Log.e(TAG, "Error processing face frame: ${e.message}", e)
+//             Log.e(TAG, "Error processing face frame: ${e.message}", e)
             null
         } finally {
             if (processedBitmap != null && processedBitmap !== originalBitmap) {
                 processedBitmap.recycle()
             }
         }
-    }
-
-    // Transforms candidate frame into normalized Base64 JPEG string
-    fun processCandidate(candidate: BestFrameCandidate): String? {
-        val bytes = processCandidateToBytes(candidate) ?: return null
-        return Base64.encodeToString(bytes, Base64.NO_WRAP)
     }
 }

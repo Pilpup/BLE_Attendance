@@ -168,6 +168,8 @@ class UltrasonicProximityManager(private val context: Context) {
                 val audioBuffer = ShortArray(1024)
                 val tracker = BurstEnvelopeTracker()
                 var lastMetricPostMs = 0L
+                var finalizedPeakPowerDb = 0.0
+                var finalizedPeakSnrDb = 0.0
 
                 while (isDiagnosticRunning.get()) {
                     val readSamples = record.read(audioBuffer, 0, audioBuffer.size)
@@ -188,12 +190,18 @@ class UltrasonicProximityManager(private val context: Context) {
                         var emitFinalized = false
 
                         if (burstEnded) {
+                            // Capture peaks BEFORE reset() zeroes them — the
+                            // metric below reads them for the finalized burst.
+                            val peakPowerDb = tracker.burstPeakPowerDb
+                            val peakSnrDb = tracker.burstPeakSnrDb
                             finalizedDist = GoertzelDetector.calculateDistanceCm(
-                                powerDb = tracker.burstPeakPowerDb,
+                                powerDb = peakPowerDb,
                                 refPowerDb = calibratedRefPowerDb
                             )
                             isCoLocated = finalizedDist in 0.1..20.0
                             emitFinalized = true
+                            finalizedPeakPowerDb = peakPowerDb
+                            finalizedPeakSnrDb = peakSnrDb
                             tracker.reset()
                         }
 
@@ -206,8 +214,8 @@ class UltrasonicProximityManager(private val context: Context) {
                             isChirpDetected = detection.isDetected,
                             isCoLocatedSameDesk = isCoLocated,
                             isBurstFinalized = emitFinalized,
-                            burstPeakPowerDb = tracker.burstPeakPowerDb,
-                            burstPeakSnrDb = tracker.burstPeakSnrDb
+                            burstPeakPowerDb = if (emitFinalized) finalizedPeakPowerDb else tracker.burstPeakPowerDb,
+                            burstPeakSnrDb = if (emitFinalized) finalizedPeakSnrDb else tracker.burstPeakSnrDb
                         )
                         // Diagnostic metric stream: audio buffers arrive every
                         // ~21 ms (48 Hz). Posting at that cadence floods the

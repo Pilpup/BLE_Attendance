@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 import secrets
 import smtplib
 from email.mime.text import MIMEText

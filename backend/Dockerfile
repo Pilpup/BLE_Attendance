@@ -1,7 +1,7 @@
 # R10 (review §1.8): two-stage build — the build toolchain (build-essential)
 # never ships in the runtime image. Wheels are built once against the same
 # base python and installed into a prefix copied into the runtime layer.
-FROM python:3.11-slim AS builder
+FROM python:3.12-slim AS builder
 
 WORKDIR /build
 
@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # Runtime stage: python + OpenCV's native runtime libraries + curl for the
 # healthcheck. Nothing in this layer can compile or execute arbitrary builds.
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 

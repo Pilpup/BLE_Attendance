@@ -168,10 +168,12 @@ fun BarcodeScannerModal(
                         val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
                         var activeCameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
                         var activeScanner by remember { mutableStateOf<com.google.mlkit.vision.barcode.BarcodeScanner?>(null) }
+                        var disposed by remember { mutableStateOf(false) }
 
                         // Release camera bindings and scanner on dialog dismiss
                         DisposableEffect(Unit) {
                             onDispose {
+                                disposed = true
                                 try {
                                     activeCameraProvider?.unbindAll()
                                     activeScanner?.close()
@@ -187,6 +189,12 @@ fun BarcodeScannerModal(
                                 val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
 
                                 cameraProviderFuture.addListener({
+                                    // Dialog dismissed before the provider future
+                                    // completed: the dispose block already ran
+                                    // (with null refs), so binding here would leak
+                                    // the camera + MLKit scanner and run the
+                                    // analyzer on the shut-down executor.
+                                    if (disposed) return@addListener
                                     val cameraProvider = cameraProviderFuture.get()
                                     activeCameraProvider = cameraProvider
                                     val preview = Preview.Builder().build().also {
