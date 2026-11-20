@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -58,6 +57,7 @@ import com.college.core.ui.theme.AppTheme
 import com.college.feature.leave.network.LeaveApplicationResponse
 import java.text.ParseException
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
@@ -202,14 +202,6 @@ fun LeaveApplicationForm(
         modifier = modifier,
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // "New application" sits at the very top of the leave menu content.
-        Text(
-            text = "New application",
-            fontSize = 16.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = AppTheme.colors.textPrimary
-        )
-
         Surface(
             shape = RoundedCornerShape(16.dp),
             color = AppTheme.colors.surface,
@@ -251,30 +243,22 @@ fun LeaveApplicationForm(
                     )
                 }
 
-                // --- Applicant reason (required, counted) ------------------------
+                // --- Applicant reason (required) ---------------------------------
                 OutlinedTextField(
                     value = reason,
                     onValueChange = { if (it.length <= MAX_REASON_LENGTH) reason = it },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("Reason for leave") },
                     isError = reasonError != null,
-                    supportingText = {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
+                    supportingText = if (reasonError != null) {
+                        {
                             Text(
-                                text = reasonError ?: "",
+                                text = reasonError,
                                 color = AppTheme.colors.dangerRed,
                                 fontSize = 12.sp
                             )
-                            Text(
-                                text = "${reason.length}/$MAX_REASON_LENGTH",
-                                fontSize = 12.sp,
-                                color = AppTheme.colors.textMuted
-                            )
                         }
-                    },
+                    } else null,
                     minLines = 3,
                     maxLines = 6,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
@@ -335,13 +319,19 @@ fun LeaveApplicationForm(
         }
     }
 
-    // From picker: no dates before today
+    // From picker: only current and future dates (no previous months/years)
     if (showFromPicker) {
         val today = todayUtcMidnightMillis()
+        val currentYear = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
+            timeInMillis = today
+        }.get(Calendar.YEAR)
         val state = rememberDatePickerState(
             initialSelectedDateMillis = fromMillis ?: today,
+            initialDisplayedMonthMillis = today,
+            yearRange = currentYear..2100,
             selectableDates = object : SelectableDates {
                 override fun isSelectableDate(utcTimeMillis: Long): Boolean = utcTimeMillis >= today
+                override fun isSelectableYear(year: Int): Boolean = year >= currentYear
             }
         )
         DatePickerDialog(
@@ -368,11 +358,18 @@ fun LeaveApplicationForm(
 
     // To picker: earliest selectable date is the later of today and From
     if (showToPicker) {
-        val minDate = maxOf(todayUtcMidnightMillis(), fromMillis ?: todayUtcMidnightMillis())
+        val today = todayUtcMidnightMillis()
+        val minDate = maxOf(today, fromMillis ?: today)
+        val currentYear = Calendar.getInstance(TimeZone.getTimeZone("UTC")).apply {
+            timeInMillis = today
+        }.get(Calendar.YEAR)
         val state = rememberDatePickerState(
             initialSelectedDateMillis = toMillis ?: minDate,
+            initialDisplayedMonthMillis = minDate,
+            yearRange = currentYear..2100,
             selectableDates = object : SelectableDates {
                 override fun isSelectableDate(utcTimeMillis: Long): Boolean = utcTimeMillis >= minDate
+                override fun isSelectableYear(year: Int): Boolean = year >= currentYear
             }
         )
         DatePickerDialog(
@@ -410,14 +407,25 @@ private fun LeaveDateChip(
         border = BorderStroke(1.dp, AppTheme.colors.surfaceBorder),
         modifier = modifier
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(label, fontSize = 12.sp, color = AppTheme.colors.textSecondary)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                label,
+                fontSize = 12.sp,
+                color = AppTheme.colors.textSecondary,
+                textAlign = TextAlign.Center
+            )
             if (text.isNotBlank()) {
                 Text(
                     text = text,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,
-                    color = if (enabled) AppTheme.colors.textPrimary else AppTheme.colors.textMuted
+                    color = if (enabled) AppTheme.colors.textPrimary else AppTheme.colors.textMuted,
+                    textAlign = TextAlign.Center
                 )
             }
         }
@@ -480,7 +488,7 @@ fun LeaveHistoryTracker(
             text = {
                 Text(
                     text = "Your request for ${prettyLeaveDate(target?.fromDate ?: "")} → " +
-                            "${prettyLeaveDate(target?.toDate ?: "")} will be withdrawn and marked CANCELLED. " +
+                            "${prettyLeaveDate(target?.toDate ?: "")} will be withdrawn and removed. " +
                             "This can't be undone.",
                     fontSize = 14.sp,
                     color = AppTheme.colors.textSecondary
@@ -645,24 +653,33 @@ private fun LeaveHistoryCard(
     }
 }
 
-// Status badge: PENDING amber / APPROVED green / REJECTED red / CANCELLED gray,
-// rendered with white text. internal: shared with the HOD queue cards.
+// Status badge: PENDING shown without a box (amber text), others boxed in white.
 @Composable
 internal fun LeaveStatusBadge(status: String) {
-    val bg = when (status.uppercase(Locale.US)) {
-        "APPROVED" -> AppTheme.colors.successGreen
-        "REJECTED" -> AppTheme.colors.dangerRed
-        "CANCELLED" -> AppTheme.colors.textMuted
-        else -> AppTheme.colors.warningAmber // PENDING
-    }
-    Surface(shape = RoundedCornerShape(8.dp), color = bg) {
+    val upper = status.uppercase(Locale.US)
+    if (upper == "PENDING") {
         Text(
-            text = status.uppercase(Locale.US),
+            text = upper,
             fontSize = 10.sp,
             fontWeight = FontWeight.Bold,
-            color = Color.White,
+            color = AppTheme.colors.warningAmber,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
         )
+    } else {
+        val bg = when (upper) {
+            "APPROVED" -> AppTheme.colors.successGreen
+            "REJECTED" -> AppTheme.colors.dangerRed
+            else -> AppTheme.colors.textMuted
+        }
+        Surface(shape = RoundedCornerShape(8.dp), color = bg) {
+            Text(
+                text = upper,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+            )
+        }
     }
 }
 

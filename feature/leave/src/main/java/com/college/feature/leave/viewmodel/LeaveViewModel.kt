@@ -61,7 +61,6 @@ class LeaveViewModel : ViewModel() {
     fun loadMyLeaveApplications() {
         if (!SessionManager.default.isLoggedIn) return
         isLoading = true
-        message = null
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val res = api.getMyLeaveApplications()
@@ -152,7 +151,6 @@ class LeaveViewModel : ViewModel() {
     fun loadDepartmentLeaveApplications() {
         if (!SessionManager.default.isLoggedIn) return
         isLoadingDept = true
-        deptMessage = null
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val res = api.getDepartmentLeaveApplications()
