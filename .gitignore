@@ -31,9 +31,6 @@ __pycache__/
 *.db
 
 # Simulation outputs (generated)
-backend/simulations/layer*_out/
-backend/simulations/**/results.json
-backend/simulations/**/report.txt
 
 # Large ML weight downloaded by backend/scripts/fetch_arcface_weight.py.
 # Never commit the 174 MB ArcFace blob (git history is permanent); the face

@@ -9,7 +9,7 @@ claims to know WHERE an unverified student was, only that the mesh could
 not verify them. verification_method carries the cause for the teacher's
 context; affinity_score is binary (1.00 verified, 0.00 unverified).
 
-Locked rule set (validated in backend/simulations/, layers L1-L5):
+Locked rule set:
 1. FULL LISTS: report ALL visible peers, capped at 64 stored entries.
 2. DIRECT threshold: T(1)=1, T(2)=2, T(3)=2, T(N>3)=ceil(N/2) (halves
    round up). Safe at T(1)=1 because a single mutual must be
